@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -11,7 +12,8 @@ from time import monotonic
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import ExtractCreate, JobCreate, JobOut, StatsOut
+from app.api.schemas import ExtractCreate, JobCreate, JobLogOut, JobOut, StatsOut
+from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.db.models import JobRow, TranslationCacheRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
@@ -34,6 +36,7 @@ from app.subtitles.parsers.srt import parse_srt
 from app.subtitles.validation import validate_source
 from app.subtitles.writer.srt import write_srt_atomic
 from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
+from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.openrouter.service import OpenRouterTranslationService
 
 logger = get_logger("jobs")
@@ -105,6 +108,37 @@ class JobService:
     def get_job(self, job_id: int) -> JobOut | None:
         row = self.db.get(JobRow, job_id)
         return job_to_out(row) if row else None
+
+    def get_job_log(self, job_id: int) -> JobLogOut | None:
+        row = self.db.get(JobRow, job_id)
+        if not row:
+            return None
+        path = job_openrouter_log_path(get_app_config().config_dir, job_id)
+        if not path.is_file():
+            return JobLogOut(job_id=job_id, exists=False, path=str(path))
+        content = path.read_text(encoding="utf-8")
+        entries: list[dict] = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                entries.append({"event": "raw", "line": line})
+            else:
+                if isinstance(parsed, dict):
+                    entries.append(parsed)
+                else:
+                    entries.append({"event": "raw", "value": parsed})
+        return JobLogOut(
+            job_id=job_id,
+            exists=True,
+            path=str(path),
+            entry_count=len(entries),
+            content=content,
+            entries=entries,
+        )
 
     def stats(self) -> StatsOut:
         counts = dict(
@@ -696,6 +730,7 @@ class JobService:
             return
 
         log = get_logger("jobs")
+        exchange_log: JobOpenRouterExchangeLog | None = None
         try:
             public = self.settings.get_public()
             openrouter_key, model = self.settings.get_openrouter_credentials()
@@ -709,7 +744,30 @@ class JobService:
             if not source_validation.ok:
                 raise ValueError(source_validation.error_message)
 
-            client = OpenRouterClient(openrouter_key)
+            resolved_model = row.model or model
+            config = get_app_config()
+            exchange_log = JobOpenRouterExchangeLog(
+                job_openrouter_log_path(config.config_dir, job_id),
+                job_id=job_id,
+            )
+            exchange_log.record(
+                {
+                    "event": "job_start",
+                    "model": resolved_model,
+                    "media_title": row.media_title,
+                    "media_path": row.media_path,
+                    "source_subtitle_path": row.source_subtitle_path,
+                    "target_subtitle_path": row.target_subtitle_path,
+                    "source_language": row.source_language,
+                    "target_language": row.target_language,
+                    "batch_size": public.batch_size,
+                    "block_count": len(document.blocks),
+                    "log_path": str(exchange_log.path),
+                }
+            )
+            log.info("OpenRouter exchange log job_id=%s path=%s", job_id, exchange_log.path)
+
+            client = OpenRouterClient(openrouter_key, exchange_log=exchange_log)
             service = OpenRouterTranslationService(client)
 
             async def on_progress(done: int, total: int) -> None:
@@ -723,7 +781,7 @@ class JobService:
 
             outcome = await service.translate_document(
                 document,
-                model=row.model or model,
+                model=resolved_model,
                 target_language_code=row.target_language,
                 target_language_name=public.target_language.name,
                 batch_size=public.batch_size,
@@ -732,6 +790,7 @@ class JobService:
 
             current = self.db.get(JobRow, job_id)
             if not current or current.status == "cancelled":
+                exchange_log.record({"event": "job_end", "status": "cancelled"})
                 return
 
             target_path = Path(current.target_subtitle_path)
@@ -764,6 +823,16 @@ class JobService:
 
             self.db.add(current)
             self.db.commit()
+            exchange_log.record(
+                {
+                    "event": "job_end",
+                    "status": "completed",
+                    "input_tokens": outcome.usage.input_tokens,
+                    "output_tokens": outcome.usage.output_tokens,
+                    "total_tokens": outcome.usage.total_tokens,
+                    "warning": current.warning,
+                }
+            )
             log.info("Job completed job_id=%s", job_id)
         except Exception as exc:  # noqa: BLE001
             log.error("Job failed job_id=%s error=%s", job_id, exc)
@@ -775,6 +844,15 @@ class JobService:
                 current.completed_at = utcnow()
                 self.db.add(current)
                 self.db.commit()
+            if exchange_log is not None:
+                exchange_log.record(
+                    {
+                        "event": "job_end",
+                        "status": "failed",
+                        "error": _public_error(exc),
+                        "reason_code": _reason_code(exc),
+                    }
+                )
 
     async def _rescan(self, row: JobRow) -> None:
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()

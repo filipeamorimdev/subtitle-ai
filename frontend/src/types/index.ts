@@ -101,6 +101,15 @@ export interface Job {
   completed_at: string | null
 }
 
+export interface JobLog {
+  job_id: number
+  exists: boolean
+  path: string
+  entry_count: number
+  content: string | null
+  entries: Record<string, unknown>[] | null
+}
+
 export interface Stats {
   pending: number
   processing: number

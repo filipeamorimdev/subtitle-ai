@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from app.core.logging import get_logger
+from app.translation.openrouter.exchange_log import ExchangeRecorder
 
 logger = get_logger("openrouter")
 
@@ -31,6 +32,13 @@ class ChatResult:
     total_tokens: int | None = None
 
 
+def _response_body(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except Exception:  # noqa: BLE001
+        return response.text
+
+
 class OpenRouterClient:
     def __init__(
         self,
@@ -39,6 +47,7 @@ class OpenRouterClient:
         base_url: str = OPENROUTER_BASE_URL,
         timeout: float = 120.0,
         app_name: str = "Subtitle AI",
+        exchange_log: ExchangeRecorder | None = None,
     ) -> None:
         if not api_key:
             raise OpenRouterError("OpenRouter API key is not configured")
@@ -46,6 +55,7 @@ class OpenRouterClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.app_name = app_name
+        self.exchange_log = exchange_log
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -54,6 +64,14 @@ class OpenRouterClient:
             "HTTP-Referer": "https://github.com/subtitle-ai/subtitle-ai",
             "X-Title": self.app_name,
         }
+
+    def _record(self, record: dict[str, Any]) -> None:
+        if self.exchange_log is None:
+            return
+        try:
+            self.exchange_log.record(record)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to write OpenRouter exchange log: %s", exc)
 
     async def test_connection(self, model: str) -> dict[str, Any]:
         result = await self.chat_completion(
@@ -84,6 +102,7 @@ class OpenRouterClient:
 
         delays = [0, 2, 5]
         last_error: Exception | None = None
+        url = f"{self.base_url}/chat/completions"
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for attempt, delay in enumerate(delays, start=1):
@@ -91,17 +110,54 @@ class OpenRouterClient:
                     await asyncio.sleep(delay)
                 try:
                     response = await client.post(
-                        f"{self.base_url}/chat/completions",
+                        url,
                         headers=self._headers(),
                         json=payload,
                     )
                 except httpx.TimeoutException as exc:
                     last_error = OpenRouterError("OpenRouter request timed out", retryable=True)
                     logger.warning("OpenRouter timeout attempt=%s", attempt)
+                    self._record(
+                        {
+                            "event": "exchange",
+                            "attempt": attempt,
+                            "url": url,
+                            "request": payload,
+                            "response": None,
+                            "error": "timeout",
+                            "error_detail": str(exc),
+                        }
+                    )
                     continue
                 except httpx.HTTPError as exc:
                     last_error = OpenRouterError(f"OpenRouter connection error: {exc}", retryable=True)
+                    self._record(
+                        {
+                            "event": "exchange",
+                            "attempt": attempt,
+                            "url": url,
+                            "request": payload,
+                            "response": None,
+                            "error": "connection_error",
+                            "error_detail": str(exc),
+                        }
+                    )
                     continue
+
+                body = _response_body(response)
+                self._record(
+                    {
+                        "event": "exchange",
+                        "attempt": attempt,
+                        "url": url,
+                        "request": payload,
+                        "response": {
+                            "status_code": response.status_code,
+                            "body": body,
+                        },
+                        "error": None,
+                    }
+                )
 
                 if response.status_code == 401:
                     raise OpenRouterError("OpenRouter authentication failed.", status_code=401)
@@ -131,7 +187,9 @@ class OpenRouterClient:
                         status_code=response.status_code,
                     )
 
-                data = response.json()
+                data = body if isinstance(body, dict) else None
+                if data is None:
+                    raise OpenRouterError("Malformed OpenRouter response.")
                 try:
                     content = data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, TypeError) as exc:

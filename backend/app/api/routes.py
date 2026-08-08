@@ -12,6 +12,7 @@ from app.api.schemas import (
     ExtractCreate,
     HealthOut,
     JobCreate,
+    JobLogOut,
     JobOut,
     RequestSubtitleCreate,
     SettingsOut,
@@ -140,6 +141,14 @@ def get_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@router.get("/jobs/{job_id}/log", response_model=JobLogOut)
+def get_job_log(job_id: int, db: Session = Depends(get_db)) -> JobLogOut:
+    log = JobService(db).get_job_log(job_id)
+    if not log:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return log
 
 
 @router.post("/jobs", response_model=JobOut)

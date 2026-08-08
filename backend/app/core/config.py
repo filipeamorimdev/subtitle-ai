@@ -33,6 +33,7 @@ class AppConfig(BaseSettings):
     def ensure_directories(self) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         (self.config_dir / "logs").mkdir(parents=True, exist_ok=True)
+        (self.config_dir / "logs" / "jobs").mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache

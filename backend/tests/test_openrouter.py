@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 
 from app.subtitles.parsers.srt import parse_srt
 from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
+from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.openrouter.prompts import format_batch, parse_batch_response
 from app.translation.openrouter.service import OpenRouterTranslationService
 
@@ -99,6 +103,71 @@ async def test_openrouter_rate_limit_then_success(monkeypatch):
     result = await client.chat_completion(model="x", messages=[{"role": "user", "content": "hi"}])
     assert result.content == "done"
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_openrouter_logs_request_and_response(tmp_path: Path, monkeypatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "test-model",
+                "choices": [{"message": {"content": "translated"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+
+    log_path = job_openrouter_log_path(tmp_path, 42)
+    exchange_log = JobOpenRouterExchangeLog(log_path, job_id=42)
+    exchange_log.record({"event": "job_start", "model": "test-model"})
+    client = OpenRouterClient("secret-key", exchange_log=exchange_log)
+    result = await client.chat_completion(
+        model="test-model",
+        messages=[{"role": "user", "content": "Hello subtitle"}],
+    )
+    assert result.content == "translated"
+
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["event"] == "job_start"
+    assert lines[1]["event"] == "exchange"
+    assert lines[1]["job_id"] == 42
+    assert lines[1]["request"]["messages"][0]["content"] == "Hello subtitle"
+    assert lines[1]["response"]["status_code"] == 200
+    assert lines[1]["response"]["body"]["choices"][0]["message"]["content"] == "translated"
+    assert "secret-key" not in log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_openrouter_logs_malformed_response(tmp_path: Path, monkeypatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": True})
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+
+    log_path = job_openrouter_log_path(tmp_path, 7)
+    exchange_log = JobOpenRouterExchangeLog(log_path, job_id=7)
+    client = OpenRouterClient("key", exchange_log=exchange_log)
+    with pytest.raises(OpenRouterError, match="Malformed"):
+        await client.chat_completion(model="x", messages=[{"role": "user", "content": "hi"}])
+
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["response"]["body"] == {"unexpected": True}
 
 
 def test_parse_batch_response():

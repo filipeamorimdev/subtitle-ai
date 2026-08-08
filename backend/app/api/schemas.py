@@ -153,6 +153,15 @@ class JobOut(BaseModel):
     completed_at: datetime | None
 
 
+class JobLogOut(BaseModel):
+    job_id: int
+    exists: bool
+    path: str
+    entry_count: int = 0
+    content: str | None = None
+    entries: list[dict[str, Any]] | None = None
+
+
 class StatsOut(BaseModel):
     pending: int
     processing: int

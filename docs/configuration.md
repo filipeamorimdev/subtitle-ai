@@ -13,6 +13,16 @@ Settings are stored in SQLite under `/config/subtitle-ai.db`. Secrets are Fernet
 
 Prefer configuring Bazarr/OpenRouter credentials in the UI rather than env vars.
 
+## Job OpenRouter logs
+
+Each translation job writes a JSONL exchange log under:
+
+```text
+/config/logs/jobs/job-{id}-openrouter.jsonl
+```
+
+Every OpenRouter request/response attempt for that job is appended (including retries and malformed bodies). API keys are never written.
+
 ## Settings UI sections
 
 ### Bazarr

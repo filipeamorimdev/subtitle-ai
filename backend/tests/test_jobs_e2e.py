@@ -310,6 +310,15 @@ def test_api_candidates_and_manual_job(app_env, monkeypatch):
 
         jobs = client.get("/api/jobs").json()
         assert any(j["status"] == "completed" for j in jobs)
+        completed = next(j for j in jobs if j["status"] == "completed")
+        log_response = client.get(f"/api/jobs/{completed['id']}/log")
+        assert log_response.status_code == 200
+        log_body = log_response.json()
+        assert log_body["job_id"] == completed["id"]
+        assert log_body["exists"] is True
+        assert log_body["entry_count"] >= 2
+        assert any(entry.get("event") == "job_start" for entry in log_body["entries"])
+        assert any(entry.get("event") == "job_end" for entry in log_body["entries"])
         stats = client.get("/api/stats").json()
         assert stats["total"] >= 1
         assert stats["completed"] >= 1

@@ -1,16 +1,30 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../services/api'
-import type { Job } from '../types'
+import type { Job, JobLog } from '../types'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
 const job = ref<Job | null>(null)
 const error = ref<string | null>(null)
 const busy = ref(false)
+const logBusy = ref(false)
+const logVisible = ref(false)
+const jobLog = ref<JobLog | null>(null)
+const logError = ref<string | null>(null)
 let timer: number | undefined
 let lastStatus: string | null = null
+
+const isTranslateJob = computed(() => (job.value?.job_kind || 'translate') === 'translate')
+
+const formattedLog = computed(() => {
+  if (!jobLog.value?.exists) return ''
+  if (jobLog.value.entries?.length) {
+    return jobLog.value.entries.map((entry) => JSON.stringify(entry, null, 2)).join('\n\n')
+  }
+  return jobLog.value.content || ''
+})
 
 function notifyFinished(current: Job) {
   if (typeof Notification === 'undefined') return
@@ -53,6 +67,16 @@ onMounted(async () => {
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
 })
+
+watch(
+  () => props.id,
+  () => {
+    logVisible.value = false
+    jobLog.value = null
+    logError.value = null
+    load()
+  },
+)
 
 watch(
   () => job.value?.status,
@@ -106,6 +130,24 @@ async function retrySync() {
     busy.value = false
   }
 }
+
+async function toggleLog() {
+  if (logVisible.value) {
+    logVisible.value = false
+    return
+  }
+  logBusy.value = true
+  logError.value = null
+  try {
+    jobLog.value = await api.getJobLog(Number(props.id))
+    logVisible.value = true
+  } catch (err) {
+    logError.value = err instanceof Error ? err.message : String(err)
+    logVisible.value = true
+  } finally {
+    logBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -145,12 +187,45 @@ async function retrySync() {
         >
           Retry Bazarr sync
         </button>
+        <button
+          v-if="isTranslateJob"
+          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+          type="button"
+          :disabled="logBusy"
+          @click="toggleLog"
+        >
+          {{ logVisible ? 'Hide log' : logBusy ? 'Loading log…' : 'View log' }}
+        </button>
       </div>
     </div>
 
     <p v-if="error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
       {{ error }}
     </p>
+
+    <div
+      v-if="logVisible"
+      class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="font-display text-lg font-bold">OpenRouter log</h2>
+          <p v-if="jobLog" class="mt-1 break-all text-sm text-ink-500">{{ jobLog.path }}</p>
+        </div>
+        <p v-if="jobLog?.exists" class="text-sm text-ink-500">{{ jobLog.entry_count }} entries</p>
+      </div>
+      <p v-if="logError" class="mt-3 text-sm text-red-700 dark:text-red-300">{{ logError }}</p>
+      <p
+        v-else-if="jobLog && !jobLog.exists"
+        class="mt-3 text-sm text-ink-600 dark:text-ink-300"
+      >
+        No OpenRouter log file for this job yet. Logs are written when translation API calls run.
+      </p>
+      <pre
+        v-else-if="formattedLog"
+        class="mt-4 max-h-[32rem] overflow-auto rounded-lg bg-ink-950 p-4 text-xs leading-relaxed text-ink-100"
+      >{{ formattedLog }}</pre>
+    </div>
 
     <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2">
       <div>

@@ -2,6 +2,7 @@ import type {
   Candidate,
   ConnectionTestResult,
   Job,
+  JobLog,
   Settings,
   SettingsUpdate,
   Stats,
@@ -54,6 +55,7 @@ export const api = {
     }),
   getJobs: () => request<Job[]>('/api/jobs'),
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
+  getJobLog: (id: number) => request<JobLog>(`/api/jobs/${id}/log`),
   createJob: (payload: { candidate_key?: string; source_subtitle_path?: string; target_language?: string }) =>
     request<Job>('/api/jobs', { method: 'POST', body: JSON.stringify(payload) }),
   retryJob: (id: number) => request<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),
