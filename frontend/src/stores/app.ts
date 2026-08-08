@@ -62,6 +62,10 @@ export const useAppStore = defineStore('app', () => {
     return job
   }
 
+  async function requestSubtitle(key: string, language?: string) {
+    return api.requestSubtitle(key, language)
+  }
+
   return {
     settings,
     candidates,
@@ -77,5 +81,6 @@ export const useAppStore = defineStore('app', () => {
     loadJobs,
     translateCandidate,
     extractCandidate,
+    requestSubtitle,
   }
 })

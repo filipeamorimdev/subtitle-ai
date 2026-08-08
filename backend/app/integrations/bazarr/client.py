@@ -200,6 +200,54 @@ class BazarrClient:
             params={"episodeid": episode_id, "action": "scan"},
         )
 
+    async def download_movie_subtitle(
+        self,
+        radarr_id: int,
+        language: str,
+        *,
+        forced: bool = False,
+        hi: bool = False,
+    ) -> None:
+        """Ask Bazarr to search/download a specific language for a movie.
+
+        Bazarr queues the search and returns immediately (HTTP 204).
+        """
+        await self._request(
+            "PATCH",
+            "/api/movies/subtitles",
+            params={
+                "radarrid": radarr_id,
+                "language": language,
+                "forced": "true" if forced else "false",
+                "hi": "true" if hi else "false",
+            },
+        )
+
+    async def download_episode_subtitle(
+        self,
+        series_id: int,
+        episode_id: int,
+        language: str,
+        *,
+        forced: bool = False,
+        hi: bool = False,
+    ) -> None:
+        """Ask Bazarr to search/download a specific language for an episode.
+
+        Bazarr queues the search and returns immediately (HTTP 204).
+        """
+        await self._request(
+            "PATCH",
+            "/api/episodes/subtitles",
+            params={
+                "seriesid": series_id,
+                "episodeid": episode_id,
+                "language": language,
+                "forced": "true" if forced else "false",
+                "hi": "true" if hi else "false",
+            },
+        )
+
     @staticmethod
     def _extract_list(data: Any) -> list[dict[str, Any]]:
         if data is None:

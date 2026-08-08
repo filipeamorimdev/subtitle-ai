@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CandidateOut, EmbeddedSubtitleOut
+from app.api.schemas import CandidateOut, EmbeddedSubtitleOut, RequestSubtitleResult
 from app.db.models import JobRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError, BazarrSubtitle, BazarrWantedItem
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
@@ -27,6 +27,20 @@ from app.subtitles.filenames import (
     languages_compatible,
     normalize_language_code,
 )
+
+
+def to_bazarr_code2(language: str) -> str:
+    """Bazarr download endpoints expect ISO 639-1 code2 (e.g. en, pt)."""
+    normalized = normalize_language_code(language) or language.strip()
+    base = normalized.split("-", 1)[0].strip().lower()
+    if len(base) < 2:
+        raise ValueError(f"Invalid language code for Bazarr: {language}")
+    # Prefer 2-letter codes; common 3-letter aliases already map via normalize_language_code
+    if len(base) == 3:
+        remapped = normalize_language_code(base)
+        if remapped:
+            return remapped.split("-", 1)[0].lower()[:2]
+    return base[:2]
 
 
 def candidate_key(media_type: str, media_path: str, target_language: str) -> str:
@@ -269,6 +283,53 @@ class CandidateService:
     async def get_candidate(self, key: str) -> CandidateOut | None:
         candidates = await self.list_candidates()
         return next((c for c in candidates if c.key == key), None)
+
+    async def request_subtitle(
+        self,
+        candidate_key: str,
+        language: str | None = None,
+    ) -> RequestSubtitleResult:
+        """Ask Bazarr to search/download a source-language subtitle for a candidate."""
+        match = await self.get_candidate(candidate_key)
+        if not match:
+            raise ValueError("Candidate not found. Refresh the list and try again.")
+
+        public = self.settings.get_public()
+        requested = language or (public.source_languages[0] if public.source_languages else "en")
+        code2 = to_bazarr_code2(requested)
+
+        bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
+        if not bazarr_url:
+            raise BazarrError("Bazarr URL is not configured")
+        client = BazarrClient(bazarr_url, bazarr_key)
+
+        if match.media_type == "movie":
+            if match.bazarr_movie_id is None:
+                raise ValueError("Candidate is missing Bazarr movie ID.")
+            await client.download_movie_subtitle(match.bazarr_movie_id, code2)
+        else:
+            if match.bazarr_episode_id is None or match.bazarr_series_id is None:
+                raise ValueError("Candidate is missing Bazarr series/episode IDs.")
+            await client.download_episode_subtitle(
+                match.bazarr_series_id,
+                match.bazarr_episode_id,
+                code2,
+            )
+
+        label = code2.upper()
+        return RequestSubtitleResult(
+            ok=True,
+        message=(
+            f"Bazarr queued a search for {label} subtitles for \"{match.title}\". "
+            "Refresh candidates after Bazarr finishes downloading."
+        ),
+            language=code2,
+            media_type=match.media_type,
+            title=match.title,
+            bazarr_movie_id=match.bazarr_movie_id,
+            bazarr_episode_id=match.bazarr_episode_id,
+            bazarr_series_id=match.bazarr_series_id,
+        )
 
     async def _probe_many(self, paths: list[str], *, concurrency: int = 6) -> dict[str, list[EmbeddedTrack]]:
         if not paths:

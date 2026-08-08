@@ -2,6 +2,7 @@ import type {
   Candidate,
   ConnectionTestResult,
   Job,
+  RequestSubtitleResult,
   Settings,
   SettingsUpdate,
   Stats,
@@ -46,6 +47,11 @@ export const api = {
     request<Job>('/api/candidates/extract', {
       method: 'POST',
       body: JSON.stringify({ candidate_key }),
+    }),
+  requestSubtitle: (candidate_key: string, language?: string) =>
+    request<RequestSubtitleResult>('/api/candidates/request-subtitle', {
+      method: 'POST',
+      body: JSON.stringify({ candidate_key, language }),
     }),
   getJobs: () => request<Job[]>('/api/jobs'),
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),

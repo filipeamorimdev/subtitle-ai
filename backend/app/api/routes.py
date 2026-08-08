@@ -13,6 +13,8 @@ from app.api.schemas import (
     HealthOut,
     JobCreate,
     JobOut,
+    RequestSubtitleCreate,
+    RequestSubtitleResult,
     SettingsOut,
     SettingsUpdate,
     StatsOut,
@@ -109,6 +111,22 @@ async def extract_candidate(payload: ExtractCreate, db: Session = Depends(get_db
     try:
         return await JobService(db).create_extract_job(payload)
     except (ValueError, EmbeddedError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/candidates/request-subtitle", response_model=RequestSubtitleResult)
+async def request_subtitle(
+    payload: RequestSubtitleCreate,
+    db: Session = Depends(get_db),
+) -> RequestSubtitleResult:
+    try:
+        return await CandidateService(db).request_subtitle(
+            payload.candidate_key,
+            language=payload.language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except BazarrError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

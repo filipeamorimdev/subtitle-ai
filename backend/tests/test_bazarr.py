@@ -86,6 +86,130 @@ async def test_bazarr_wanted_and_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_bazarr_download_subtitle(monkeypatch):
+    seen: list[tuple[str, str, dict]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path.endswith("/api/movies/subtitles") and request.method == "PATCH":
+            assert request.url.params["radarrid"] == "10"
+            assert request.url.params["language"] == "en"
+            assert request.url.params["forced"] == "false"
+            assert request.url.params["hi"] == "false"
+            return httpx.Response(204)
+        if request.url.path.endswith("/api/episodes/subtitles") and request.method == "PATCH":
+            assert request.url.params["seriesid"] == "3"
+            assert request.url.params["episodeid"] == "22"
+            assert request.url.params["language"] == "en"
+            return httpx.Response(204)
+        return httpx.Response(404, text="missing")
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    client = BazarrClient("http://bazarr:6767", "secret")
+    await client.download_movie_subtitle(10, "en")
+    await client.download_episode_subtitle(3, 22, "en")
+    assert len(seen) == 2
+    assert seen[0][0] == "PATCH"
+    assert seen[1][0] == "PATCH"
+
+
+@pytest.mark.asyncio
+async def test_request_subtitle_for_candidate(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    get_app_config.cache_clear()
+
+    media_dir = tmp_path / "Empty"
+    media_dir.mkdir()
+    (media_dir / "Empty.mkv").write_text("x")
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    fernet = load_or_create_fernet(config_dir / "secret.key")
+    settings = SettingsService(db, fernet=fernet)
+    settings.update(
+        SettingsUpdate(
+            bazarr_url="http://bazarr:6767",
+            bazarr_api_key="k",
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            source_languages=["en"],
+            media_roots=[str(tmp_path)],
+            path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
+        )
+    )
+
+    patch_calls: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/movies/wanted"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "No Source",
+                            "radarrId": 11,
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/episodes/wanted"):
+            return httpx.Response(200, json={"data": [], "total": 0})
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "No Source",
+                            "path": "/movies/Empty/Empty.mkv",
+                            "radarrId": 11,
+                            "subtitles": [],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/movies/subtitles") and request.method == "PATCH":
+            patch_calls.append(dict(request.url.params))
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    service = CandidateService(db)
+    candidates = await service.list_candidates()
+    blocked = next(c for c in candidates if c.reason_code == "no_source")
+    result = await service.request_subtitle(blocked.key)
+    assert result.ok is True
+    assert result.language == "en"
+    assert patch_calls == [
+        {"apikey": "k", "radarrid": "11", "language": "en", "forced": "false", "hi": "false"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_candidate_service(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     config_dir.mkdir()

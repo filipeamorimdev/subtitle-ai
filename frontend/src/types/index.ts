@@ -115,3 +115,14 @@ export interface ConnectionTestResult {
   message: string
   details?: Record<string, unknown> | null
 }
+
+export interface RequestSubtitleResult {
+  ok: boolean
+  message: string
+  language: string
+  media_type: 'movie' | 'episode'
+  title: string
+  bazarr_movie_id: number | null
+  bazarr_episode_id: number | null
+  bazarr_series_id: number | null
+}

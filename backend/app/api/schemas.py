@@ -106,6 +106,22 @@ class ExtractCreate(BaseModel):
     candidate_key: str
 
 
+class RequestSubtitleCreate(BaseModel):
+    candidate_key: str
+    language: str | None = None
+
+
+class RequestSubtitleResult(BaseModel):
+    ok: bool
+    message: str
+    language: str
+    media_type: Literal["movie", "episode"]
+    title: str
+    bazarr_movie_id: int | None = None
+    bazarr_episode_id: int | None = None
+    bazarr_series_id: int | None = None
+
+
 class JobOut(BaseModel):
     id: int
     candidate_key: str | None

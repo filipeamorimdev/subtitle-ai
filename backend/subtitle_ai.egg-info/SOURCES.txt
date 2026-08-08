@@ -2,6 +2,7 @@ pyproject.toml
 app/__init__.py
 app/main.py
 app/api/__init__.py
+app/api/routes.py
 app/api/schemas.py
 app/core/__init__.py
 app/core/config.py
@@ -20,6 +21,7 @@ app/services/__init__.py
 app/services/candidates.py
 app/services/settings.py
 app/subtitles/__init__.py
+app/subtitles/embedded.py
 app/subtitles/filenames.py
 app/subtitles/markup.py
 app/subtitles/models.py
@@ -39,6 +41,7 @@ subtitle_ai.egg-info/dependency_links.txt
 subtitle_ai.egg-info/requires.txt
 subtitle_ai.egg-info/top_level.txt
 tests/test_bazarr.py
+tests/test_embedded.py
 tests/test_jobs_e2e.py
 tests/test_openrouter.py
 tests/test_subtitles.py

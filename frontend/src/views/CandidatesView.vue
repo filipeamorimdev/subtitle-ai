@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import type { Candidate } from '../types'
@@ -8,14 +8,23 @@ const store = useAppStore()
 const router = useRouter()
 const translatingKey = ref<string | null>(null)
 const extractingKey = ref<string | null>(null)
+const requestingKey = ref<string | null>(null)
 const actionError = ref<string | null>(null)
+const actionInfo = ref<string | null>(null)
+
+const sourceLabel = computed(() => {
+  const code = store.settings?.source_languages?.[0] || 'en'
+  return code.split('-')[0].toUpperCase()
+})
 
 onMounted(() => {
+  store.loadSettings().catch(() => undefined)
   store.loadCandidates().catch(() => undefined)
 })
 
 async function refresh() {
   actionError.value = null
+  actionInfo.value = null
   try {
     await store.loadCandidates()
   } catch (err) {
@@ -26,6 +35,7 @@ async function refresh() {
 async function translate(key: string) {
   translatingKey.value = key
   actionError.value = null
+  actionInfo.value = null
   try {
     const job = await store.translateCandidate(key)
     await router.push(`/jobs/${job.id}`)
@@ -39,6 +49,7 @@ async function translate(key: string) {
 async function extract(item: Candidate) {
   extractingKey.value = item.key
   actionError.value = null
+  actionInfo.value = null
   try {
     const job = await store.extractCandidate(item.key)
     // Background job — open detail so progress is visible, then refresh list when done later.
@@ -47,6 +58,20 @@ async function extract(item: Candidate) {
     actionError.value = err instanceof Error ? err.message : String(err)
   } finally {
     extractingKey.value = null
+  }
+}
+
+async function requestSource(item: Candidate) {
+  requestingKey.value = item.key
+  actionError.value = null
+  actionInfo.value = null
+  try {
+    const result = await store.requestSubtitle(item.key)
+    actionInfo.value = result.message
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    requestingKey.value = null
   }
 }
 
@@ -59,6 +84,17 @@ function extractLabel(item: Candidate) {
 function canShowExtract(item: Candidate) {
   return item.can_extract || item.active_extract_job_id != null
 }
+
+function canRequestSource(item: Candidate) {
+  if (item.source_subtitle_path) return false
+  if (item.media_type === 'movie') return item.bazarr_movie_id != null
+  return item.bazarr_episode_id != null && item.bazarr_series_id != null
+}
+
+function requestLabel(item: Candidate) {
+  if (requestingKey.value === item.key) return 'Requesting…'
+  return `Request ${sourceLabel.value}`
+}
 </script>
 
 <template>
@@ -67,8 +103,8 @@ function canShowExtract(item: Candidate) {
       <div>
         <h1 class="font-display text-3xl font-bold text-ink-900 dark:text-ink-50">Candidates</h1>
         <p class="mt-1 max-w-2xl text-ink-600 dark:text-ink-300">
-          Movies and episodes missing your target subtitle. Refresh to query Bazarr. Extract embedded
-          text tracks when needed, then Translate.
+          Movies and episodes missing your target subtitle. Refresh to query Bazarr. Request a source
+          language from Bazarr, extract embedded text tracks when needed, then Translate.
         </p>
       </div>
       <button
@@ -83,6 +119,9 @@ function canShowExtract(item: Candidate) {
 
     <p v-if="actionError || store.error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
       {{ actionError || store.error }}
+    </p>
+    <p v-else-if="actionInfo" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200">
+      {{ actionInfo }}
     </p>
 
     <div class="overflow-hidden rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
@@ -142,6 +181,15 @@ function canShowExtract(item: Candidate) {
             </td>
             <td class="px-4 py-3 align-top">
               <div class="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  v-if="canRequestSource(item)"
+                  class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+                  type="button"
+                  :disabled="requestingKey === item.key"
+                  @click="requestSource(item)"
+                >
+                  {{ requestLabel(item) }}
+                </button>
                 <button
                   v-if="canShowExtract(item)"
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
