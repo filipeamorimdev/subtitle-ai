@@ -22,7 +22,7 @@ onUnmounted(() => {
   <section class="space-y-6">
     <div>
       <h1 class="font-display text-3xl font-bold">Jobs</h1>
-      <p class="mt-1 text-ink-600 dark:text-ink-300">History of user-triggered translation jobs.</p>
+      <p class="mt-1 text-ink-600 dark:text-ink-300">History of translation and extraction jobs.</p>
     </div>
 
     <div v-if="store.stats" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -48,6 +48,7 @@ onUnmounted(() => {
         <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
           <tr>
             <th class="px-4 py-3 font-medium">Media</th>
+            <th class="px-4 py-3 font-medium">Kind</th>
             <th class="px-4 py-3 font-medium">Target</th>
             <th class="px-4 py-3 font-medium">Model</th>
             <th class="px-4 py-3 font-medium">Status</th>
@@ -56,7 +57,7 @@ onUnmounted(() => {
         </thead>
         <tbody>
           <tr v-if="!store.jobs.length">
-            <td class="px-4 py-8 text-ink-500" colspan="5">No jobs yet.</td>
+            <td class="px-4 py-8 text-ink-500" colspan="6">No jobs yet.</td>
           </tr>
           <tr
             v-for="job in store.jobs"
@@ -68,6 +69,7 @@ onUnmounted(() => {
                 {{ job.media_title || job.media_path }}
               </RouterLink>
             </td>
+            <td class="px-4 py-3 capitalize">{{ job.job_kind || 'translate' }}</td>
             <td class="px-4 py-3">{{ job.target_language }}</td>
             <td class="px-4 py-3">{{ job.model }}</td>
             <td class="px-4 py-3 capitalize">

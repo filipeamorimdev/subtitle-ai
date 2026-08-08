@@ -75,7 +75,9 @@ async function retrySync() {
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
         <h1 class="font-display text-3xl font-bold">{{ job.media_title || 'Job' }} #{{ job.id }}</h1>
-        <p class="mt-1 capitalize text-ink-600 dark:text-ink-300">{{ job.status }} · {{ job.progress }}%</p>
+        <p class="mt-1 capitalize text-ink-600 dark:text-ink-300">
+          {{ job.job_kind || 'translate' }} · {{ job.status }} · {{ job.progress }}%
+        </p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button
@@ -116,6 +118,10 @@ async function retrySync() {
       <div>
         <dt class="text-ink-500">Media</dt>
         <dd class="mt-1 break-all">{{ job.media_path }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Kind</dt>
+        <dd class="mt-1 capitalize">{{ job.job_kind || 'translate' }}</dd>
       </div>
       <div>
         <dt class="text-ink-500">Type</dt>

@@ -56,5 +56,17 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     # Import models so metadata is registered.
     from app.db import models  # noqa: F401
+    from sqlalchemy import text
 
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    # Lightweight SQLite column ensure for existing deployments without alembic upgrade.
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
+        columns = {row[1] for row in rows}
+        if "job_kind" not in columns:
+            conn.execute(
+                text("ALTER TABLE jobs ADD COLUMN job_kind VARCHAR(32) NOT NULL DEFAULT 'translate'")
+            )
+        if "extract_stream_index" not in columns:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN extract_stream_index INTEGER"))

@@ -42,6 +42,11 @@ export const api = {
   getCandidates: () => request<Candidate[]>('/api/candidates'),
   refreshCandidates: () =>
     request<Candidate[]>('/api/candidates/refresh', { method: 'POST' }),
+  extractCandidate: (candidate_key: string) =>
+    request<Job>('/api/candidates/extract', {
+      method: 'POST',
+      body: JSON.stringify({ candidate_key }),
+    }),
   getJobs: () => request<Job[]>('/api/jobs'),
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
   createJob: (payload: { candidate_key?: string; source_subtitle_path?: string; target_language?: string }) =>

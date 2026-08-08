@@ -36,6 +36,7 @@ class JobRow(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     candidate_key: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    job_kind: Mapped[str] = mapped_column(String(32), default="translate", index=True)
     media_type: Mapped[str] = mapped_column(String(32), default="movie")
     media_path: Mapped[str] = mapped_column(String(1024))
     media_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -53,6 +54,7 @@ class JobRow(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    extract_stream_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

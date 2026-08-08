@@ -69,6 +69,13 @@ def build_target_subtitle_path(source_path: str | Path, target_language: str) ->
     return source.with_name(f"{stem}.{target_language}.srt")
 
 
+def build_external_subtitle_path(media_path: str | Path, language: str) -> Path:
+    """Build sidecar SRT path next to a media file, e.g. Movie.mkv -> Movie.en.srt."""
+    media = Path(media_path)
+    lang = normalize_language_code(language) or language
+    return media.with_name(f"{media.stem}.{lang}.srt")
+
+
 def languages_compatible(a: str | None, b: str | None) -> bool:
     """Exact match, or bare code vs regional (pt <-> pt-PT)."""
     na = normalize_language_code(a)

@@ -53,6 +53,19 @@ class ConnectionTestResult(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class EmbeddedSubtitleOut(BaseModel):
+    language: str | None = None
+    codec: str | None = None
+    kind: Literal["text", "image", "unknown"] = "unknown"
+    extractable: bool = False
+    stream_index: int | None = None
+    hi: bool = False
+    forced: bool = False
+    title: str | None = None
+    source: str = "bazarr"
+    label: str
+
+
 class CandidateOut(BaseModel):
     key: str
     media_type: Literal["movie", "episode"]
@@ -68,6 +81,12 @@ class CandidateOut(BaseModel):
     can_translate: bool
     reason_code: str | None = None
     reason: str | None = None
+    embedded_subtitles: list[EmbeddedSubtitleOut] = Field(default_factory=list)
+    has_embedded: bool = False
+    can_extract: bool = False
+    extract_stream_index: int | None = None
+    extract_language: str | None = None
+    active_extract_job_id: int | None = None
 
 
 class JobCreate(BaseModel):
@@ -83,9 +102,14 @@ class JobCreate(BaseModel):
     source_language: str | None = None
 
 
+class ExtractCreate(BaseModel):
+    candidate_key: str
+
+
 class JobOut(BaseModel):
     id: int
     candidate_key: str | None
+    job_kind: str = "translate"
     media_type: str
     media_path: str
     media_title: str | None
@@ -103,6 +127,7 @@ class JobOut(BaseModel):
     error: str | None
     warning: str | None
     reason_code: str | None
+    extract_stream_index: int | None = None
     input_tokens: int | None
     output_tokens: int | None
     total_tokens: int | None

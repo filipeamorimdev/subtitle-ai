@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import router
+from app.api.routes import router
 from app.core.config import get_app_config
 from app.core.logging import setup_logging
 from app.db import init_db

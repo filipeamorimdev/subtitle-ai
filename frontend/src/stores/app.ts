@@ -56,6 +56,12 @@ export const useAppStore = defineStore('app', () => {
     return job
   }
 
+  async function extractCandidate(key: string) {
+    const job = await api.extractCandidate(key)
+    await loadJobs()
+    return job
+  }
+
   return {
     settings,
     candidates,
@@ -70,5 +76,6 @@ export const useAppStore = defineStore('app', () => {
     loadCandidates,
     loadJobs,
     translateCandidate,
+    extractCandidate,
   }
 })

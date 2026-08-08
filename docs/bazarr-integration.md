@@ -25,9 +25,16 @@ A media item becomes a candidate when:
 3. Enrichment loads full movie/episode metadata (wanted lists omit `path` / `subtitles`).
 4. Enrichment finds a usable **external SRT** source (Bazarr subtitle metadata preferred, then filesystem beside the media).
 
+When no external source exists, candidates may still list **embedded** tracks:
+
+- Bazarr entries with `path: null` are shown as embedded badges.
+- `ffprobe` classifies codecs as text vs image when the media file is readable.
+- **Extract** (background job) uses `ffmpeg` to dump extractable text tracks to a sidecar `.srt`.
+- Image-based tracks (PGS / VobSub) are shown but not extractable in v0.1.
+
 `can_translate` is false when:
 
-- `no_source` — no compatible source SRT
+- `no_source` — no compatible source SRT (may still be extractable)
 - `source_missing_on_disk` — metadata path not readable
 - `target_exists` — target file already present
 

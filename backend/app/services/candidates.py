@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CandidateOut
-from app.integrations.bazarr.client import BazarrClient, BazarrError, BazarrWantedItem
+from app.api.schemas import CandidateOut, EmbeddedSubtitleOut
+from app.db.models import JobRow
+from app.integrations.bazarr.client import BazarrClient, BazarrError, BazarrSubtitle, BazarrWantedItem
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
 from app.services.settings import SettingsService
+from app.subtitles.embedded import (
+    EmbeddedTrack,
+    pick_extractable_track,
+    probe_subtitle_tracks,
+)
 from app.subtitles.filenames import (
     build_target_subtitle_path,
     detect_language_from_filename,
@@ -24,6 +32,58 @@ from app.subtitles.filenames import (
 def candidate_key(media_type: str, media_path: str, target_language: str) -> str:
     raw = f"{media_type}|{media_path}|{target_language}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _track_to_out(track: EmbeddedTrack) -> EmbeddedSubtitleOut:
+    return EmbeddedSubtitleOut(
+        language=track.language,
+        codec=track.codec,
+        kind=track.kind,  # type: ignore[arg-type]
+        extractable=track.extractable,
+        stream_index=track.stream_index,
+        hi=track.hi,
+        forced=track.forced,
+        title=track.title,
+        source=track.source,
+        label=track.label,
+    )
+
+
+def _bazarr_embedded_tracks(
+    subtitles: list[BazarrSubtitle],
+    source_languages: list[str],
+) -> list[EmbeddedTrack]:
+    tracks: list[EmbeddedTrack] = []
+    for sub in subtitles:
+        if sub.path:
+            continue
+        lang = normalize_language_code(sub.language_code)
+        if lang and not language_matches(lang, source_languages):
+            # Still show non-source embedded langs as informational badges
+            pass
+        tracks.append(
+            EmbeddedTrack(
+                stream_index=None,
+                language=lang,
+                codec=None,
+                kind="unknown",
+                extractable=False,
+                hi=sub.hi,
+                forced=sub.forced,
+                title=sub.language_name,
+                source="bazarr",
+            )
+        )
+    return tracks
+
+
+def _merge_embedded(
+    bazarr_tracks: list[EmbeddedTrack],
+    probed_tracks: list[EmbeddedTrack],
+) -> list[EmbeddedTrack]:
+    if probed_tracks:
+        return probed_tracks
+    return bazarr_tracks
 
 
 class CandidateService:
@@ -77,6 +137,29 @@ class CandidateService:
             detail = episodes_by_id.get(int(eid)) if eid is not None else None
             items.append(client.normalize_wanted_episode(client.merge_wanted_with_detail(raw, detail)))
 
+        # Active extract jobs keyed by candidate_key
+        active_extract = {
+            row.candidate_key: row.id
+            for row in self.db.scalars(
+                select(JobRow).where(
+                    JobRow.job_kind == "extract",
+                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.candidate_key.is_not(None),
+                )
+            ).all()
+            if row.candidate_key
+        }
+
+        # Probe media that exists on disk (bounded concurrency)
+        paths_to_probe = sorted(
+            {
+                apply_path_mapping(item.path, mappings)
+                for item in items
+                if item.path and Path(apply_path_mapping(item.path, mappings)).is_file()
+            }
+        )
+        probed = await self._probe_many(paths_to_probe)
+
         candidates: list[CandidateOut] = []
         for item in items:
             if not item.path:
@@ -113,6 +196,14 @@ class CandidateService:
                     source_path = str(path)
                     source_lang = lang
 
+            bazarr_embedded = _bazarr_embedded_tracks(item.subtitles, source_langs)
+            embedded_tracks = _merge_embedded(bazarr_embedded, probed.get(local_media, []))
+            extract_track = pick_extractable_track(embedded_tracks, source_langs)
+            can_extract = extract_track is not None and source_path is None
+            # If external source already exists, extraction is unnecessary
+            if source_path:
+                can_extract = False
+
             target_path: str | None = None
             can_translate = False
             reason_code: str | None = None
@@ -132,7 +223,14 @@ class CandidateService:
                     can_translate = True
             else:
                 reason_code = "no_source"
-                reason = "No compatible source subtitle was found."
+                if can_extract:
+                    reason = "Embedded text subtitle available — extract to create a source SRT."
+                elif any(t.kind == "image" for t in embedded_tracks):
+                    reason = "Only image-based embedded subtitles found (not extractable in v0.1)."
+                elif embedded_tracks:
+                    reason = "Embedded subtitles found, but none are extractable text tracks."
+                else:
+                    reason = "No compatible source subtitle was found."
                 can_translate = False
 
             candidates.append(
@@ -151,8 +249,39 @@ class CandidateService:
                     can_translate=can_translate,
                     reason_code=reason_code,
                     reason=reason,
+                    embedded_subtitles=[_track_to_out(t) for t in embedded_tracks],
+                    has_embedded=bool(embedded_tracks),
+                    can_extract=can_extract,
+                    extract_stream_index=extract_track.stream_index if extract_track else None,
+                    extract_language=(
+                        extract_track.language
+                        or (normalize_language_code(source_langs[0]) if source_langs else "en")
+                    )
+                    if extract_track
+                    else None,
+                    active_extract_job_id=active_extract.get(key),
                 )
             )
 
         candidates.sort(key=lambda c: (c.media_type, c.title.lower()))
         return candidates
+
+    async def get_candidate(self, key: str) -> CandidateOut | None:
+        candidates = await self.list_candidates()
+        return next((c for c in candidates if c.key == key), None)
+
+    async def _probe_many(self, paths: list[str], *, concurrency: int = 6) -> dict[str, list[EmbeddedTrack]]:
+        if not paths:
+            return {}
+        semaphore = asyncio.Semaphore(concurrency)
+        results: dict[str, list[EmbeddedTrack]] = {}
+
+        async def _one(path: str) -> None:
+            async with semaphore:
+                try:
+                    results[path] = await probe_subtitle_tracks(path)
+                except Exception:  # noqa: BLE001
+                    results[path] = []
+
+        await asyncio.gather(*[_one(path) for path in paths])
+        return results

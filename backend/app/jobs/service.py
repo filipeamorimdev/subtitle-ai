@@ -9,14 +9,15 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import JobCreate, JobOut, StatsOut
+from app.api.schemas import ExtractCreate, JobCreate, JobOut, StatsOut
 from app.core.logging import get_logger
 from app.db.models import JobRow, TranslationCacheRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import is_under_roots
 from app.services.candidates import CandidateService
 from app.services.settings import SettingsService
-from app.subtitles.filenames import build_target_subtitle_path
+from app.subtitles.embedded import EmbeddedError, extract_text_track
+from app.subtitles.filenames import build_external_subtitle_path, build_target_subtitle_path
 from app.subtitles.parsers.srt import parse_srt
 from app.subtitles.validation import validate_source
 from app.subtitles.writer.srt import write_srt_atomic
@@ -47,6 +48,7 @@ def job_to_out(row: JobRow) -> JobOut:
     return JobOut(
         id=row.id,
         candidate_key=row.candidate_key,
+        job_kind=getattr(row, "job_kind", None) or "translate",
         media_type=row.media_type,
         media_path=row.media_path,
         media_title=row.media_title,
@@ -64,6 +66,7 @@ def job_to_out(row: JobRow) -> JobOut:
         error=row.error,
         warning=row.warning,
         reason_code=row.reason_code,
+        extract_stream_index=getattr(row, "extract_stream_index", None),
         input_tokens=row.input_tokens,
         output_tokens=row.output_tokens,
         total_tokens=row.total_tokens,
@@ -154,6 +157,7 @@ class JobService:
         if target.exists():
             row = JobRow(
                 candidate_key=candidate_key,
+                job_kind="translate",
                 media_type=media_type,
                 media_path=media_path,
                 media_title=media_title,
@@ -179,6 +183,7 @@ class JobService:
         # Prevent duplicate active jobs for same target
         existing = self.db.scalar(
             select(JobRow).where(
+                JobRow.job_kind == "translate",
                 JobRow.target_subtitle_path == str(target),
                 JobRow.status.in_(["pending", "processing"]),
             )
@@ -190,6 +195,7 @@ class JobService:
         dkey = dedupe_key(src_hash, target_language, model)
         completed = self.db.scalar(
             select(JobRow).where(
+                JobRow.job_kind == "translate",
                 JobRow.dedupe_key == dkey,
                 JobRow.status == "completed",
             )
@@ -197,6 +203,7 @@ class JobService:
         if completed and Path(completed.target_subtitle_path).exists():
             row = JobRow(
                 candidate_key=candidate_key,
+                job_kind="translate",
                 media_type=media_type,
                 media_path=media_path,
                 media_title=media_title,
@@ -223,6 +230,7 @@ class JobService:
 
         row = JobRow(
             candidate_key=candidate_key,
+            job_kind="translate",
             media_type=media_type,
             media_path=media_path,
             media_title=media_title,
@@ -238,6 +246,88 @@ class JobService:
             progress=0,
             dedupe_key=dkey,
             source_hash=src_hash,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return job_to_out(row)
+
+    async def create_extract_job(self, payload: ExtractCreate) -> JobOut:
+        public = self.settings.get_public()
+        match = await CandidateService(self.db).get_candidate(payload.candidate_key)
+        if not match:
+            raise ValueError("Candidate not found. Refresh the list and try again.")
+        if not match.can_extract or match.extract_stream_index is None:
+            raise ValueError(match.reason or "No extractable text subtitle track found.")
+        if not is_under_roots(match.media_path, public.media_roots):
+            raise ValueError("Media path is outside configured media roots.")
+        media = Path(match.media_path)
+        if not media.exists():
+            raise ValueError("Media file is not readable on disk.")
+
+        language = match.extract_language or (
+            public.source_languages[0] if public.source_languages else "en"
+        )
+        output = build_external_subtitle_path(media, language)
+        if output.exists():
+            row = JobRow(
+                candidate_key=match.key,
+                job_kind="extract",
+                media_type=match.media_type,
+                media_path=match.media_path,
+                media_title=match.title,
+                bazarr_movie_id=match.bazarr_movie_id,
+                bazarr_episode_id=match.bazarr_episode_id,
+                bazarr_series_id=match.bazarr_series_id,
+                source_subtitle_path=match.media_path,
+                target_subtitle_path=str(output),
+                source_language=language,
+                target_language=language,
+                model="ffmpeg-extract",
+                status="skipped",
+                progress=100,
+                reason_code="source_exists",
+                extract_stream_index=match.extract_stream_index,
+                error="External source subtitle already exists.",
+                completed_at=utcnow(),
+            )
+            self.db.add(row)
+            self.db.commit()
+            self.db.refresh(row)
+            return job_to_out(row)
+
+        existing = self.db.scalar(
+            select(JobRow).where(
+                JobRow.job_kind == "extract",
+                JobRow.target_subtitle_path == str(output),
+                JobRow.status.in_(["pending", "processing"]),
+            )
+        )
+        if existing:
+            return job_to_out(existing)
+
+        dkey = hashlib.sha256(
+            f"extract|{match.media_path}|{language}|{match.extract_stream_index}".encode()
+        ).hexdigest()
+        row = JobRow(
+            candidate_key=match.key,
+            job_kind="extract",
+            media_type=match.media_type,
+            media_path=match.media_path,
+            media_title=match.title,
+            bazarr_movie_id=match.bazarr_movie_id,
+            bazarr_episode_id=match.bazarr_episode_id,
+            bazarr_series_id=match.bazarr_series_id,
+            source_subtitle_path=match.media_path,
+            target_subtitle_path=str(output),
+            source_language=language,
+            target_language=language,
+            model="ffmpeg-extract",
+            status="pending",
+            progress=0,
+            progress_detail="Queued for extraction",
+            extract_stream_index=match.extract_stream_index,
+            dedupe_key=dkey,
         )
         self.db.add(row)
         self.db.commit()
@@ -279,6 +369,10 @@ class JobService:
         row = self.db.get(JobRow, job_id)
         if not row:
             raise ValueError("Job not found")
+        if (getattr(row, "job_kind", None) or "translate") == "extract":
+            if not row.candidate_key:
+                raise ValueError("Extract job is missing candidate key")
+            return await self.create_extract_job(ExtractCreate(candidate_key=row.candidate_key))
         payload = JobCreate(
             candidate_key=row.candidate_key,
             source_subtitle_path=row.source_subtitle_path,
@@ -312,6 +406,65 @@ class JobService:
         return job_to_out(row)
 
     async def process_job(self, job_id: int) -> None:
+        row = self.db.get(JobRow, job_id)
+        if not row or row.status != "processing":
+            return
+        if (getattr(row, "job_kind", None) or "translate") == "extract":
+            await self._process_extract_job(job_id)
+            return
+        await self._process_translate_job(job_id)
+
+    async def _process_extract_job(self, job_id: int) -> None:
+        row = self.db.get(JobRow, job_id)
+        if not row or row.status != "processing":
+            return
+        log = get_logger("jobs")
+        try:
+            if row.extract_stream_index is None:
+                raise EmbeddedError("Missing embedded stream index for extraction.")
+            row.progress = 10
+            row.progress_detail = "Extracting embedded text track"
+            self.db.add(row)
+            self.db.commit()
+
+            await extract_text_track(
+                row.media_path,
+                row.extract_stream_index,
+                row.target_subtitle_path,
+            )
+
+            current = self.db.get(JobRow, job_id)
+            if not current or current.status == "cancelled":
+                return
+            current.progress = 90
+            current.progress_detail = "Extracted"
+            current.status = "completed"
+            current.completed_at = utcnow()
+
+            try:
+                await self._rescan(current)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Bazarr rescan failed after extract job_id=%s error=%s", job_id, exc)
+                current.warning = str(exc)
+                current.reason_code = "bazarr_rescan_failed"
+
+            current.progress = 100
+            current.progress_detail = "Done"
+            self.db.add(current)
+            self.db.commit()
+            log.info("Extract job completed job_id=%s path=%s", job_id, current.target_subtitle_path)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Extract job failed job_id=%s error=%s", job_id, exc)
+            current = self.db.get(JobRow, job_id)
+            if current and current.status != "cancelled":
+                current.status = "failed"
+                current.error = _public_error(exc)
+                current.reason_code = _reason_code(exc)
+                current.completed_at = utcnow()
+                self.db.add(current)
+                self.db.commit()
+
+    async def _process_translate_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
         if not row or row.status != "processing":
             return
@@ -415,11 +568,15 @@ def _public_error(exc: Exception) -> str:
         return str(exc)
     if isinstance(exc, BazarrError):
         return str(exc)
+    if isinstance(exc, EmbeddedError):
+        return str(exc)
     message = str(exc)
     mapping = {
         "Target subtitle already exists": "Target subtitle already exists.",
         "No compatible source": "No compatible source subtitle was found.",
         "validation": "Translation response failed validation.",
+        "extractable": "No extractable text subtitle track found.",
+        "ffmpeg": "Embedded subtitle extraction failed.",
     }
     for key, value in mapping.items():
         if key.lower() in message.lower():
@@ -436,4 +593,6 @@ def _reason_code(exc: Exception) -> str:
         return "openrouter_error"
     if isinstance(exc, BazarrError):
         return "bazarr_error"
+    if isinstance(exc, EmbeddedError):
+        return "extract_failed"
     return "failed"

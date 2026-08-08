@@ -37,6 +37,19 @@ export interface SettingsUpdate {
   batch_size?: number
 }
 
+export interface EmbeddedSubtitle {
+  language: string | null
+  codec: string | null
+  kind: 'text' | 'image' | 'unknown'
+  extractable: boolean
+  stream_index: number | null
+  hi: boolean
+  forced: boolean
+  title: string | null
+  source: string
+  label: string
+}
+
 export interface Candidate {
   key: string
   media_type: 'movie' | 'episode'
@@ -52,11 +65,18 @@ export interface Candidate {
   can_translate: boolean
   reason_code: string | null
   reason: string | null
+  embedded_subtitles: EmbeddedSubtitle[]
+  has_embedded: boolean
+  can_extract: boolean
+  extract_stream_index: number | null
+  extract_language: string | null
+  active_extract_job_id: number | null
 }
 
 export interface Job {
   id: number
   candidate_key: string | null
+  job_kind: 'translate' | 'extract' | string
   media_type: string
   media_path: string
   media_title: string | null
@@ -71,6 +91,7 @@ export interface Job {
   error: string | null
   warning: string | null
   reason_code: string | null
+  extract_stream_index: number | null
   input_tokens: number | null
   output_tokens: number | null
   total_tokens: number | null
