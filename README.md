@@ -48,21 +48,36 @@ docker compose up -d --build
 
 Open http://localhost:6768
 
+### Portainer + GHCR (recommended)
+
+Images are published to GitHub Container Registry on pushes to `main`:
+
+```text
+ghcr.io/filipeamorimdev/subtitle-ai:latest
+```
+
+1. Push to `main` (or run the **Publish Docker image to GHCR** workflow).
+2. Under the repo **Packages**, open the image and set visibility to **Public** (or add `ghcr.io` in Portainer **Registries** with a PAT that has `read:packages`).
+3. In Portainer, create/update a stack using [`docker-compose.portainer.yml`](docker-compose.portainer.yml) (Web editor or Git compose path).
+4. Adjust host volume paths if needed, deploy, open port **6768**.
+5. In the UI set Bazarr to `http://bazarr:6767` and media roots to `/data/movies,/data/tv`.
+
+If Subtitle AI is in a **different stack** than Bazarr, attach it to the media stack network (see comments in the Portainer compose file).
+
 ### Volumes
 
 | Mount | Purpose |
 | --- | --- |
 | `/config` | SQLite DB, encryption key, logs |
-| `/media` | Media library (must be readable/writable for subtitle output) |
+| `/media` or `/data/movies` + `/data/tv` | Media library (must match Bazarr paths) |
 
 ### Path mapping
 
-Bazarr and Subtitle AI must agree on paths. If Bazarr reports `/movies/...` but the container sees `/media/movies/...`, set a mapping in Settings:
+Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both use `/data/movies`), leave path mappings empty. Otherwise set a mapping in Settings:
 
 ```text
 /movies => /media/movies
 ```
-
 ## Configuration
 
 ### Bazarr

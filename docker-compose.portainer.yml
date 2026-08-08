@@ -1,0 +1,36 @@
+# Portainer-ready compose (pull image from GHCR — no local build).
+#
+# Usage in Portainer:
+# 1. Wait for GitHub Actions to publish ghcr.io/filipeamorimdev/subtitle-ai:latest
+# 2. If the package is private: Portainer → Registries → add ghcr.io with a PAT
+#    (read:packages) or make the package public under the repo Packages settings.
+# 3. Stacks → Add stack → Web editor (or Git with this file as compose path)
+# 4. Adjust volume paths to match your host / Bazarr mounts
+# 5. Deploy, then open http://<host>:6768
+#
+# In the Subtitle AI UI:
+#   Bazarr URL:     http://bazarr:6767
+#   Media roots:    /data/movies,/data/tv
+#   Path mappings:  (leave empty if mounts match Bazarr)
+
+services:
+  subtitle-ai:
+    image: ghcr.io/filipeamorimdev/subtitle-ai:latest
+    container_name: subtitle-ai
+    restart: unless-stopped
+    ports:
+      - "6768:6768"
+    volumes:
+      - /mnt/volume3tb/media-stack/config/subtitle-ai:/config
+      - /mnt/media/tv:/data/tv
+      - /mnt/media/movies:/data/movies
+    environment:
+      - TZ=Europe/Lisbon
+      - SUBTITLE_AI_CONFIG_DIR=/config
+      - SUBTITLE_AI_LOG_LEVEL=INFO
+    # Uncomment if this is a separate stack and you need to reach Bazarr by name:
+    # networks:
+    #   - media-stack_default
+# networks:
+#   media-stack_default:
+#     external: true
