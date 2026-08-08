@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(196, 92, 38, 0.12), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(84, 121, 116, 0.16), transparent 50%),
+    #f4f7f7;
+}
+
+.dark body,
+html.dark body {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(196, 92, 38, 0.18), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(84, 121, 116, 0.22), transparent 50%),
+    #151f1e;
+}
+
+#app {
+  min-height: 100vh;
+}

@@ -1,0 +1,14 @@
+services:
+  subtitle-ai:
+    build: .
+    container_name: subtitle-ai
+    restart: unless-stopped
+    ports:
+      - "6768:6768"
+    volumes:
+      - ./config:/config
+      - /path/to/media:/media
+    environment:
+      - TZ=Europe/Lisbon
+      - SUBTITLE_AI_CONFIG_DIR=/config
+      - SUBTITLE_AI_LOG_LEVEL=INFO
