@@ -114,15 +114,58 @@ class BazarrClient:
         data = await self._request("GET", "/api/episodes/wanted")
         return self._extract_list(data)
 
+    async def get_movies_by_ids(self, radarr_ids: list[int]) -> list[dict[str, Any]]:
+        """Fetch full movie metadata (includes path + subtitles)."""
+        return await self._get_by_ids("/api/movies", "radarrid[]", radarr_ids)
+
+    async def get_episodes_by_ids(self, episode_ids: list[int]) -> list[dict[str, Any]]:
+        """Fetch full episode metadata (includes path + subtitles)."""
+        return await self._get_by_ids("/api/episodes", "episodeid[]", episode_ids)
+
+    async def _get_by_ids(
+        self,
+        path: str,
+        param_name: str,
+        ids: list[int],
+        *,
+        chunk_size: int = 50,
+    ) -> list[dict[str, Any]]:
+        unique_ids = sorted({int(i) for i in ids if i is not None})
+        if not unique_ids:
+            return []
+        results: list[dict[str, Any]] = []
+        for offset in range(0, len(unique_ids), chunk_size):
+            chunk = unique_ids[offset : offset + chunk_size]
+            data = await self._request("GET", path, params={param_name: chunk})
+            results.extend(self._extract_list(data))
+        return results
+
     async def get_movie(self, radarr_id: int) -> dict[str, Any] | None:
-        data = await self._request("GET", "/api/movies", params={"radarrid[]": radarr_id})
-        items = self._extract_list(data)
+        items = await self.get_movies_by_ids([radarr_id])
         return items[0] if items else None
 
     async def get_episode(self, episode_id: int) -> dict[str, Any] | None:
-        data = await self._request("GET", "/api/episodes", params={"episodeid[]": episode_id})
-        items = self._extract_list(data)
+        items = await self.get_episodes_by_ids([episode_id])
         return items[0] if items else None
+
+    @staticmethod
+    def merge_wanted_with_detail(
+        wanted: dict[str, Any],
+        detail: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Bazarr wanted lists omit path/subtitles; merge from detail endpoints."""
+        if not detail:
+            return wanted
+        merged = dict(wanted)
+        for key in ("path", "subtitles", "season", "episode", "title", "monitored"):
+            if detail.get(key) is not None and not merged.get(key):
+                merged[key] = detail[key]
+        # Prefer detail path/subtitles even when wanted has empty values
+        if detail.get("path"):
+            merged["path"] = detail["path"]
+        if detail.get("subtitles") is not None:
+            merged["subtitles"] = detail["subtitles"]
+        return merged
 
     async def rescan_movie(self, radarr_id: int) -> None:
         # Best-effort endpoints used across Bazarr versions
@@ -229,9 +272,11 @@ class BazarrClient:
     def normalize_wanted_episode(self, item: dict[str, Any]) -> BazarrWantedItem:
         path = str(item.get("path") or "")
         series = item.get("seriesTitle") or item.get("series") or ""
-        episode_title = item.get("title") or ""
+        episode_title = item.get("episodeTitle") or item.get("title") or ""
         season = item.get("season")
         episode = item.get("episode")
+        if season is None or episode is None:
+            season, episode = self._parse_episode_number(item.get("episode_number"))
         label_parts = [str(series)] if series else []
         if season is not None and episode is not None:
             label_parts.append(f"S{int(season):02d}E{int(episode):02d}")
@@ -250,3 +295,16 @@ class BazarrClient:
             subtitles=self.parse_subtitles(item),
             raw=item,
         )
+
+    @staticmethod
+    def _parse_episode_number(value: Any) -> tuple[int | None, int | None]:
+        if value is None:
+            return None, None
+        text = str(value).strip().lower()
+        if "x" in text:
+            left, _, right = text.partition("x")
+            try:
+                return int(left), int(right)
+            except ValueError:
+                return None, None
+        return None, None

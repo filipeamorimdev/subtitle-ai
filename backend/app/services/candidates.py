@@ -45,11 +45,37 @@ class CandidateService:
         movies = await client.get_wanted_movies()
         episodes = await client.get_wanted_episodes()
 
+        movie_ids: list[int] = []
+        for raw in movies:
+            rid = raw.get("radarrId", raw.get("radarrid"))
+            if rid is not None:
+                movie_ids.append(int(rid))
+        episode_ids: list[int] = []
+        for raw in episodes:
+            eid = raw.get("sonarrEpisodeId", raw.get("episodeid"))
+            if eid is not None:
+                episode_ids.append(int(eid))
+
+        movies_by_id = {
+            int(item["radarrId"]): item
+            for item in await client.get_movies_by_ids(movie_ids)
+            if item.get("radarrId") is not None
+        }
+        episodes_by_id = {
+            int(item["sonarrEpisodeId"]): item
+            for item in await client.get_episodes_by_ids(episode_ids)
+            if item.get("sonarrEpisodeId") is not None
+        }
+
         items: list[BazarrWantedItem] = []
         for raw in movies:
-            items.append(client.normalize_wanted_movie(raw))
+            rid = raw.get("radarrId", raw.get("radarrid"))
+            detail = movies_by_id.get(int(rid)) if rid is not None else None
+            items.append(client.normalize_wanted_movie(client.merge_wanted_with_detail(raw, detail)))
         for raw in episodes:
-            items.append(client.normalize_wanted_episode(raw))
+            eid = raw.get("sonarrEpisodeId", raw.get("episodeid"))
+            detail = episodes_by_id.get(int(eid)) if eid is not None else None
+            items.append(client.normalize_wanted_episode(client.merge_wanted_with_detail(raw, detail)))
 
         candidates: list[CandidateOut] = []
         for item in items:

@@ -82,12 +82,11 @@ def app_env(tmp_path, monkeypatch):
                     "data": [
                         {
                             "title": "Example Movie",
-                            "path": "/movies/Example/Example.mkv",
                             "radarrId": 10,
                             "missing_subtitles": ["pt-PT"],
-                            "subtitles": [["en", "/movies/Example/Example.en.srt"]],
                         }
-                    ]
+                    ],
+                    "total": 1,
                 },
             )
         if path.endswith("/api/episodes/wanted"):
@@ -97,12 +96,41 @@ def app_env(tmp_path, monkeypatch):
                     "data": [
                         {
                             "seriesTitle": "Show",
-                            "title": "Pilot",
-                            "season": 1,
-                            "episode": 1,
-                            "path": "/movies/Example/Example.mkv",
+                            "episodeTitle": "Pilot",
+                            "episode_number": "1x1",
                             "sonarrEpisodeId": 22,
                             "missing_subtitles": ["pt-PT"],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Example Movie",
+                            "path": "/movies/Example/Example.mkv",
+                            "radarrId": 10,
+                            "subtitles": [["en", "/movies/Example/Example.en.srt"]],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if path.endswith("/api/episodes"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Pilot",
+                            "path": "/movies/Example/Example.mkv",
+                            "season": 1,
+                            "episode": 1,
+                            "sonarrEpisodeId": 22,
                             "subtitles": [["en", "/movies/Example/Example.en.srt"]],
                         }
                     ]

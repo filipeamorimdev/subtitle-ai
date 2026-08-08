@@ -7,8 +7,10 @@ Module: `backend/app/integrations/bazarr/`
 | Operation | Path | Notes |
 | --- | --- | --- |
 | Connection test | `GET /api/system/status` | Falls back to probing movies if needed |
-| Wanted movies | `GET /api/movies/wanted` | Missing movie subtitles |
-| Wanted episodes | `GET /api/episodes/wanted` | Missing episode subtitles |
+| Wanted movies | `GET /api/movies/wanted` | IDs + missing languages only (no path) |
+| Wanted episodes | `GET /api/episodes/wanted` | IDs + missing languages only (no path) |
+| Movie details | `GET /api/movies?radarrid[]=` | Path + subtitle files for enrichment |
+| Episode details | `GET /api/episodes?episodeid[]=` | Path + subtitle files for enrichment |
 | Movie rescan | `GET /api/movies/scan?radarrid=` | Best effort; alternate POST subtitles action tried on failure |
 | Episode rescan | `GET /api/episodes/scan?episodeid=` | Best effort; alternate POST tried on failure |
 
@@ -20,7 +22,8 @@ A media item becomes a candidate when:
 
 1. It appears on Bazarr wanted movies or episodes.
 2. Missing languages are empty **or** compatible with the configured target (e.g. `pt` ↔ `pt-PT`).
-3. Enrichment finds a usable **external SRT** source (Bazarr subtitle metadata preferred, then filesystem beside the media).
+3. Enrichment loads full movie/episode metadata (wanted lists omit `path` / `subtitles`).
+4. Enrichment finds a usable **external SRT** source (Bazarr subtitle metadata preferred, then filesystem beside the media).
 
 `can_translate` is false when:
 

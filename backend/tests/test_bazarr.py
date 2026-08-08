@@ -34,16 +34,35 @@ async def test_bazarr_wanted_and_connection(monkeypatch):
                     "data": [
                         {
                             "title": "Example Movie",
-                            "path": "/movies/Example/Example.mkv",
                             "radarrId": 10,
                             "missing_subtitles": ["pt"],
-                            "subtitles": [["en", "/movies/Example/Example.en.srt"]],
                         }
-                    ]
+                    ],
+                    "total": 1,
                 },
             )
         if request.url.path.endswith("/api/episodes/wanted"):
-            return httpx.Response(200, json={"data": []})
+            return httpx.Response(200, json={"data": [], "total": 0})
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Example Movie",
+                            "path": "/movies/Example/Example.mkv",
+                            "radarrId": 10,
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
+                            "subtitles": [
+                                {"code2": "en", "path": "/movies/Example/Example.en.srt", "name": "English"}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
         return httpx.Response(404, text="missing")
 
     transport = httpx.MockTransport(handler)
@@ -58,8 +77,11 @@ async def test_bazarr_wanted_and_connection(monkeypatch):
     status = await client.test_connection()
     assert status["ok"] is True
     movies = await client.get_wanted_movies()
-    item = client.normalize_wanted_movie(movies[0])
+    details = await client.get_movies_by_ids([10])
+    merged = client.merge_wanted_with_detail(movies[0], details[0])
+    item = client.normalize_wanted_movie(merged)
     assert item.movie_id == 10
+    assert item.path.endswith("Example.mkv")
     assert item.subtitles[0].language_code == "en"
 
 
@@ -104,19 +126,20 @@ async def test_candidate_service(tmp_path, monkeypatch):
                     "data": [
                         {
                             "title": "Example Movie",
-                            "path": "/movies/Example/Example.mkv",
                             "radarrId": 10,
-                            "missing_subtitles": ["pt-PT"],
-                            "subtitles": [["en", "/movies/Example/Example.en.srt"]],
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
                         },
                         {
                             "title": "No Source",
-                            "path": "/movies/Empty/Empty.mkv",
                             "radarrId": 11,
-                            "missing_subtitles": ["pt-PT"],
-                            "subtitles": [],
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
                         },
-                    ]
+                    ],
+                    "total": 2,
                 },
             )
         if request.url.path.endswith("/api/episodes/wanted"):
@@ -126,14 +149,56 @@ async def test_candidate_service(tmp_path, monkeypatch):
                     "data": [
                         {
                             "seriesTitle": "Show",
-                            "title": "Pilot",
-                            "season": 1,
-                            "episode": 1,
-                            "path": "/movies/Example/Example.mkv",
+                            "episodeTitle": "Pilot",
+                            "episode_number": "1x1",
                             "sonarrEpisodeId": 22,
                             "sonarrSeriesId": 3,
-                            "missing_subtitles": ["pt-PT"],
-                            "subtitles": [["en", "/movies/Example/Example.en.srt"]],
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Example Movie",
+                            "path": "/movies/Example/Example.mkv",
+                            "radarrId": 10,
+                            "subtitles": [
+                                {"code2": "en", "path": "/movies/Example/Example.en.srt"}
+                            ],
+                        },
+                        {
+                            "title": "No Source",
+                            "path": "/movies/Empty/Empty.mkv",
+                            "radarrId": 11,
+                            "subtitles": [],
+                        },
+                    ],
+                    "total": 2,
+                },
+            )
+        if request.url.path.endswith("/api/episodes"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Pilot",
+                            "path": "/movies/Example/Example.mkv",
+                            "season": 1,
+                            "episode": 1,
+                            "sonarrEpisodeId": 22,
+                            "sonarrSeriesId": 3,
+                            "subtitles": [
+                                {"code2": "en", "path": "/movies/Example/Example.en.srt"}
+                            ],
                         }
                     ]
                 },
@@ -154,3 +219,5 @@ async def test_candidate_service(tmp_path, monkeypatch):
     blocked = [c for c in candidates if not c.can_translate]
     assert len(ready) == 2
     assert blocked[0].reason_code == "no_source"
+    episode = next(c for c in candidates if c.media_type == "episode")
+    assert "S01E01" in episode.title
