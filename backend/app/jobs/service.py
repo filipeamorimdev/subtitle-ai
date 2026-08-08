@@ -12,7 +12,15 @@ from time import monotonic
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import ExtractCreate, JobCreate, JobLogOut, JobOut, StatsOut
+from app.api.schemas import (
+    BatchJobsOut,
+    CandidateOut,
+    ExtractCreate,
+    JobCreate,
+    JobLogOut,
+    JobOut,
+    StatsOut,
+)
 from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.db.models import JobRow, TranslationCacheRow
@@ -156,7 +164,12 @@ class JobService:
             total=sum(counts.values()),
         )
 
-    async def create_job(self, payload: JobCreate) -> JobOut:
+    async def create_job(
+        self,
+        payload: JobCreate,
+        *,
+        candidate: CandidateOut | None = None,
+    ) -> JobOut:
         public = self.settings.get_public()
         _, model = self.settings.get_openrouter_credentials()
         openrouter_key, _ = self.settings.get_openrouter_credentials()
@@ -175,8 +188,9 @@ class JobService:
         bazarr_series_id = payload.bazarr_series_id
 
         if candidate_key:
-            candidates = await CandidateService(self.db).list_candidates()
-            match = next((c for c in candidates if c.key == candidate_key), None)
+            match = candidate
+            if match is None or match.key != candidate_key:
+                match = await CandidateService(self.db).get_candidate(candidate_key)
             if not match:
                 raise ValueError("Candidate not found. Refresh the list and try again.")
             if not match.can_translate or not match.source_subtitle_path:
@@ -301,9 +315,16 @@ class JobService:
         self.db.refresh(row)
         return job_to_out(row)
 
-    async def create_extract_job(self, payload: ExtractCreate) -> JobOut:
+    async def create_extract_job(
+        self,
+        payload: ExtractCreate,
+        *,
+        candidate: CandidateOut | None = None,
+    ) -> JobOut:
         public = self.settings.get_public()
-        match = await CandidateService(self.db).get_candidate(payload.candidate_key)
+        match = candidate
+        if match is None or match.key != payload.candidate_key:
+            match = await CandidateService(self.db).get_candidate(payload.candidate_key)
         if not match:
             raise ValueError("Candidate not found. Refresh the list and try again.")
         if not match.can_extract or match.extract_stream_index is None:
@@ -387,9 +408,13 @@ class JobService:
         self,
         candidate_key: str,
         language: str | None = None,
+        *,
+        candidate: CandidateOut | None = None,
     ) -> JobOut:
         public = self.settings.get_public()
-        match = await CandidateService(self.db).get_candidate(candidate_key)
+        match = candidate
+        if match is None or match.key != candidate_key:
+            match = await CandidateService(self.db).get_candidate(candidate_key)
         if not match:
             raise ValueError("Candidate not found. Refresh the list and try again.")
 
@@ -440,6 +465,139 @@ class JobService:
         self.db.commit()
         self.db.refresh(row)
         return job_to_out(row)
+
+    @staticmethod
+    def _can_request_source(candidate: CandidateOut) -> bool:
+        if candidate.source_subtitle_path:
+            return False
+        if candidate.media_type == "movie":
+            return candidate.bazarr_movie_id is not None
+        return candidate.bazarr_episode_id is not None and candidate.bazarr_series_id is not None
+
+    async def batch_request_missing_source(
+        self,
+        language: str | None = None,
+    ) -> BatchJobsOut:
+        candidates = await CandidateService(self.db).list_candidates()
+        jobs: list[JobOut] = []
+        created_count = 0
+        reused_count = 0
+        skipped_count = 0
+        errors: list[str] = []
+
+        for match in candidates:
+            if match.active_request_job_id is not None:
+                skipped_count += 1
+                continue
+            if not self._can_request_source(match):
+                skipped_count += 1
+                continue
+            try:
+                existing = self.db.scalar(
+                    select(JobRow).where(
+                        JobRow.job_kind == "request",
+                        JobRow.candidate_key == match.key,
+                        JobRow.status.in_(["pending", "processing"]),
+                    )
+                )
+                job = await self.create_request_subtitle_job(
+                    match.key,
+                    language=language,
+                    candidate=match,
+                )
+                jobs.append(job)
+                if existing and existing.id == job.id:
+                    reused_count += 1
+                else:
+                    created_count += 1
+            except (ValueError, BazarrError) as exc:
+                errors.append(f"{match.title}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{match.title}: {exc}")
+
+        return BatchJobsOut(
+            jobs=jobs,
+            created_count=created_count,
+            reused_count=reused_count,
+            skipped_count=skipped_count,
+            errors=errors,
+        )
+
+    async def batch_extract_and_translate(self) -> BatchJobsOut:
+        candidates = await CandidateService(self.db).list_candidates()
+        jobs: list[JobOut] = []
+        created_count = 0
+        reused_count = 0
+        skipped_count = 0
+        errors: list[str] = []
+        seen_ids: set[int] = set()
+
+        def _record(job: JobOut, *, was_existing: bool) -> None:
+            nonlocal created_count, reused_count
+            if job.id in seen_ids:
+                return
+            seen_ids.add(job.id)
+            jobs.append(job)
+            if was_existing:
+                reused_count += 1
+            else:
+                created_count += 1
+
+        for match in candidates:
+            acted = False
+            if match.can_extract:
+                acted = True
+                if match.active_extract_job_id is not None:
+                    skipped_count += 1
+                else:
+                    try:
+                        existing = self.db.scalar(
+                            select(JobRow).where(
+                                JobRow.job_kind == "extract",
+                                JobRow.candidate_key == match.key,
+                                JobRow.status.in_(["pending", "processing"]),
+                            )
+                        )
+                        job = await self.create_extract_job(
+                            ExtractCreate(candidate_key=match.key),
+                            candidate=match,
+                        )
+                        _record(job, was_existing=bool(existing and existing.id == job.id))
+                    except (ValueError, EmbeddedError) as exc:
+                        errors.append(f"{match.title} (extract): {exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{match.title} (extract): {exc}")
+
+            if match.can_translate:
+                acted = True
+                try:
+                    existing = self.db.scalar(
+                        select(JobRow).where(
+                            JobRow.job_kind == "translate",
+                            JobRow.candidate_key == match.key,
+                            JobRow.status.in_(["pending", "processing"]),
+                        )
+                    )
+                    job = await self.create_job(
+                        JobCreate(candidate_key=match.key),
+                        candidate=match,
+                    )
+                    _record(job, was_existing=bool(existing and existing.id == job.id))
+                except (ValueError, OpenRouterError) as exc:
+                    errors.append(f"{match.title} (translate): {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{match.title} (translate): {exc}")
+
+            if not acted:
+                skipped_count += 1
+
+        return BatchJobsOut(
+            jobs=jobs,
+            created_count=created_count,
+            reused_count=reused_count,
+            skipped_count=skipped_count,
+            errors=errors,
+        )
 
     def claim_next_job(self) -> JobRow | None:
         row = self.db.scalar(

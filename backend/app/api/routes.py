@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app import __version__
 from app.api.schemas import (
+    BatchJobsOut,
     CandidateOut,
     ConnectionTestResult,
     ExtractCreate,
@@ -127,6 +128,24 @@ async def request_subtitle(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except BazarrError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/candidates/batch/request-subtitle", response_model=BatchJobsOut)
+async def batch_request_subtitle(db: Session = Depends(get_db)) -> BatchJobsOut:
+    try:
+        return await JobService(db).batch_request_missing_source()
+    except BazarrError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/candidates/batch/extract-and-translate", response_model=BatchJobsOut)
+async def batch_extract_and_translate(db: Session = Depends(get_db)) -> BatchJobsOut:
+    try:
+        return await JobService(db).batch_extract_and_translate()
+    except BazarrError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OpenRouterError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

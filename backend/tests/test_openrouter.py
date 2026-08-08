@@ -222,6 +222,7 @@ async def test_translation_validation_retry(monkeypatch):
         calls["n"] += 1
         if calls["n"] == 1:
             return ChatResult(content="broken", model=model, total_tokens=1)
+        assert "missing subtitle blocks" in messages[-1]["content"].lower()
         return ChatResult(
             content="[001]\nOlá\n\n[002]\nMundo\n",
             model=model,
@@ -239,3 +240,113 @@ async def test_translation_validation_retry(monkeypatch):
     )
     assert outcome.document.blocks[1].text == "Mundo"
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_translation_targeted_repair_merges_partial(monkeypatch):
+    calls = {"n": 0, "users": []}
+
+    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+        from app.translation.openrouter.client import ChatResult
+
+        calls["n"] += 1
+        calls["users"].append(messages[-1]["content"])
+        if calls["n"] == 1:
+            # Keep [001], drop [002], and include an unexpected ID that should be ignored.
+            return ChatResult(content="[001]\nOlá\n\n[999]\nextra\n", model=model, total_tokens=1)
+        assert "missing subtitle blocks" in messages[-1]["content"].lower()
+        assert "[002]" in messages[-1]["content"]
+        assert "\n[001]\n" not in messages[-1]["content"]
+        return ChatResult(content="[002]\nMundo\n", model=model, total_tokens=2)
+
+    client = OpenRouterClient("key")
+    monkeypatch.setattr(client, "chat_completion", fake_chat)
+    service = OpenRouterTranslationService(client)
+    outcome = await service.translate_document(
+        parse_srt(SAMPLE),
+        model="m",
+        target_language_code="pt-PT",
+        target_language_name="Portuguese (Portugal)",
+    )
+    assert outcome.document.blocks[0].text == "Olá"
+    assert outcome.document.blocks[1].text == "Mundo"
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_translation_shrinks_batch_after_failed_repairs(monkeypatch):
+    sample4 = """1
+00:00:01,000 --> 00:00:02,000
+One
+
+2
+00:00:02,000 --> 00:00:03,000
+Two
+
+3
+00:00:03,000 --> 00:00:04,000
+Three
+
+4
+00:00:04,000 --> 00:00:05,000
+Four
+"""
+    translations = {1: "Um", 2: "Dois", 3: "Três", 4: "Quatro"}
+    source_text = {1: "One", 2: "Two", 3: "Three", 4: "Four"}
+    calls = {"n": 0}
+
+    def requested_ids(user: str) -> list[int]:
+        ids = []
+        for block_id, text in source_text.items():
+            if f"[{block_id:03d}]\n{text}" in user:
+                ids.append(block_id)
+        return ids
+
+    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+        from app.translation.openrouter.client import ChatResult
+
+        calls["n"] += 1
+        ids = requested_ids(messages[-1]["content"])
+        # Fail while the model is still asked for the original 4-block batch (or its repairs).
+        if set(ids) == {1, 2, 3, 4} or set(ids) == {2, 3, 4}:
+            return ChatResult(content="[001]\nUm\n", model=model, total_tokens=1)
+        parts = [f"[{block_id:03d}]\n{translations[block_id]}" for block_id in ids]
+        return ChatResult(content="\n\n".join(parts) + "\n", model=model, total_tokens=1)
+
+    client = OpenRouterClient("key")
+    monkeypatch.setattr(client, "chat_completion", fake_chat)
+    service = OpenRouterTranslationService(client)
+    outcome = await service.translate_document(
+        parse_srt(sample4),
+        model="m",
+        target_language_code="pt-PT",
+        target_language_name="Portuguese (Portugal)",
+        batch_size=4,
+    )
+    assert [b.text for b in outcome.document.blocks] == ["Um", "Dois", "Três", "Quatro"]
+    # Initial + 2 targeted repairs on the large batch, then successful smaller calls.
+    assert calls["n"] > 3
+
+
+@pytest.mark.asyncio
+async def test_translation_single_block_still_fails_hard(monkeypatch):
+    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+        from app.translation.openrouter.client import ChatResult
+
+        return ChatResult(content="broken", model=model, total_tokens=1)
+
+    client = OpenRouterClient("key")
+    monkeypatch.setattr(client, "chat_completion", fake_chat)
+    service = OpenRouterTranslationService(client)
+    single = """1
+00:00:01,000 --> 00:00:03,000
+Hello
+"""
+    with pytest.raises(OpenRouterError, match="validation"):
+        await service.translate_document(
+            parse_srt(single),
+            model="m",
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            batch_size=1,
+        )

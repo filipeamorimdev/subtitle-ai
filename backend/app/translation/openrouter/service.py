@@ -10,13 +10,17 @@ from app.subtitles.models import SubtitleBlock, SubtitleDocument
 from app.subtitles.validation import validate_batch_mapping, validate_translation
 from app.translation.openrouter.client import ChatResult, OpenRouterClient, OpenRouterError
 from app.translation.openrouter.prompts import (
-    CORRECTION_PROMPT_EXTRA,
+    MISSING_BLOCKS_PROMPT_EXTRA,
+    build_missing_repair_user_message,
     build_system_prompt,
-    format_batch,
+    build_translate_user_message,
     parse_batch_response,
 )
 
 logger = get_logger("translation")
+
+# Bounded recovery: a few targeted repairs, then split the batch and retry.
+MAX_CORRECTION_ATTEMPTS = 2
 
 
 @dataclass
@@ -114,47 +118,111 @@ class OpenRouterTranslationService:
         usage: TranslationUsage,
     ) -> dict[int, str]:
         expected_ids = [item[0] for item in protected_payload]
-        user_content = format_batch([(i, text) for i, text, _ in protected_payload])
+        expected_set = set(expected_ids)
+        by_id = {item[0]: (item[1], item[2]) for item in protected_payload}
+        source_blocks = [(block_id, by_id[block_id][0]) for block_id in expected_ids]
 
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": (
-                    "Translate the following subtitle blocks. "
-                    "Return the same IDs with translated text only.\n\n"
-                    + user_content
-                ),
+                "content": build_translate_user_message(source_blocks),
             },
         ]
 
         result = await self.client.chat_completion(model=model, messages=messages)
         usage.add(result)
-        mapping = parse_batch_response(result.content)
+        mapping = self._filter_mapping(parse_batch_response(result.content), expected_set)
         validation = validate_batch_mapping(expected_ids, mapping)
         if validation.ok:
             return mapping
 
-        logger.warning("Batch validation failed; attempting correction retry")
-        correction_messages = [
-            {"role": "system", "content": system_prompt + CORRECTION_PROMPT_EXTRA},
-            {
-                "role": "user",
-                "content": (
-                    "Correct this translation so every ID is present exactly once.\n\n"
-                    "INPUT:\n"
-                    + user_content
-                    + "\nPREVIOUS OUTPUT:\n"
-                    + result.content
-                ),
-            },
-        ]
-        retry = await self.client.chat_completion(model=model, messages=correction_messages)
-        usage.add(retry)
-        retry_mapping = parse_batch_response(retry.content)
-        retry_validation = validate_batch_mapping(expected_ids, retry_mapping)
-        if not retry_validation.ok:
-            raise OpenRouterError(
-                "Translation response failed validation. " + retry_validation.error_message
+        for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+            incomplete_ids = self._incomplete_ids(expected_ids, mapping)
+            if not incomplete_ids:
+                break
+
+            logger.warning(
+                "Batch validation failed; targeted repair attempt %s/%s for ids=%s",
+                attempt,
+                MAX_CORRECTION_ATTEMPTS,
+                incomplete_ids,
             )
-        return retry_mapping
+            repair_blocks = [(block_id, by_id[block_id][0]) for block_id in incomplete_ids]
+            correction_messages = [
+                {
+                    "role": "system",
+                    "content": system_prompt + MISSING_BLOCKS_PROMPT_EXTRA,
+                },
+                {
+                    "role": "user",
+                    "content": build_missing_repair_user_message(
+                        repair_blocks,
+                        missing_ids=incomplete_ids,
+                    ),
+                },
+            ]
+            retry = await self.client.chat_completion(
+                model=model,
+                messages=correction_messages,
+            )
+            usage.add(retry)
+            repaired = self._filter_mapping(parse_batch_response(retry.content), set(incomplete_ids))
+            mapping = self._merge_mapping(mapping, repaired, expected_set)
+            validation = validate_batch_mapping(expected_ids, mapping)
+            if validation.ok:
+                return mapping
+
+        if len(protected_payload) > 1:
+            mid = len(protected_payload) // 2
+            logger.warning(
+                "Batch validation failed after correction; shrinking %s blocks into %s + %s",
+                len(protected_payload),
+                mid,
+                len(protected_payload) - mid,
+            )
+            left = await self._translate_batch(
+                model=model,
+                system_prompt=system_prompt,
+                protected_payload=protected_payload[:mid],
+                usage=usage,
+            )
+            right = await self._translate_batch(
+                model=model,
+                system_prompt=system_prompt,
+                protected_payload=protected_payload[mid:],
+                usage=usage,
+            )
+            return {**left, **right}
+
+        raise OpenRouterError(
+            "Translation response failed validation. " + validation.error_message
+        )
+
+    @staticmethod
+    def _filter_mapping(mapping: dict[int, str], expected_set: set[int]) -> dict[int, str]:
+        return {block_id: text for block_id, text in mapping.items() if block_id in expected_set}
+
+    @staticmethod
+    def _incomplete_ids(expected_ids: list[int], mapping: dict[int, str]) -> list[int]:
+        incomplete: list[int] = []
+        for block_id in expected_ids:
+            text = mapping.get(block_id)
+            if text is None or text.strip() == "":
+                incomplete.append(block_id)
+        return incomplete
+
+    @staticmethod
+    def _merge_mapping(
+        base: dict[int, str],
+        repaired: dict[int, str],
+        expected_set: set[int],
+    ) -> dict[int, str]:
+        merged = dict(base)
+        for block_id, text in repaired.items():
+            if block_id not in expected_set:
+                continue
+            if text.strip() == "":
+                continue
+            merged[block_id] = text
+        return merged

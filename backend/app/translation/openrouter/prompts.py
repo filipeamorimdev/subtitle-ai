@@ -34,16 +34,15 @@ The target locale is important. If the target is Portuguese (Portugal), use Euro
 Return only the requested block mapping.
 """
 
-CORRECTION_PROMPT_EXTRA = """
-Your previous response failed validation. Return ONLY the block mapping in this exact format:
+MISSING_BLOCKS_PROMPT_EXTRA = """
+Some block IDs were missing or empty in a previous response. Translate ONLY the blocks provided below.
+
+Return ONLY those IDs in this exact format:
 
 [001]
 translated line
 
-[002]
-translated line
-
-Every input ID must appear exactly once. Do not add commentary.
+Every requested ID must appear exactly once. Do not merge, split, omit, or renumber blocks. Do not add commentary. Do not return any other IDs.
 """
 
 BLOCK_RE = re.compile(r"^\[(\d{3,})\]\s*$")
@@ -70,6 +69,37 @@ def format_batch(blocks: list[tuple[int, str]]) -> str:
         parts.append(text)
         parts.append("")
     return "\n".join(parts).strip() + "\n"
+
+
+def format_id_list(block_ids: list[int]) -> str:
+    return ", ".join(f"[{block_id:03d}]" for block_id in block_ids)
+
+
+def build_translate_user_message(blocks: list[tuple[int, str]]) -> str:
+    count = len(blocks)
+    ids = format_id_list([block_id for block_id, _ in blocks])
+    return (
+        f"Translate the following {count} subtitle blocks. "
+        f"Return exactly {count} blocks with these IDs only: {ids}. "
+        "Keep one-to-one ID mapping. Do not merge or split blocks. "
+        "Return the same IDs with translated text only.\n\n"
+        + format_batch(blocks)
+    )
+
+
+def build_missing_repair_user_message(
+    blocks: list[tuple[int, str]],
+    *,
+    missing_ids: list[int],
+) -> str:
+    count = len(blocks)
+    ids = format_id_list(missing_ids)
+    return (
+        f"Translate ONLY these {count} missing subtitle blocks. "
+        f"Return exactly {count} blocks with these IDs only: {ids}. "
+        "Do not return any other IDs.\n\n"
+        + format_batch(blocks)
+    )
 
 
 def parse_batch_response(content: str) -> dict[int, str]:

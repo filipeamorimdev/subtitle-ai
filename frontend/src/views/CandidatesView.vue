@@ -2,13 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
-import type { Candidate } from '../types'
+import type { BatchJobsResult, Candidate } from '../types'
 
 const store = useAppStore()
 const router = useRouter()
 const translatingKey = ref<string | null>(null)
 const extractingKey = ref<string | null>(null)
 const requestingKey = ref<string | null>(null)
+const batchBusy = ref<'request' | 'process' | null>(null)
 const actionError = ref<string | null>(null)
 const actionInfo = ref<string | null>(null)
 
@@ -17,10 +18,30 @@ const sourceLabel = computed(() => {
   return code.split('-')[0].toUpperCase()
 })
 
+const requestableCount = computed(
+  () => store.candidates.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
+)
+
+const processableCount = computed(
+  () =>
+    store.candidates.filter(
+      (item) =>
+        (item.can_extract && !item.active_extract_job_id) || item.can_translate,
+    ).length,
+)
+
 onMounted(() => {
   store.loadSettings().catch(() => undefined)
   store.loadCandidates().catch(() => undefined)
 })
+
+function summarizeBatch(result: BatchJobsResult, action: string) {
+  const parts = [`${action}: queued ${result.created_count}`]
+  if (result.reused_count) parts.push(`reused ${result.reused_count}`)
+  if (result.skipped_count) parts.push(`skipped ${result.skipped_count}`)
+  if (result.errors.length) parts.push(`${result.errors.length} error(s)`)
+  return parts.join(', ')
+}
 
 async function refresh() {
   actionError.value = null
@@ -29,6 +50,46 @@ async function refresh() {
     await store.loadCandidates()
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+async function requestAllMissing() {
+  batchBusy.value = 'request'
+  actionError.value = null
+  actionInfo.value = null
+  try {
+    const result = await store.batchRequestSubtitles()
+    actionInfo.value = summarizeBatch(result, `Request ${sourceLabel.value}`)
+    if (result.errors.length) {
+      actionError.value = result.errors.slice(0, 5).join(' · ')
+    }
+    if (result.created_count + result.reused_count > 0) {
+      await router.push('/jobs')
+    }
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    batchBusy.value = null
+  }
+}
+
+async function extractAndTranslateAll() {
+  batchBusy.value = 'process'
+  actionError.value = null
+  actionInfo.value = null
+  try {
+    const result = await store.batchExtractAndTranslate()
+    actionInfo.value = summarizeBatch(result, 'Extract & translate')
+    if (result.errors.length) {
+      actionError.value = result.errors.slice(0, 5).join(' · ')
+    }
+    if (result.created_count + result.reused_count > 0) {
+      await router.push('/jobs')
+    }
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    batchBusy.value = null
   }
 }
 
@@ -75,6 +136,11 @@ async function requestSource(item: Candidate) {
   }
 }
 
+function viewLogs(item: Candidate) {
+  if (item.latest_job_id == null) return
+  router.push(`/jobs/${item.latest_job_id}`)
+}
+
 function extractLabel(item: Candidate) {
   if (item.active_extract_job_id) return 'Extracting…'
   if (extractingKey.value === item.key) return 'Starting…'
@@ -109,14 +175,36 @@ function requestLabel(item: Candidate) {
           language from Bazarr, extract embedded text tracks when needed, then Translate.
         </p>
       </div>
-      <button
-        class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
-        type="button"
-        :disabled="store.loading"
-        @click="refresh"
-      >
-        {{ store.loading ? 'Refreshing…' : 'Refresh' }}
-      </button>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <button
+          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          type="button"
+          :disabled="store.loading || batchBusy != null || requestableCount === 0"
+          @click="requestAllMissing"
+        >
+          {{
+            batchBusy === 'request'
+              ? `Requesting ${sourceLabel}…`
+              : `Request all missing ${sourceLabel}`
+          }}
+        </button>
+        <button
+          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          type="button"
+          :disabled="store.loading || batchBusy != null || processableCount === 0"
+          @click="extractAndTranslateAll"
+        >
+          {{ batchBusy === 'process' ? 'Queuing…' : 'Extract & translate all' }}
+        </button>
+        <button
+          class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
+          type="button"
+          :disabled="store.loading || batchBusy != null"
+          @click="refresh"
+        >
+          {{ store.loading ? 'Refreshing…' : 'Refresh' }}
+        </button>
+      </div>
     </div>
 
     <p v-if="actionError || store.error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
@@ -129,12 +217,12 @@ function requestLabel(item: Candidate) {
     <div class="overflow-x-auto rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
       <table class="w-full min-w-[56rem] table-fixed text-left text-sm">
         <colgroup>
-          <col class="w-[38%]" />
+          <col class="w-[36%]" />
           <col class="w-[8%]" />
-          <col class="w-[9%]" />
-          <col class="w-[9%]" />
-          <col class="w-[16%]" />
-          <col class="w-[20%]" />
+          <col class="w-[8%]" />
+          <col class="w-[8%]" />
+          <col class="w-[14%]" />
+          <col class="w-[26%]" />
         </colgroup>
         <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
           <tr>
@@ -194,10 +282,18 @@ function requestLabel(item: Candidate) {
             >
               <div class="flex flex-wrap items-center justify-end gap-2">
                 <button
+                  v-if="item.latest_job_id != null"
+                  class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+                  type="button"
+                  @click="viewLogs(item)"
+                >
+                  View logs
+                </button>
+                <button
                   v-if="canRequestSource(item)"
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
                   type="button"
-                  :disabled="requestingKey === item.key || item.active_request_job_id != null"
+                  :disabled="requestingKey === item.key || item.active_request_job_id != null || batchBusy != null"
                   @click="requestSource(item)"
                 >
                   {{ requestLabel(item) }}
@@ -206,7 +302,7 @@ function requestLabel(item: Candidate) {
                   v-if="canShowExtract(item)"
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
                   type="button"
-                  :disabled="!item.can_extract || extractingKey === item.key || item.active_extract_job_id != null"
+                  :disabled="!item.can_extract || extractingKey === item.key || item.active_extract_job_id != null || batchBusy != null"
                   @click="extract(item)"
                 >
                   {{ extractLabel(item) }}
@@ -214,7 +310,7 @@ function requestLabel(item: Candidate) {
                 <button
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
                   type="button"
-                  :disabled="!item.can_translate || translatingKey === item.key"
+                  :disabled="!item.can_translate || translatingKey === item.key || batchBusy != null"
                   @click="translate(item.key)"
                 >
                   {{ translatingKey === item.key ? 'Starting…' : 'Translate' }}

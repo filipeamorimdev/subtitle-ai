@@ -88,6 +88,7 @@ class CandidateOut(BaseModel):
     extract_language: str | None = None
     active_extract_job_id: int | None = None
     active_request_job_id: int | None = None
+    latest_job_id: int | None = None
 
 
 class JobCreate(BaseModel):
@@ -151,6 +152,14 @@ class JobOut(BaseModel):
     created_at: datetime | None
     started_at: datetime | None
     completed_at: datetime | None
+
+
+class BatchJobsOut(BaseModel):
+    jobs: list[JobOut] = Field(default_factory=list)
+    created_count: int = 0
+    reused_count: int = 0
+    skipped_count: int = 0
+    errors: list[str] = Field(default_factory=list)
 
 
 class JobLogOut(BaseModel):

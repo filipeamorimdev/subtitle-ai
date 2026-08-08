@@ -174,6 +174,15 @@ class CandidateService:
             ).all()
             if row.candidate_key
         }
+        # Most recent job id per candidate (any kind / status)
+        latest_job_ids: dict[str, int] = {}
+        for row in self.db.scalars(
+            select(JobRow)
+            .where(JobRow.candidate_key.is_not(None))
+            .order_by(JobRow.created_at.desc(), JobRow.id.desc())
+        ).all():
+            if row.candidate_key and row.candidate_key not in latest_job_ids:
+                latest_job_ids[row.candidate_key] = row.id
 
         # Probe media that exists on disk (bounded concurrency)
         paths_to_probe = sorted(
@@ -286,6 +295,7 @@ class CandidateService:
                     else None,
                     active_extract_job_id=active_extract.get(key),
                     active_request_job_id=active_request.get(key),
+                    latest_job_id=latest_job_ids.get(key),
                 )
             )
 

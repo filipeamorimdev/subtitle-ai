@@ -72,6 +72,7 @@ export interface Candidate {
   extract_language: string | null
   active_extract_job_id: number | null
   active_request_job_id: number | null
+  latest_job_id: number | null
 }
 
 export interface Job {
@@ -108,6 +109,14 @@ export interface JobLog {
   entry_count: number
   content: string | null
   entries: Record<string, unknown>[] | null
+}
+
+export interface BatchJobsResult {
+  jobs: Job[]
+  created_count: number
+  reused_count: number
+  skipped_count: number
+  errors: string[]
 }
 
 export interface Stats {

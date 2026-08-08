@@ -1,4 +1,5 @@
 import type {
+  BatchJobsResult,
   Candidate,
   ConnectionTestResult,
   Job,
@@ -52,6 +53,12 @@ export const api = {
     request<Job>('/api/candidates/request-subtitle', {
       method: 'POST',
       body: JSON.stringify({ candidate_key, language }),
+    }),
+  batchRequestSubtitles: () =>
+    request<BatchJobsResult>('/api/candidates/batch/request-subtitle', { method: 'POST' }),
+  batchExtractAndTranslate: () =>
+    request<BatchJobsResult>('/api/candidates/batch/extract-and-translate', {
+      method: 'POST',
     }),
   getJobs: () => request<Job[]>('/api/jobs'),
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
