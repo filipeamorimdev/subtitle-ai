@@ -66,8 +66,8 @@ async function requestSource(item: Candidate) {
   actionError.value = null
   actionInfo.value = null
   try {
-    const result = await store.requestSubtitle(item.key)
-    actionInfo.value = result.message
+    const job = await store.requestSubtitle(item.key)
+    await router.push(`/jobs/${job.id}`)
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -86,13 +86,15 @@ function canShowExtract(item: Candidate) {
 }
 
 function canRequestSource(item: Candidate) {
+  if (item.active_request_job_id != null) return true
   if (item.source_subtitle_path) return false
   if (item.media_type === 'movie') return item.bazarr_movie_id != null
   return item.bazarr_episode_id != null && item.bazarr_series_id != null
 }
 
 function requestLabel(item: Candidate) {
-  if (requestingKey.value === item.key) return 'Requesting…'
+  if (item.active_request_job_id) return 'Searching…'
+  if (requestingKey.value === item.key) return 'Starting…'
   return `Request ${sourceLabel.value}`
 }
 </script>
@@ -124,8 +126,16 @@ function requestLabel(item: Candidate) {
       {{ actionInfo }}
     </p>
 
-    <div class="overflow-hidden rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
-      <table class="min-w-full text-left text-sm">
+    <div class="overflow-x-auto rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
+      <table class="w-full min-w-[56rem] table-fixed text-left text-sm">
+        <colgroup>
+          <col class="w-[38%]" />
+          <col class="w-[8%]" />
+          <col class="w-[9%]" />
+          <col class="w-[9%]" />
+          <col class="w-[16%]" />
+          <col class="w-[20%]" />
+        </colgroup>
         <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
           <tr>
             <th class="px-4 py-3 font-medium">Title</th>
@@ -133,7 +143,7 @@ function requestLabel(item: Candidate) {
             <th class="px-4 py-3 font-medium">Target</th>
             <th class="px-4 py-3 font-medium">Source</th>
             <th class="px-4 py-3 font-medium">Status</th>
-            <th class="px-4 py-3 font-medium"></th>
+            <th class="sticky right-0 bg-ink-50/95 px-4 py-3 font-medium dark:bg-ink-950/95">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -149,7 +159,7 @@ function requestLabel(item: Candidate) {
           >
             <td class="px-4 py-3 align-top">
               <div class="font-medium text-ink-900 dark:text-ink-50">{{ item.title }}</div>
-              <div class="mt-0.5 truncate text-xs text-ink-500">{{ item.media_path }}</div>
+              <div class="mt-0.5 truncate text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</div>
               <div v-if="item.has_embedded" class="mt-2 flex flex-wrap gap-1.5">
                 <span
                   v-for="(track, idx) in item.embedded_subtitles"
@@ -179,13 +189,15 @@ function requestLabel(item: Candidate) {
               <span v-if="item.can_translate" class="text-emerald-700 dark:text-emerald-300">Ready</span>
               <span v-else class="text-ink-500">{{ item.reason || item.reason_code || 'Unavailable' }}</span>
             </td>
-            <td class="px-4 py-3 align-top">
+            <td
+              class="sticky right-0 bg-white/95 px-4 py-3 align-top shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] dark:bg-ink-900/95"
+            >
               <div class="flex flex-wrap items-center justify-end gap-2">
                 <button
                   v-if="canRequestSource(item)"
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
                   type="button"
-                  :disabled="requestingKey === item.key"
+                  :disabled="requestingKey === item.key || item.active_request_job_id != null"
                   @click="requestSource(item)"
                 >
                   {{ requestLabel(item) }}

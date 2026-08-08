@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CandidateOut, EmbeddedSubtitleOut, RequestSubtitleResult
+from app.api.schemas import CandidateOut, EmbeddedSubtitleOut
 from app.db.models import JobRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError, BazarrSubtitle, BazarrWantedItem
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
@@ -151,12 +151,23 @@ class CandidateService:
             detail = episodes_by_id.get(int(eid)) if eid is not None else None
             items.append(client.normalize_wanted_episode(client.merge_wanted_with_detail(raw, detail)))
 
-        # Active extract jobs keyed by candidate_key
+        # Active extract / request jobs keyed by candidate_key
         active_extract = {
             row.candidate_key: row.id
             for row in self.db.scalars(
                 select(JobRow).where(
                     JobRow.job_kind == "extract",
+                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.candidate_key.is_not(None),
+                )
+            ).all()
+            if row.candidate_key
+        }
+        active_request = {
+            row.candidate_key: row.id
+            for row in self.db.scalars(
+                select(JobRow).where(
+                    JobRow.job_kind == "request",
                     JobRow.status.in_(["pending", "processing"]),
                     JobRow.candidate_key.is_not(None),
                 )
@@ -274,6 +285,7 @@ class CandidateService:
                     if extract_track
                     else None,
                     active_extract_job_id=active_extract.get(key),
+                    active_request_job_id=active_request.get(key),
                 )
             )
 
@@ -283,53 +295,6 @@ class CandidateService:
     async def get_candidate(self, key: str) -> CandidateOut | None:
         candidates = await self.list_candidates()
         return next((c for c in candidates if c.key == key), None)
-
-    async def request_subtitle(
-        self,
-        candidate_key: str,
-        language: str | None = None,
-    ) -> RequestSubtitleResult:
-        """Ask Bazarr to search/download a source-language subtitle for a candidate."""
-        match = await self.get_candidate(candidate_key)
-        if not match:
-            raise ValueError("Candidate not found. Refresh the list and try again.")
-
-        public = self.settings.get_public()
-        requested = language or (public.source_languages[0] if public.source_languages else "en")
-        code2 = to_bazarr_code2(requested)
-
-        bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
-        if not bazarr_url:
-            raise BazarrError("Bazarr URL is not configured")
-        client = BazarrClient(bazarr_url, bazarr_key)
-
-        if match.media_type == "movie":
-            if match.bazarr_movie_id is None:
-                raise ValueError("Candidate is missing Bazarr movie ID.")
-            await client.download_movie_subtitle(match.bazarr_movie_id, code2)
-        else:
-            if match.bazarr_episode_id is None or match.bazarr_series_id is None:
-                raise ValueError("Candidate is missing Bazarr series/episode IDs.")
-            await client.download_episode_subtitle(
-                match.bazarr_series_id,
-                match.bazarr_episode_id,
-                code2,
-            )
-
-        label = code2.upper()
-        return RequestSubtitleResult(
-            ok=True,
-        message=(
-            f"Bazarr queued a search for {label} subtitles for \"{match.title}\". "
-            "Refresh candidates after Bazarr finishes downloading."
-        ),
-            language=code2,
-            media_type=match.media_type,
-            title=match.title,
-            bazarr_movie_id=match.bazarr_movie_id,
-            bazarr_episode_id=match.bazarr_episode_id,
-            bazarr_series_id=match.bazarr_series_id,
-        )
 
     async def _probe_many(self, paths: list[str], *, concurrency: int = 6) -> dict[str, list[EmbeddedTrack]]:
         if not paths:

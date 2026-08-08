@@ -14,7 +14,6 @@ from app.api.schemas import (
     JobCreate,
     JobOut,
     RequestSubtitleCreate,
-    RequestSubtitleResult,
     SettingsOut,
     SettingsUpdate,
     StatsOut,
@@ -114,13 +113,13 @@ async def extract_candidate(payload: ExtractCreate, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/candidates/request-subtitle", response_model=RequestSubtitleResult)
+@router.post("/candidates/request-subtitle", response_model=JobOut)
 async def request_subtitle(
     payload: RequestSubtitleCreate,
     db: Session = Depends(get_db),
-) -> RequestSubtitleResult:
+) -> JobOut:
     try:
-        return await CandidateService(db).request_subtitle(
+        return await JobService(db).create_request_subtitle_job(
             payload.candidate_key,
             language=payload.language,
         )

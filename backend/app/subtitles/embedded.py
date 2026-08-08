@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -211,39 +212,49 @@ async def extract_text_track(
         raise EmbeddedError(f"Output subtitle already exists: {output.name}")
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    temp_output = output.with_suffix(output.suffix + ".partial")
-    if temp_output.exists():
-        temp_output.unlink()
-
-    command = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(media),
-        "-map",
-        f"0:{stream_index}",
-        "-c:s",
-        "srt",
-        str(temp_output),
-    ]
+    # Use a real .srt suffix so ffmpeg can pick a muxer, and avoid writing
+    # directly beside media when the path contains characters ffmpeg mishandles (+).
+    temp_dir = Path(tempfile.mkdtemp(prefix="subtitle-ai-extract-"))
+    temp_output = temp_dir / "extract.srt"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError as exc:
-        if temp_output.exists():
-            temp_output.unlink(missing_ok=True)
-        raise EmbeddedError(f"ffmpeg extraction timed out for {media.name}") from exc
-    except FileNotFoundError as exc:
-        raise EmbeddedError("ffmpeg is not installed") from exc
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(media),
+            "-map",
+            f"0:{stream_index}",
+            "-c:s",
+            "srt",
+            "-f",
+            "srt",
+            str(temp_output),
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except TimeoutError as exc:
+            raise EmbeddedError(f"ffmpeg extraction timed out for {media.name}") from exc
+        except FileNotFoundError as exc:
+            raise EmbeddedError("ffmpeg is not installed") from exc
 
-    if proc.returncode != 0 or not temp_output.exists() or temp_output.stat().st_size == 0:
-        detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
-        temp_output.unlink(missing_ok=True)
-        raise EmbeddedError(f"ffmpeg extraction failed: {detail or 'empty output'}")
+        if proc.returncode != 0 or not temp_output.exists() or temp_output.stat().st_size == 0:
+            detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
+            raise EmbeddedError(f"ffmpeg extraction failed: {detail or 'empty output'}")
 
-    temp_output.replace(output)
-    return output
+        # Atomic-ish replace onto the media directory
+        staging = output.with_name(f".{output.name}.tmp")
+        try:
+            shutil.copyfile(temp_output, staging)
+            staging.replace(output)
+        finally:
+            staging.unlink(missing_ok=True)
+        return output
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)

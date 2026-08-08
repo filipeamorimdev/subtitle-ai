@@ -63,7 +63,9 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function requestSubtitle(key: string, language?: string) {
-    return api.requestSubtitle(key, language)
+    const job = await api.requestSubtitle(key, language)
+    await loadJobs()
+    return job
   }
 
   return {

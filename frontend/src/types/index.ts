@@ -71,6 +71,7 @@ export interface Candidate {
   extract_stream_index: number | null
   extract_language: string | null
   active_extract_job_id: number | null
+  active_request_job_id: number | null
 }
 
 export interface Job {
@@ -114,15 +115,4 @@ export interface ConnectionTestResult {
   ok: boolean
   message: string
   details?: Record<string, unknown> | null
-}
-
-export interface RequestSubtitleResult {
-  ok: boolean
-  message: string
-  language: string
-  media_type: 'movie' | 'episode'
-  title: string
-  bazarr_movie_id: number | null
-  bazarr_episode_id: number | null
-  bazarr_series_id: number | null
 }

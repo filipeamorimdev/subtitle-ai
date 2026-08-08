@@ -20,7 +20,11 @@ Authentication uses `apikey` query parameter when configured.
 
 ## Requesting a source subtitle
 
-When a candidate has no usable source SRT, the UI exposes **Request EN** (or the first configured source language). That calls `POST /api/candidates/request-subtitle`, which asks Bazarr to search providers for that language. Bazarr returns immediately after queueing; refresh candidates once the download finishes.
+When a candidate has no usable source SRT, the UI exposes **Request EN** (or the first configured source language). That creates a background `request` job (`POST /api/candidates/request-subtitle`) which:
+
+1. Asks Bazarr to search providers for that language.
+2. Polls Bazarr (and disk) until an external SRT appears, or times out (~3 minutes).
+3. Marks the job **completed** (found) or **failed** (not found), and opens the job detail page so progress is visible. The browser may also show a desktop notification when the search finishes.
 
 ## Candidate rules
 

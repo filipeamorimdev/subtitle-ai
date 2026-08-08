@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../services/api'
 import type { Job } from '../types'
@@ -10,6 +10,25 @@ const job = ref<Job | null>(null)
 const error = ref<string | null>(null)
 const busy = ref(false)
 let timer: number | undefined
+let lastStatus: string | null = null
+
+function notifyFinished(current: Job) {
+  if (typeof Notification === 'undefined') return
+  if (Notification.permission !== 'granted') return
+  const title =
+    current.status === 'completed'
+      ? `Found ${current.source_language?.toUpperCase() || ''} subtitle`
+      : `Subtitle search ${current.status}`
+  const body =
+    current.status === 'completed'
+      ? current.media_title || 'Subtitle ready'
+      : current.error || current.progress_detail || current.media_title || 'Finished'
+  try {
+    new Notification(title.trim(), { body })
+  } catch {
+    /* ignore */
+  }
+}
 
 async function load() {
   try {
@@ -21,6 +40,9 @@ async function load() {
 
 onMounted(async () => {
   await load()
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => undefined)
+  }
   timer = window.setInterval(() => {
     if (job.value && ['pending', 'processing'].includes(job.value.status)) {
       load()
@@ -31,6 +53,22 @@ onMounted(async () => {
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
 })
+
+watch(
+  () => job.value?.status,
+  (status) => {
+    if (!job.value || !status) return
+    if (
+      lastStatus &&
+      ['pending', 'processing'].includes(lastStatus) &&
+      ['completed', 'failed', 'skipped'].includes(status) &&
+      job.value.job_kind === 'request'
+    ) {
+      notifyFinished(job.value)
+    }
+    lastStatus = status
+  },
+)
 
 async function retry() {
   busy.value = true

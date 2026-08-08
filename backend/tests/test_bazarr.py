@@ -121,7 +121,7 @@ async def test_bazarr_download_subtitle(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_request_subtitle_for_candidate(tmp_path, monkeypatch):
+async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
@@ -150,6 +150,7 @@ async def test_request_subtitle_for_candidate(tmp_path, monkeypatch):
     )
 
     patch_calls: list[dict] = []
+    polls = {"n": 0}
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/api/movies/wanted"):
@@ -171,6 +172,13 @@ async def test_request_subtitle_for_candidate(tmp_path, monkeypatch):
         if request.url.path.endswith("/api/episodes/wanted"):
             return httpx.Response(200, json={"data": [], "total": 0})
         if request.url.path.endswith("/api/movies"):
+            polls["n"] += 1
+            subs = []
+            if polls["n"] >= 3:
+                subs = [{"code2": "en", "path": "/movies/Empty/Empty.en.srt"}]
+                (media_dir / "Empty.en.srt").write_text(
+                    "1\n00:00:01,000 --> 00:00:02,000\nHi\n", encoding="utf-8"
+                )
             return httpx.Response(
                 200,
                 json={
@@ -179,7 +187,7 @@ async def test_request_subtitle_for_candidate(tmp_path, monkeypatch):
                             "title": "No Source",
                             "path": "/movies/Empty/Empty.mkv",
                             "radarrId": 11,
-                            "subtitles": [],
+                            "subtitles": subs,
                         }
                     ],
                     "total": 1,
@@ -198,12 +206,25 @@ async def test_request_subtitle_for_candidate(tmp_path, monkeypatch):
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
-    service = CandidateService(db)
-    candidates = await service.list_candidates()
+    monkeypatch.setattr("app.jobs.service.REQUEST_POLL_SECONDS", 0.01)
+    monkeypatch.setattr("app.jobs.service.REQUEST_TIMEOUT_SECONDS", 2.0)
+
+    from app.jobs.service import JobService
+
+    candidates = await CandidateService(db).list_candidates()
     blocked = next(c for c in candidates if c.reason_code == "no_source")
-    result = await service.request_subtitle(blocked.key)
-    assert result.ok is True
-    assert result.language == "en"
+    created = await JobService(db).create_request_subtitle_job(blocked.key)
+    assert created.job_kind == "request"
+    assert created.status == "pending"
+    assert patch_calls == []
+
+    claimed = JobService(db).claim_next_job()
+    assert claimed is not None
+    await JobService(db).process_job(claimed.id)
+    done = JobService(db).get_job(claimed.id)
+    assert done is not None
+    assert done.status == "completed"
+    assert done.progress_detail and "Found EN" in done.progress_detail
     assert patch_calls == [
         {"apikey": "k", "radarrid": "11", "language": "en", "forced": "false", "hi": "false"}
     ]

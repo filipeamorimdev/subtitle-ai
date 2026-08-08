@@ -87,6 +87,7 @@ class CandidateOut(BaseModel):
     extract_stream_index: int | None = None
     extract_language: str | None = None
     active_extract_job_id: int | None = None
+    active_request_job_id: int | None = None
 
 
 class JobCreate(BaseModel):

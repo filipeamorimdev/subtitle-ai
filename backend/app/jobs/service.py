@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -13,11 +15,21 @@ from app.api.schemas import ExtractCreate, JobCreate, JobOut, StatsOut
 from app.core.logging import get_logger
 from app.db.models import JobRow, TranslationCacheRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
-from app.integrations.bazarr.paths import is_under_roots
-from app.services.candidates import CandidateService
+from app.integrations.bazarr.paths import (
+    PathMapping,
+    apply_path_mapping,
+    is_under_roots,
+    mappings_from_settings,
+)
+from app.services.candidates import CandidateService, to_bazarr_code2
 from app.services.settings import SettingsService
 from app.subtitles.embedded import EmbeddedError, extract_text_track
-from app.subtitles.filenames import build_external_subtitle_path, build_target_subtitle_path
+from app.subtitles.filenames import (
+    build_external_subtitle_path,
+    build_target_subtitle_path,
+    language_matches,
+    normalize_language_code,
+)
 from app.subtitles.parsers.srt import parse_srt
 from app.subtitles.validation import validate_source
 from app.subtitles.writer.srt import write_srt_atomic
@@ -25,6 +37,9 @@ from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
 from app.translation.openrouter.service import OpenRouterTranslationService
 
 logger = get_logger("jobs")
+
+REQUEST_POLL_SECONDS = 5.0
+REQUEST_TIMEOUT_SECONDS = 180.0
 
 
 def utcnow() -> datetime:
@@ -334,6 +349,64 @@ class JobService:
         self.db.refresh(row)
         return job_to_out(row)
 
+    async def create_request_subtitle_job(
+        self,
+        candidate_key: str,
+        language: str | None = None,
+    ) -> JobOut:
+        public = self.settings.get_public()
+        match = await CandidateService(self.db).get_candidate(candidate_key)
+        if not match:
+            raise ValueError("Candidate not found. Refresh the list and try again.")
+
+        requested = language or (public.source_languages[0] if public.source_languages else "en")
+        code2 = to_bazarr_code2(requested)
+        expected = build_external_subtitle_path(match.media_path, code2)
+
+        if match.media_type == "movie" and match.bazarr_movie_id is None:
+            raise ValueError("Candidate is missing Bazarr movie ID.")
+        if match.media_type == "episode" and (
+            match.bazarr_episode_id is None or match.bazarr_series_id is None
+        ):
+            raise ValueError("Candidate is missing Bazarr series/episode IDs.")
+
+        existing = self.db.scalar(
+            select(JobRow).where(
+                JobRow.job_kind == "request",
+                JobRow.candidate_key == match.key,
+                JobRow.status.in_(["pending", "processing"]),
+            )
+        )
+        if existing:
+            return job_to_out(existing)
+
+        dkey = hashlib.sha256(
+            f"request|{match.media_type}|{match.media_path}|{code2}".encode()
+        ).hexdigest()
+        row = JobRow(
+            candidate_key=match.key,
+            job_kind="request",
+            media_type=match.media_type,
+            media_path=match.media_path,
+            media_title=match.title,
+            bazarr_movie_id=match.bazarr_movie_id,
+            bazarr_episode_id=match.bazarr_episode_id,
+            bazarr_series_id=match.bazarr_series_id,
+            source_subtitle_path=match.media_path,
+            target_subtitle_path=str(expected),
+            source_language=code2,
+            target_language=code2,
+            model="bazarr-search",
+            status="pending",
+            progress=0,
+            progress_detail=f"Queued Bazarr search for {code2.upper()}",
+            dedupe_key=dkey,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return job_to_out(row)
+
     def claim_next_job(self) -> JobRow | None:
         row = self.db.scalar(
             select(JobRow)
@@ -369,10 +442,18 @@ class JobService:
         row = self.db.get(JobRow, job_id)
         if not row:
             raise ValueError("Job not found")
-        if (getattr(row, "job_kind", None) or "translate") == "extract":
+        kind = getattr(row, "job_kind", None) or "translate"
+        if kind == "extract":
             if not row.candidate_key:
                 raise ValueError("Extract job is missing candidate key")
             return await self.create_extract_job(ExtractCreate(candidate_key=row.candidate_key))
+        if kind == "request":
+            if not row.candidate_key:
+                raise ValueError("Request job is missing candidate key")
+            return await self.create_request_subtitle_job(
+                row.candidate_key,
+                language=row.source_language,
+            )
         payload = JobCreate(
             candidate_key=row.candidate_key,
             source_subtitle_path=row.source_subtitle_path,
@@ -409,10 +490,155 @@ class JobService:
         row = self.db.get(JobRow, job_id)
         if not row or row.status != "processing":
             return
-        if (getattr(row, "job_kind", None) or "translate") == "extract":
+        kind = getattr(row, "job_kind", None) or "translate"
+        if kind == "extract":
             await self._process_extract_job(job_id)
             return
+        if kind == "request":
+            await self._process_request_subtitle_job(job_id)
+            return
         await self._process_translate_job(job_id)
+
+    async def _process_request_subtitle_job(self, job_id: int) -> None:
+        row = self.db.get(JobRow, job_id)
+        if not row or row.status != "processing":
+            return
+        log = get_logger("jobs")
+        label = (row.source_language or "en").upper()
+        try:
+            public = self.settings.get_public()
+            bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
+            if not bazarr_url:
+                raise BazarrError("Bazarr URL is not configured")
+            client = BazarrClient(bazarr_url, bazarr_key)
+            mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+            code2 = to_bazarr_code2(row.source_language or "en")
+
+            row.progress = 5
+            row.progress_detail = f"Asking Bazarr to search for {label}"
+            self.db.add(row)
+            self.db.commit()
+
+            if row.media_type == "movie":
+                if row.bazarr_movie_id is None:
+                    raise ValueError("Missing Bazarr movie ID")
+                await client.download_movie_subtitle(row.bazarr_movie_id, code2)
+            else:
+                if row.bazarr_episode_id is None or row.bazarr_series_id is None:
+                    raise ValueError("Missing Bazarr series/episode IDs")
+                await client.download_episode_subtitle(
+                    row.bazarr_series_id,
+                    row.bazarr_episode_id,
+                    code2,
+                )
+
+            row = self.db.get(JobRow, job_id)
+            if not row or row.status == "cancelled":
+                return
+            row.progress = 15
+            row.progress_detail = f"Waiting for Bazarr to finish searching for {label}"
+            self.db.add(row)
+            self.db.commit()
+
+            deadline = monotonic() + REQUEST_TIMEOUT_SECONDS
+            found_path: str | None = None
+            while monotonic() < deadline:
+                row = self.db.get(JobRow, job_id)
+                if not row or row.status == "cancelled":
+                    return
+
+                found_path = await self._lookup_requested_subtitle(
+                    client,
+                    row,
+                    code2,
+                    mappings,
+                )
+                if found_path:
+                    break
+
+                elapsed = REQUEST_TIMEOUT_SECONDS - (deadline - monotonic())
+                pct = min(90, 15 + int(75 * (elapsed / REQUEST_TIMEOUT_SECONDS)))
+                row.progress = pct
+                row.progress_detail = f"Still searching for {label} via Bazarr…"
+                self.db.add(row)
+                self.db.commit()
+                await asyncio.sleep(REQUEST_POLL_SECONDS)
+
+            row = self.db.get(JobRow, job_id)
+            if not row or row.status == "cancelled":
+                return
+
+            if found_path:
+                row.source_subtitle_path = found_path
+                row.target_subtitle_path = found_path
+                row.status = "completed"
+                row.progress = 100
+                row.progress_detail = f"Found {label} subtitle"
+                row.completed_at = utcnow()
+                row.error = None
+                row.reason_code = None
+                self.db.add(row)
+                self.db.commit()
+                log.info("Request job completed job_id=%s path=%s", job_id, found_path)
+                return
+
+            row.status = "failed"
+            row.progress = 100
+            row.progress_detail = f"No {label} subtitle found"
+            row.error = (
+                f"Bazarr searched for {label} but no external subtitle appeared "
+                f"within {int(REQUEST_TIMEOUT_SECONDS)}s."
+            )
+            row.reason_code = "not_found"
+            row.completed_at = utcnow()
+            self.db.add(row)
+            self.db.commit()
+            log.info("Request job finished without subtitle job_id=%s", job_id)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Request job failed job_id=%s error=%s", job_id, exc)
+            current = self.db.get(JobRow, job_id)
+            if current and current.status != "cancelled":
+                current.status = "failed"
+                current.error = _public_error(exc)
+                current.reason_code = _reason_code(exc)
+                current.completed_at = utcnow()
+                self.db.add(current)
+                self.db.commit()
+
+    async def _lookup_requested_subtitle(
+        self,
+        client: BazarrClient,
+        row: JobRow,
+        language: str,
+        mappings: list[PathMapping],
+    ) -> str | None:
+        detail = None
+        if row.media_type == "movie" and row.bazarr_movie_id is not None:
+            detail = await client.get_movie(row.bazarr_movie_id)
+        elif row.media_type == "episode" and row.bazarr_episode_id is not None:
+            detail = await client.get_episode(row.bazarr_episode_id)
+
+        candidates: list[str] = []
+        if detail:
+            for sub in client.parse_subtitles(detail):
+                if not sub.path or not str(sub.path).lower().endswith(".srt"):
+                    continue
+                code = normalize_language_code(sub.language_code)
+                if code and language_matches(code, [language]):
+                    candidates.append(apply_path_mapping(sub.path, mappings))
+
+        expected = Path(row.target_subtitle_path)
+        if expected.exists() and expected.stat().st_size > 0:
+            return str(expected)
+
+        for path in candidates:
+            local = Path(path)
+            if local.exists() and local.stat().st_size > 0:
+                return str(local)
+            # Bazarr may report the path before our mount sees it; still treat metadata as success
+            if path.lower().endswith(".srt"):
+                return path
+        return None
 
     async def _process_extract_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
