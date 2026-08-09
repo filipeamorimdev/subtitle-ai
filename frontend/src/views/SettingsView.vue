@@ -140,8 +140,8 @@ async function testOpenRouter() {
 <template>
   <section class="space-y-8">
     <div>
-      <h1 class="font-display text-3xl font-bold">Settings</h1>
-      <p class="mt-1 text-ink-600 dark:text-ink-300">
+      <h1 class="font-display text-2xl font-bold sm:text-3xl">Settings</h1>
+      <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
         Trusted local-network app. SRT only. Automatic translation is deferred — candidates refresh on demand.
       </p>
     </div>
@@ -154,7 +154,7 @@ async function testOpenRouter() {
     </p>
 
     <form class="space-y-8" @submit.prevent="save">
-      <fieldset class="space-y-4 rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Bazarr</legend>
         <label class="block text-sm">
           <span class="text-ink-500">URL</span>
@@ -163,7 +163,7 @@ async function testOpenRouter() {
         <label class="block text-sm">
           <span class="text-ink-500">API key</span>
           <input v-model="form.bazarr_api_key" type="password" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="Leave blank to keep existing" />
-          <span v-if="store.settings?.bazarr_api_key_masked" class="mt-1 block text-xs text-ink-500">
+          <span v-if="store.settings?.bazarr_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
             Saved: {{ store.settings.bazarr_api_key_masked }}
           </span>
         </label>
@@ -171,20 +171,20 @@ async function testOpenRouter() {
           <input v-model="form.clear_bazarr_api_key" type="checkbox" />
           Clear saved Bazarr API key
         </label>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="testBazarr">
             Test Connection
           </button>
-          <span v-if="bazarrTest" class="text-sm text-ink-600 dark:text-ink-300">{{ bazarrTest }}</span>
+          <span v-if="bazarrTest" class="min-w-0 break-words text-sm text-ink-600 dark:text-ink-300">{{ bazarrTest }}</span>
         </div>
       </fieldset>
 
-      <fieldset class="space-y-4 rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">OpenRouter</legend>
         <label class="block text-sm">
           <span class="text-ink-500">API key</span>
           <input v-model="form.openrouter_api_key" type="password" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="Leave blank to keep existing" />
-          <span v-if="store.settings?.openrouter_api_key_masked" class="mt-1 block text-xs text-ink-500">
+          <span v-if="store.settings?.openrouter_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
             Saved: {{ store.settings.openrouter_api_key_masked }}
           </span>
         </label>
@@ -215,15 +215,15 @@ async function testOpenRouter() {
             Models are loaded from OpenRouter and sorted by price (cheapest first). Prices are USD per million tokens.
           </span>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="testOpenRouter">
             Test Connection
           </button>
-          <span v-if="openrouterTest" class="text-sm text-ink-600 dark:text-ink-300">{{ openrouterTest }}</span>
+          <span v-if="openrouterTest" class="min-w-0 break-words text-sm text-ink-600 dark:text-ink-300">{{ openrouterTest }}</span>
         </div>
       </fieldset>
 
-      <fieldset class="space-y-4 rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Translation</legend>
         <label class="block text-sm">
           <span class="text-ink-500">Source language</span>
@@ -242,7 +242,7 @@ async function testOpenRouter() {
         </label>
       </fieldset>
 
-      <fieldset class="space-y-4 rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Media</legend>
         <label class="block text-sm">
           <span class="text-ink-500">Container media roots (comma-separated)</span>

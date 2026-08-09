@@ -190,9 +190,9 @@ watch(
 <template>
   <section class="space-y-6">
     <div class="flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <h1 class="font-display text-3xl font-bold">Glossaries</h1>
-        <p class="mt-1 text-ink-600 dark:text-ink-300">
+      <div class="min-w-0">
+        <h1 class="font-display text-2xl font-bold sm:text-3xl">Glossaries</h1>
+        <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
           Persistent term memory for series, movies, and shared universes.
         </p>
       </div>
@@ -221,67 +221,117 @@ watch(
       {{ error }}
     </p>
 
-    <div v-if="tab === 'review'" class="overflow-hidden rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
-      <table class="min-w-full text-left text-sm">
-        <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
-          <tr>
-            <th class="px-4 py-3 font-medium">Scope</th>
-            <th class="px-4 py-3 font-medium">Source</th>
-            <th class="px-4 py-3 font-medium">Target</th>
-            <th class="px-4 py-3 font-medium">Type</th>
-            <th class="px-4 py-3 font-medium">Policy</th>
-            <th class="px-4 py-3 font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="!suggested.length">
-            <td class="px-4 py-8 text-ink-500" colspan="6">No suggested terms awaiting review.</td>
-          </tr>
-          <tr
-            v-for="term in suggested"
-            :key="term.id"
-            class="border-t border-ink-100 dark:border-ink-800"
-          >
-            <td class="px-4 py-3">
-              <button class="text-accent hover:underline" type="button" @click="selectScope(term.scope_id)">
-                {{ term.scope_name || term.scope_id }}
-              </button>
-            </td>
-            <td class="px-4 py-3 font-medium">{{ term.source }}</td>
-            <td class="px-4 py-3">{{ term.target }}</td>
-            <td class="px-4 py-3">{{ term.term_type }}</td>
-            <td class="px-4 py-3">{{ term.policy }}</td>
-            <td class="px-4 py-3">
-              <div class="flex flex-wrap gap-2">
-                <button
-                  class="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                  type="button"
-                  :disabled="busy"
-                  @click="review(term, true)"
-                >
-                  Approve
+    <div v-if="tab === 'review'" class="space-y-3">
+      <p
+        v-if="!suggested.length"
+        class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60"
+      >
+        No suggested terms awaiting review.
+      </p>
+
+      <!-- Mobile / tablet review cards -->
+      <div class="space-y-3 lg:hidden">
+        <article
+          v-for="term in suggested"
+          :key="`review-card-${term.id}`"
+          class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
+        >
+          <button class="text-left text-sm text-accent hover:underline" type="button" @click="selectScope(term.scope_id)">
+            {{ term.scope_name || term.scope_id }}
+          </button>
+          <div class="mt-2 font-medium">{{ term.source }} → {{ term.target }}</div>
+          <div class="mt-1 text-xs text-ink-500">{{ term.term_type }} · {{ term.policy }}</div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              class="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+              type="button"
+              :disabled="busy"
+              @click="review(term, true)"
+            >
+              Approve
+            </button>
+            <button
+              class="rounded-md bg-ink-800 px-2 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-ink-200 dark:text-ink-900"
+              type="button"
+              :disabled="busy"
+              @click="review(term, true, true)"
+            >
+              Approve + lock
+            </button>
+            <button
+              class="rounded-md bg-red-600/90 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+              type="button"
+              :disabled="busy"
+              @click="review(term, false)"
+            >
+              Reject
+            </button>
+          </div>
+        </article>
+      </div>
+
+      <div class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
+        <table class="min-w-[48rem] w-full text-left text-sm">
+          <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
+            <tr>
+              <th class="px-4 py-3 font-medium">Scope</th>
+              <th class="px-4 py-3 font-medium">Source</th>
+              <th class="px-4 py-3 font-medium">Target</th>
+              <th class="px-4 py-3 font-medium">Type</th>
+              <th class="px-4 py-3 font-medium">Policy</th>
+              <th class="px-4 py-3 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!suggested.length">
+              <td class="px-4 py-8 text-ink-500" colspan="6">No suggested terms awaiting review.</td>
+            </tr>
+            <tr
+              v-for="term in suggested"
+              :key="term.id"
+              class="border-t border-ink-100 dark:border-ink-800"
+            >
+              <td class="px-4 py-3">
+                <button class="text-accent hover:underline" type="button" @click="selectScope(term.scope_id)">
+                  {{ term.scope_name || term.scope_id }}
                 </button>
-                <button
-                  class="rounded-md bg-ink-800 px-2 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-ink-200 dark:text-ink-900"
-                  type="button"
-                  :disabled="busy"
-                  @click="review(term, true, true)"
-                >
-                  Approve + lock
-                </button>
-                <button
-                  class="rounded-md bg-red-600/90 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                  type="button"
-                  :disabled="busy"
-                  @click="review(term, false)"
-                >
-                  Reject
-                </button>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              </td>
+              <td class="px-4 py-3 font-medium">{{ term.source }}</td>
+              <td class="px-4 py-3">{{ term.target }}</td>
+              <td class="px-4 py-3">{{ term.term_type }}</td>
+              <td class="px-4 py-3">{{ term.policy }}</td>
+              <td class="px-4 py-3">
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    class="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                    type="button"
+                    :disabled="busy"
+                    @click="review(term, true)"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    class="rounded-md bg-ink-800 px-2 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-ink-200 dark:text-ink-900"
+                    type="button"
+                    :disabled="busy"
+                    @click="review(term, true, true)"
+                  >
+                    Approve + lock
+                  </button>
+                  <button
+                    class="rounded-md bg-red-600/90 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                    type="button"
+                    :disabled="busy"
+                    @click="review(term, false)"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div v-else class="grid gap-6 lg:grid-cols-[280px_1fr]">
@@ -336,19 +386,19 @@ watch(
       <div v-if="selectedScope" class="space-y-4">
         <div class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60">
           <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 class="font-display text-2xl font-bold">{{ selectedScope.display_name }}</h2>
-              <p class="mt-1 text-sm text-ink-500">
+            <div class="min-w-0">
+              <h2 class="break-words font-display text-xl font-bold sm:text-2xl">{{ selectedScope.display_name }}</h2>
+              <p class="mt-1 break-all text-sm text-ink-500">
                 {{ selectedScope.kind }} · {{ selectedScope.target_language }} · key {{ selectedScope.key }}
               </p>
               <p class="mt-1 text-sm text-ink-500">Parent: {{ parentName(selectedScope) }}</p>
             </div>
-            <div v-if="selectedScope.kind !== 'universe'" class="flex flex-wrap items-end gap-2">
-              <label class="text-xs text-ink-500">
+            <div v-if="selectedScope.kind !== 'universe'" class="flex w-full flex-wrap items-end gap-2 sm:w-auto">
+              <label class="min-w-0 flex-1 text-xs text-ink-500 sm:flex-none">
                 Link universe
                 <select
                   v-model="parentDraft"
-                  class="mt-1 block rounded-md border border-ink-200 bg-white px-2 py-1.5 text-sm dark:border-ink-700 dark:bg-ink-950"
+                  class="mt-1 block w-full rounded-md border border-ink-200 bg-white px-2 py-1.5 text-sm dark:border-ink-700 dark:bg-ink-950"
                 >
                   <option :value="null">None</option>
                   <option v-for="universe in universeScopes" :key="universe.id" :value="universe.id">
@@ -409,8 +459,93 @@ watch(
           </button>
         </form>
 
-        <div class="overflow-hidden rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
-          <table class="min-w-full text-left text-sm">
+        <!-- Mobile / tablet term cards -->
+        <div class="space-y-3 lg:hidden">
+          <p
+            v-if="!terms.length"
+            class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60"
+          >
+            No terms yet. They appear after a translation extracts glossary candidates.
+          </p>
+          <article
+            v-for="term in terms"
+            :key="`term-card-${term.id}`"
+            class="space-y-3 rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
+          >
+            <label class="block text-xs text-ink-500">
+              Source
+              <input
+                v-model="term.source"
+                class="mt-1 w-full rounded-md border border-ink-200 bg-transparent px-2 py-1.5 text-sm dark:border-ink-700"
+              />
+            </label>
+            <label class="block text-xs text-ink-500">
+              Target
+              <input
+                v-model="term.target"
+                class="mt-1 w-full rounded-md border border-ink-200 bg-transparent px-2 py-1.5 text-sm dark:border-ink-700"
+              />
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-xs text-ink-500">
+                Type
+                <select
+                  v-model="term.term_type"
+                  class="mt-1 w-full rounded-md border border-ink-200 bg-transparent px-2 py-1.5 text-sm dark:border-ink-700"
+                >
+                  <option v-for="type in termTypes" :key="type" :value="type">{{ type }}</option>
+                </select>
+              </label>
+              <label class="block text-xs text-ink-500">
+                Policy
+                <select
+                  v-model="term.policy"
+                  class="mt-1 w-full rounded-md border border-ink-200 bg-transparent px-2 py-1.5 text-sm dark:border-ink-700"
+                >
+                  <option v-for="policy in policies" :key="policy" :value="policy">{{ policy }}</option>
+                </select>
+              </label>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <label class="block min-w-[8rem] flex-1 text-xs text-ink-500">
+                Status
+                <select
+                  v-model="term.status"
+                  class="mt-1 w-full rounded-md border border-ink-200 bg-transparent px-2 py-1.5 text-sm dark:border-ink-700"
+                >
+                  <option value="active">active</option>
+                  <option value="suggested">suggested</option>
+                  <option value="rejected">rejected</option>
+                </select>
+              </label>
+              <label class="mt-4 flex items-center gap-2 text-sm">
+                <input v-model="term.locked" type="checkbox" />
+                Lock
+              </label>
+            </div>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                :disabled="busy"
+                @click="saveTerm(term)"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                class="rounded-md bg-red-600/90 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                :disabled="busy"
+                @click="removeTerm(term)"
+              >
+                Delete
+              </button>
+            </div>
+          </article>
+        </div>
+
+        <div class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
+          <table class="min-w-[52rem] w-full text-left text-sm">
             <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
               <tr>
                 <th class="px-3 py-3 font-medium">Source</th>

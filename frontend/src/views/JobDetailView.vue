@@ -153,13 +153,15 @@ async function toggleLog() {
 <template>
   <section v-if="job" class="space-y-6">
     <div class="flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h1 class="font-display text-3xl font-bold">{{ job.media_title || 'Job' }} #{{ job.id }}</h1>
-        <p class="mt-1 capitalize text-ink-600 dark:text-ink-300">
+      <div class="min-w-0">
+        <h1 class="break-words font-display text-2xl font-bold sm:text-3xl">
+          {{ job.media_title || 'Job' }} #{{ job.id }}
+        </h1>
+        <p class="mt-1 capitalize text-sm text-ink-600 sm:text-base dark:text-ink-300">
           {{ job.job_kind || 'translate' }} · {{ job.status }} · {{ job.progress }}%
         </p>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="flex w-full flex-wrap gap-2 sm:w-auto">
         <button
           v-if="['failed', 'cancelled', 'skipped'].includes(job.status)"
           class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white"

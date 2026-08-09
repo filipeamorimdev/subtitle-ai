@@ -26,6 +26,7 @@ from app.subtitles.filenames import (
     language_matches,
     languages_compatible,
     normalize_language_code,
+    subtitle_belongs_to_media,
 )
 
 
@@ -219,7 +220,9 @@ class CandidateService:
                 )
                 if lang and language_matches(lang, source_langs):
                     mapped = apply_path_mapping(sub.path, mappings)
-                    if mapped.lower().endswith(".srt"):
+                    if mapped.lower().endswith(".srt") and subtitle_belongs_to_media(
+                        mapped, local_media
+                    ):
                         bazarr_sources.append(
                             (
                                 1 if sub.forced else 0,
@@ -254,7 +257,9 @@ class CandidateService:
             reason: str | None = None
 
             if source_path:
-                target_path = str(build_target_subtitle_path(source_path, target))
+                target_path = str(
+                    build_target_subtitle_path(source_path, target, media_path=local_media)
+                )
                 if Path(target_path).exists():
                     reason_code = "target_exists"
                     reason = "Target subtitle already exists."

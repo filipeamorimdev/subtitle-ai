@@ -226,7 +226,7 @@ class JobService:
         if not source.exists():
             raise ValueError("Source subtitle file does not exist.")
 
-        target = build_target_subtitle_path(source, target_language)
+        target = build_target_subtitle_path(source, target_language, media_path=media_path)
         if target.exists():
             row = JobRow(
                 candidate_key=candidate_key,

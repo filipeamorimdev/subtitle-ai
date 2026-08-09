@@ -116,10 +116,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="rootEl" class="relative">
+  <div ref="rootEl" class="relative min-w-0">
     <button
       type="button"
-      class="mt-1 flex w-full items-center justify-between gap-3 rounded-md border border-ink-300 bg-transparent px-3 py-2 text-left dark:border-ink-600"
+      class="mt-1 flex w-full min-w-0 items-center justify-between gap-3 rounded-md border border-ink-300 bg-transparent px-3 py-2 text-left dark:border-ink-600"
       :aria-expanded="open"
       aria-haspopup="listbox"
       @click="toggle"

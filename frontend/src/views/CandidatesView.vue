@@ -183,19 +183,24 @@ function requestLabel(item: Candidate) {
   if (requestingKey.value === item.key) return 'Starting…'
   return `Request ${sourceLabel.value}`
 }
+
+function statusText(item: Candidate) {
+  if (item.can_translate) return 'Ready'
+  return item.reason || item.reason_code || 'Unavailable'
+}
 </script>
 
 <template>
   <section class="space-y-6">
-    <div class="flex flex-wrap items-end gap-4">
-      <div class="min-w-0 flex-1">
-        <h1 class="font-display text-3xl font-bold text-ink-900 dark:text-ink-50">Candidates</h1>
-        <p class="mt-1 max-w-2xl text-ink-600 dark:text-ink-300">
+    <div class="space-y-4">
+      <div class="min-w-0">
+        <h1 class="font-display text-2xl font-bold text-ink-900 sm:text-3xl dark:text-ink-50">Candidates</h1>
+        <p class="mt-1 max-w-2xl text-sm text-ink-600 sm:text-base dark:text-ink-300">
           Movies and episodes missing your target subtitle. Refresh to query Bazarr. Request a source
           language from Bazarr, extract embedded text tracks when needed, then Translate.
         </p>
       </div>
-      <div class="flex flex-wrap items-center justify-end gap-2">
+      <div class="flex flex-wrap gap-2">
         <button
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
           type="button"
@@ -224,15 +229,15 @@ function requestLabel(item: Candidate) {
         >
           {{ batchBusy === 'translate' ? 'Queuing…' : 'Translate all' }}
         </button>
+        <button
+          class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
+          type="button"
+          :disabled="store.loading || batchBusy != null"
+          @click="refresh"
+        >
+          {{ store.loading ? 'Refreshing…' : 'Refresh' }}
+        </button>
       </div>
-      <button
-        class="ml-auto rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
-        type="button"
-        :disabled="store.loading || batchBusy != null"
-        @click="refresh"
-      >
-        {{ store.loading ? 'Refreshing…' : 'Refresh' }}
-      </button>
     </div>
 
     <p v-if="actionError || store.error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
@@ -242,7 +247,106 @@ function requestLabel(item: Candidate) {
       {{ actionInfo }}
     </p>
 
-    <div class="overflow-x-auto rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
+    <!-- Mobile / tablet card list -->
+    <div class="space-y-3 lg:hidden">
+      <p v-if="!store.candidates.length" class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60">
+        No candidates yet. Configure Bazarr in Settings, then refresh.
+      </p>
+      <article
+        v-for="item in store.candidates"
+        :key="`card-${item.key}`"
+        class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
+      >
+        <div class="min-w-0">
+          <h2 class="font-medium leading-snug text-ink-900 dark:text-ink-50">{{ item.title }}</h2>
+          <p class="mt-1 break-all text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</p>
+        </div>
+
+        <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+          <div>
+            <dt class="text-ink-500">Type</dt>
+            <dd class="capitalize text-ink-800 dark:text-ink-100">{{ item.media_type }}</dd>
+          </div>
+          <div>
+            <dt class="text-ink-500">Target</dt>
+            <dd class="text-ink-800 dark:text-ink-100">{{ item.target_language }}</dd>
+          </div>
+          <div>
+            <dt class="text-ink-500">Source</dt>
+            <dd class="text-ink-800 dark:text-ink-100">
+              <span v-if="item.source_subtitle_path">{{ item.source_language || 'source' }}</span>
+              <span v-else class="text-ink-500">None</span>
+            </dd>
+          </div>
+          <div class="col-span-2">
+            <dt class="text-ink-500">Status</dt>
+            <dd
+              class="break-words"
+              :class="item.can_translate ? 'text-emerald-700 dark:text-emerald-300' : 'text-ink-500'"
+            >
+              {{ statusText(item) }}
+            </dd>
+          </div>
+        </dl>
+
+        <div v-if="item.has_embedded" class="mt-3 flex flex-wrap gap-1.5">
+          <span
+            v-for="(track, idx) in item.embedded_subtitles"
+            :key="`${track.label}-${idx}`"
+            class="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+            :class="
+              track.kind === 'text'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
+                : track.kind === 'image'
+                  ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200'
+                  : 'border-ink-300 bg-ink-50 text-ink-600 dark:border-ink-700 dark:bg-ink-950/50 dark:text-ink-300'
+            "
+          >
+            Embedded {{ track.label }}
+          </span>
+        </div>
+
+        <div class="mt-4 flex flex-wrap gap-2">
+          <button
+            v-if="item.latest_job_id != null"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+            type="button"
+            @click="viewLogs(item)"
+          >
+            View logs
+          </button>
+          <button
+            v-if="canRequestSource(item)"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+            type="button"
+            :disabled="requestingKey === item.key || item.active_request_job_id != null || batchBusy != null"
+            @click="requestSource(item)"
+          >
+            {{ requestLabel(item) }}
+          </button>
+          <button
+            v-if="canShowExtract(item)"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+            type="button"
+            :disabled="!item.can_extract || extractingKey === item.key || item.active_extract_job_id != null || batchBusy != null"
+            @click="extract(item)"
+          >
+            {{ extractLabel(item) }}
+          </button>
+          <button
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+            type="button"
+            :disabled="!item.can_translate || translatingKey === item.key || batchBusy != null"
+            @click="translate(item.key)"
+          >
+            {{ translatingKey === item.key ? 'Starting…' : 'Translate' }}
+          </button>
+        </div>
+      </article>
+    </div>
+
+    <!-- Desktop table -->
+    <div class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
       <table class="w-full min-w-[56rem] table-fixed text-left text-sm">
         <colgroup>
           <col class="w-[36%]" />
@@ -303,7 +407,7 @@ function requestLabel(item: Candidate) {
             </td>
             <td class="px-4 py-3 align-top">
               <span v-if="item.can_translate" class="text-emerald-700 dark:text-emerald-300">Ready</span>
-              <span v-else class="text-ink-500">{{ item.reason || item.reason_code || 'Unavailable' }}</span>
+              <span v-else class="text-ink-500">{{ statusText(item) }}</span>
             </td>
             <td
               class="sticky right-0 bg-white/95 px-4 py-3 align-top shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] dark:bg-ink-900/95"

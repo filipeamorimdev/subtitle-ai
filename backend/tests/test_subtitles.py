@@ -125,6 +125,26 @@ def test_filenames():
     assert str(build_target_subtitle_path("movie.en.hi.srt", "pt-PT")) == "movie.pt-PT.srt"
     assert str(build_target_subtitle_path("movie.srt", "pt-PT")) == "movie.pt-PT.srt"
     assert str(build_target_subtitle_path("/media/x/movie.eng.srt", "pt-PT")).endswith("movie.pt-PT.srt")
+    # Never keep the source language in the target name (stacked tags / bad legacy names)
+    assert (
+        str(build_target_subtitle_path("movie.en.pt-PT.srt", "pt-PT")) == "movie.pt-PT.srt"
+    )
+    assert str(
+        build_target_subtitle_path(
+            "Star Wars - Young Jedi Adventures - S02E02 - A Jedi or a Pirate WEBDL-1080p.en.srt",
+            "pt-PT",
+        )
+    ) == (
+        "Star Wars - Young Jedi Adventures - S02E02 - A Jedi or a Pirate WEBDL-1080p.pt-PT.srt"
+    )
+    # Prefer media stem when a video path is provided
+    assert str(
+        build_target_subtitle_path(
+            "/media/x/movie.en.srt",
+            "pt-PT",
+            media_path="/media/x/movie.mkv",
+        )
+    ) == "/media/x/movie.pt-PT.srt"
 
 
 def test_find_source_accepts_hi(tmp_path):
@@ -138,6 +158,48 @@ def test_find_source_accepts_hi(tmp_path):
     assert found is not None
     assert found[0] == hi
     assert found[1] == "en"
+
+
+def test_find_source_does_not_borrow_sibling_episode(tmp_path):
+    """Season folders often share many *.en.srt files; only match this media's stem."""
+    from app.subtitles.filenames import find_source_srt_beside_media
+
+    other_en = tmp_path / (
+        "Dinosaur Train - S01E01-E02 - Valley of the Stygimolochs.en.srt"
+    )
+    other_pt = tmp_path / (
+        "Dinosaur Train - S01E01-E02 - Valley of the Stygimolochs.pt-PT.srt"
+    )
+    other_en.write_text("en\n", encoding="utf-8")
+    other_pt.write_text("pt\n", encoding="utf-8")
+
+    media = tmp_path / (
+        "Dinosaur Train - S01E03-E04 - The Call of the Wild Corythosaurus.mkv"
+    )
+    media.write_bytes(b"x")
+
+    assert find_source_srt_beside_media(media, ["en"]) is None
+
+    own = tmp_path / (
+        "Dinosaur Train - S01E03-E04 - The Call of the Wild Corythosaurus.en.srt"
+    )
+    own.write_text("en\n", encoding="utf-8")
+    found = find_source_srt_beside_media(media, ["en"])
+    assert found is not None
+    assert found[0] == own
+
+
+def test_subtitle_belongs_to_media_rejects_prefix_collisions(tmp_path):
+    from app.subtitles.filenames import subtitle_belongs_to_media
+
+    media = tmp_path / "Show - S01E01.mkv"
+    dual = tmp_path / "Show - S01E01-E02.en.srt"
+    dual.write_text("x", encoding="utf-8")
+    assert not subtitle_belongs_to_media(dual, media)
+
+    exact = tmp_path / "Show - S01E01.en.hi.srt"
+    exact.write_text("x", encoding="utf-8")
+    assert subtitle_belongs_to_media(exact, media)
 
 def test_atomic_write(tmp_path):
     doc = parse_srt(SAMPLE)

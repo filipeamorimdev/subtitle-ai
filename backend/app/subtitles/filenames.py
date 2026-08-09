@@ -67,17 +67,49 @@ def is_hi_subtitle_filename(path: str | Path) -> bool:
     return flag in HI_FLAGS
 
 
-def build_target_subtitle_path(source_path: str | Path, target_language: str) -> Path:
-    source = Path(source_path)
-    name = source.name
-    lang_match = LANG_SUFFIX_RE.match(name)
-    if lang_match:
+def _subtitle_media_stem(name: str) -> str:
+    """Return the media stem with all trailing language/flag suffixes removed.
+
+    Examples:
+      movie.en.srt          -> movie
+      movie.en.hi.srt       -> movie
+      movie.en.pt-PT.srt    -> movie   (stacked tags; never keep source lang)
+      movie.srt             -> movie
+    """
+    current = name
+    while True:
+        lang_match = LANG_SUFFIX_RE.match(current)
+        if not lang_match:
+            plain = PLAIN_SRT_RE.match(current)
+            if not plain:
+                raise ValueError(f"Not an SRT filename: {name}")
+            return plain.group("stem")
         stem = lang_match.group("stem")
-    else:
-        plain = PLAIN_SRT_RE.match(name)
-        if not plain:
-            raise ValueError(f"Not an SRT filename: {name}")
-        stem = plain.group("stem")
+        # Peel another language tag if the stem itself looks like an SRT name.
+        nxt = f"{stem}.srt"
+        if not LANG_SUFFIX_RE.match(nxt):
+            return stem
+        current = nxt
+
+
+def build_target_subtitle_path(
+    source_path: str | Path,
+    target_language: str,
+    *,
+    media_path: str | Path | None = None,
+) -> Path:
+    """Build target sidecar path: ``{mediaStem}.{target}.srt`` (source lang omitted).
+
+    When ``media_path`` is a video (or any non-``.srt`` file), the media stem is
+    used directly. Otherwise language tags are stripped from the source SRT name.
+    """
+    if media_path is not None:
+        media = Path(media_path)
+        if media.suffix and media.suffix.lower() != ".srt":
+            return build_external_subtitle_path(media, target_language)
+
+    source = Path(source_path)
+    stem = _subtitle_media_stem(source.name)
     return source.with_name(f"{stem}.{target_language}.srt")
 
 
@@ -110,6 +142,25 @@ def language_matches(candidate: str | None, preferred: list[str]) -> bool:
     return any(languages_compatible(candidate, pref) for pref in preferred)
 
 
+def subtitle_stem(path: str | Path) -> str | None:
+    """Return the media stem embedded in an SRT filename, or None if not an SRT."""
+    name = Path(path).name
+    try:
+        return _subtitle_media_stem(name)
+    except ValueError:
+        return None
+
+
+def subtitle_belongs_to_media(subtitle_path: str | Path, media_path: str | Path) -> bool:
+    """True when the SRT is a sidecar for this media file (same directory + stem)."""
+    sub = Path(subtitle_path)
+    media = Path(media_path)
+    if sub.parent != media.parent:
+        return False
+    stem = subtitle_stem(sub)
+    return stem is not None and stem == media.stem
+
+
 def find_source_srt_beside_media(
     media_path: str | Path,
     source_languages: list[str],
@@ -120,26 +171,23 @@ def find_source_srt_beside_media(
         return None
 
     stem = media.stem
-    candidates: list[tuple[int, int, Path, str]] = []
+    candidates: list[tuple[int, Path, str]] = []
     for path in directory.glob("*.srt"):
+        # Only sidecars for THIS media — never borrow another episode/movie's SRT
+        # from the same folder (e.g. Season 1/*.en.srt).
+        if subtitle_stem(path) != stem:
+            continue
         lang = detect_language_from_filename(path)
-        lang_match = LANG_SUFFIX_RE.match(path.name)
         if lang and language_matches(lang, source_languages):
-            # Prefer exact stem match, then non-HI over HI/SDH
-            priority = 0 if lang_match and lang_match.group("stem") == stem else 1
-            if not (lang_match and lang_match.group("stem") == stem) and (
-                path.name.startswith(stem + ".") or path.stem.startswith(stem)
-            ):
-                priority = 0
             hi_penalty = 1 if is_hi_subtitle_filename(path) else 0
-            candidates.append((priority, hi_penalty, path, lang))
+            candidates.append((hi_penalty, path, lang))
         elif lang is None and path.name == f"{stem}.srt":
             # Bare .srt next to media — treat as first preferred language
             default_lang = normalize_language_code(source_languages[0]) or "en"
-            candidates.append((2, 0, path, default_lang))
+            candidates.append((2, path, default_lang))
 
     if not candidates:
         return None
-    candidates.sort(key=lambda item: (item[0], item[1], item[2].name))
-    _, _, path, lang = candidates[0]
+    candidates.sort(key=lambda item: (item[0], item[1].name))
+    _, path, lang = candidates[0]
     return path, lang
