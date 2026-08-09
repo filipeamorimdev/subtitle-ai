@@ -9,7 +9,7 @@ const router = useRouter()
 const translatingKey = ref<string | null>(null)
 const extractingKey = ref<string | null>(null)
 const requestingKey = ref<string | null>(null)
-const batchBusy = ref<'request' | 'process' | null>(null)
+const batchBusy = ref<'request' | 'extract' | 'translate' | null>(null)
 const actionError = ref<string | null>(null)
 const actionInfo = ref<string | null>(null)
 
@@ -22,12 +22,12 @@ const requestableCount = computed(
   () => store.candidates.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
 )
 
-const processableCount = computed(
-  () =>
-    store.candidates.filter(
-      (item) =>
-        (item.can_extract && !item.active_extract_job_id) || item.can_translate,
-    ).length,
+const extractableCount = computed(
+  () => store.candidates.filter((item) => item.can_extract && !item.active_extract_job_id).length,
+)
+
+const translatableCount = computed(
+  () => store.candidates.filter((item) => item.can_translate).length,
 )
 
 onMounted(() => {
@@ -73,13 +73,33 @@ async function requestAllMissing() {
   }
 }
 
-async function extractAndTranslateAll() {
-  batchBusy.value = 'process'
+async function extractAll() {
+  batchBusy.value = 'extract'
   actionError.value = null
   actionInfo.value = null
   try {
-    const result = await store.batchExtractAndTranslate()
-    actionInfo.value = summarizeBatch(result, 'Extract & translate')
+    const result = await store.batchExtract()
+    actionInfo.value = summarizeBatch(result, 'Extract')
+    if (result.errors.length) {
+      actionError.value = result.errors.slice(0, 5).join(' · ')
+    }
+    if (result.created_count + result.reused_count > 0) {
+      await router.push('/jobs')
+    }
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    batchBusy.value = null
+  }
+}
+
+async function translateAll() {
+  batchBusy.value = 'translate'
+  actionError.value = null
+  actionInfo.value = null
+  try {
+    const result = await store.batchTranslate()
+    actionInfo.value = summarizeBatch(result, 'Translate')
     if (result.errors.length) {
       actionError.value = result.errors.slice(0, 5).join(' · ')
     }
@@ -167,8 +187,8 @@ function requestLabel(item: Candidate) {
 
 <template>
   <section class="space-y-6">
-    <div class="flex flex-wrap items-end justify-between gap-4">
-      <div>
+    <div class="flex flex-wrap items-end gap-4">
+      <div class="min-w-0 flex-1">
         <h1 class="font-display text-3xl font-bold text-ink-900 dark:text-ink-50">Candidates</h1>
         <p class="mt-1 max-w-2xl text-ink-600 dark:text-ink-300">
           Movies and episodes missing your target subtitle. Refresh to query Bazarr. Request a source
@@ -185,26 +205,34 @@ function requestLabel(item: Candidate) {
           {{
             batchBusy === 'request'
               ? `Requesting ${sourceLabel}…`
-              : `Request all missing ${sourceLabel}`
+              : `Request all ${sourceLabel}`
           }}
         </button>
         <button
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
           type="button"
-          :disabled="store.loading || batchBusy != null || processableCount === 0"
-          @click="extractAndTranslateAll"
+          :disabled="store.loading || batchBusy != null || extractableCount === 0"
+          @click="extractAll"
         >
-          {{ batchBusy === 'process' ? 'Queuing…' : 'Extract & translate all' }}
+          {{ batchBusy === 'extract' ? 'Queuing…' : 'Extract all' }}
         </button>
         <button
-          class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
+          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
           type="button"
-          :disabled="store.loading || batchBusy != null"
-          @click="refresh"
+          :disabled="store.loading || batchBusy != null || translatableCount === 0"
+          @click="translateAll"
         >
-          {{ store.loading ? 'Refreshing…' : 'Refresh' }}
+          {{ batchBusy === 'translate' ? 'Queuing…' : 'Translate all' }}
         </button>
       </div>
+      <button
+        class="ml-auto rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
+        type="button"
+        :disabled="store.loading || batchBusy != null"
+        @click="refresh"
+      >
+        {{ store.loading ? 'Refreshing…' : 'Refresh' }}
+      </button>
     </div>
 
     <p v-if="actionError || store.error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">

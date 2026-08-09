@@ -95,7 +95,6 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 
 - Target language (default Portuguese Portugal / `pt-PT`)
 - Preferred source languages (default `en`)
-- Batch size (default 50 blocks)
 
 ## Example
 

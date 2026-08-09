@@ -79,8 +79,19 @@ export const useAppStore = defineStore('app', () => {
     return result
   }
 
-  async function batchExtractAndTranslate() {
-    const result = await api.batchExtractAndTranslate()
+  async function batchExtract() {
+    const result = await api.batchExtract()
+    await loadJobs()
+    try {
+      await loadCandidates()
+    } catch {
+      /* keep batch result even if refresh fails */
+    }
+    return result
+  }
+
+  async function batchTranslate() {
+    const result = await api.batchTranslate()
     await loadJobs()
     try {
       await loadCandidates()
@@ -107,6 +118,7 @@ export const useAppStore = defineStore('app', () => {
     extractCandidate,
     requestSubtitle,
     batchRequestSubtitles,
-    batchExtractAndTranslate,
+    batchExtract,
+    batchTranslate,
   }
 })

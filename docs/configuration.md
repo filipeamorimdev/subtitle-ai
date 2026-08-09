@@ -41,7 +41,6 @@ Every OpenRouter request/response attempt for that job is appended (including re
 
 - Target language code/name
 - Source language preference list
-- Batch size
 
 ### Media
 

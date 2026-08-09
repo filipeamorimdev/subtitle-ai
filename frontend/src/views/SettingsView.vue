@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import type { PathMapping } from '../types'
 
 const LANGUAGES = [
+  { code: 'en', name: 'English' },
   { code: 'pt-PT', name: 'Portuguese (Portugal)' },
   { code: 'pt-BR', name: 'Portuguese (Brazil)' },
-  { code: 'en', name: 'English' },
   { code: 'es', name: 'Spanish' },
   { code: 'fr', name: 'French' },
   { code: 'de', name: 'German' },
@@ -30,10 +30,9 @@ const form = reactive({
   openrouter_model: 'openai/gpt-4o-mini',
   target_language_code: 'pt-PT',
   target_language_name: 'Portuguese (Portugal)',
-  source_languages: 'en',
+  source_language_code: 'en',
   media_roots: '/media',
   path_mappings: '' as string,
-  batch_size: 50,
 })
 
 function mappingsToText(mappings: PathMapping[]) {
@@ -60,10 +59,15 @@ onMounted(async () => {
   form.openrouter_model = s.openrouter_model
   form.target_language_code = s.target_language.code
   form.target_language_name = s.target_language.name
-  form.source_languages = s.source_languages.join(', ')
+  form.source_language_code = s.source_languages?.[0] || 'en'
   form.media_roots = s.media_roots.join(', ')
   form.path_mappings = mappingsToText(s.path_mappings)
-  form.batch_size = s.batch_size
+})
+
+const sourceLanguageOptions = computed(() => {
+  const code = form.source_language_code
+  if (!code || LANGUAGES.some((l) => l.code === code)) return LANGUAGES
+  return [{ code, name: code }, ...LANGUAGES]
 })
 
 function onTargetChange() {
@@ -85,10 +89,9 @@ async function save() {
       openrouter_model: form.openrouter_model,
       target_language_code: form.target_language_code,
       target_language_name: form.target_language_name,
-      source_languages: form.source_languages.split(',').map((s) => s.trim()).filter(Boolean),
+      source_languages: [form.source_language_code || 'en'],
       media_roots: form.media_roots.split(',').map((s) => s.trim()).filter(Boolean),
       path_mappings: textToMappings(form.path_mappings),
-      batch_size: Number(form.batch_size),
     })
     form.bazarr_api_key = ''
     form.openrouter_api_key = ''
@@ -186,18 +189,19 @@ async function testOpenRouter() {
       <fieldset class="space-y-4 rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Translation</legend>
         <label class="block text-sm">
+          <span class="text-ink-500">Source language</span>
+          <select v-model="form.source_language_code" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600">
+            <option v-for="lang in sourceLanguageOptions" :key="`source-${lang.code}`" :value="lang.code">{{ lang.name }} ({{ lang.code }})</option>
+          </select>
+          <span class="mt-1 block text-xs text-ink-500">
+            Preferred language for source subtitles when requesting, extracting, and matching. Defaults to English.
+          </span>
+        </label>
+        <label class="block text-sm">
           <span class="text-ink-500">Target language</span>
           <select v-model="form.target_language_code" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" @change="onTargetChange">
-            <option v-for="lang in LANGUAGES" :key="lang.code" :value="lang.code">{{ lang.name }} ({{ lang.code }})</option>
+            <option v-for="lang in LANGUAGES" :key="`target-${lang.code}`" :value="lang.code">{{ lang.name }} ({{ lang.code }})</option>
           </select>
-        </label>
-        <label class="block text-sm">
-          <span class="text-ink-500">Source languages (comma-separated)</span>
-          <input v-model="form.source_languages" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" />
-        </label>
-        <label class="block text-sm">
-          <span class="text-ink-500">Batch size</span>
-          <input v-model.number="form.batch_size" type="number" min="1" max="200" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" />
         </label>
       </fieldset>
 

@@ -56,10 +56,10 @@ export const api = {
     }),
   batchRequestSubtitles: () =>
     request<BatchJobsResult>('/api/candidates/batch/request-subtitle', { method: 'POST' }),
-  batchExtractAndTranslate: () =>
-    request<BatchJobsResult>('/api/candidates/batch/extract-and-translate', {
-      method: 'POST',
-    }),
+  batchExtract: () =>
+    request<BatchJobsResult>('/api/candidates/batch/extract', { method: 'POST' }),
+  batchTranslate: () =>
+    request<BatchJobsResult>('/api/candidates/batch/translate', { method: 'POST' }),
   getJobs: () => request<Job[]>('/api/jobs'),
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
   getJobLog: (id: number) => request<JobLog>(`/api/jobs/${id}/log`),

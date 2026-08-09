@@ -139,12 +139,18 @@ async def batch_request_subtitle(db: Session = Depends(get_db)) -> BatchJobsOut:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/candidates/batch/extract-and-translate", response_model=BatchJobsOut)
-async def batch_extract_and_translate(db: Session = Depends(get_db)) -> BatchJobsOut:
+@router.post("/candidates/batch/extract", response_model=BatchJobsOut)
+async def batch_extract(db: Session = Depends(get_db)) -> BatchJobsOut:
     try:
-        return await JobService(db).batch_extract_and_translate()
+        return await JobService(db).batch_extract()
     except BazarrError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/candidates/batch/translate", response_model=BatchJobsOut)
+async def batch_translate(db: Session = Depends(get_db)) -> BatchJobsOut:
+    try:
+        return await JobService(db).batch_translate()
     except OpenRouterError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
