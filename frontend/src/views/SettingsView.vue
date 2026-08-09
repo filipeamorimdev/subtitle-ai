@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import OpenRouterModelSelect from '../components/OpenRouterModelSelect.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
-import type { PathMapping } from '../types'
+import type { OpenRouterModel, PathMapping } from '../types'
 
 const LANGUAGES = [
   { code: 'en', name: 'English' },
@@ -20,6 +21,9 @@ const error = ref<string | null>(null)
 const saving = ref(false)
 const bazarrTest = ref<string | null>(null)
 const openrouterTest = ref<string | null>(null)
+const openrouterModels = ref<OpenRouterModel[]>([])
+const modelsLoading = ref(false)
+const modelsError = ref<string | null>(null)
 
 const form = reactive({
   bazarr_url: '',
@@ -51,6 +55,19 @@ function textToMappings(text: string): PathMapping[] {
     .filter((m) => m.bazarr_prefix && m.local_prefix)
 }
 
+async function loadOpenRouterModels() {
+  modelsLoading.value = true
+  modelsError.value = null
+  try {
+    const result = await api.getOpenRouterModels()
+    openrouterModels.value = result.models
+  } catch (err) {
+    modelsError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
 onMounted(async () => {
   await store.loadSettings()
   const s = store.settings
@@ -62,6 +79,7 @@ onMounted(async () => {
   form.source_language_code = s.source_languages?.[0] || 'en'
   form.media_roots = s.media_roots.join(', ')
   form.path_mappings = mappingsToText(s.path_mappings)
+  await loadOpenRouterModels()
 })
 
 const sourceLanguageOptions = computed(() => {
@@ -174,10 +192,29 @@ async function testOpenRouter() {
           <input v-model="form.clear_openrouter_api_key" type="checkbox" />
           Clear saved OpenRouter API key
         </label>
-        <label class="block text-sm">
-          <span class="text-ink-500">Model</span>
-          <input v-model="form.openrouter_model" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="openai/gpt-4o-mini" />
-        </label>
+        <div class="block text-sm">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-ink-500">Model</span>
+            <button
+              type="button"
+              class="text-xs font-semibold text-ink-500 hover:text-ink-800 dark:hover:text-ink-200"
+              :disabled="modelsLoading"
+              @click="loadOpenRouterModels"
+            >
+              {{ modelsLoading ? 'Refreshing…' : 'Refresh list' }}
+            </button>
+          </div>
+          <OpenRouterModelSelect
+            v-model="form.openrouter_model"
+            :models="openrouterModels"
+            :loading="modelsLoading"
+            :error="modelsError"
+            @refresh="loadOpenRouterModels"
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            Models are loaded from OpenRouter and sorted by price (cheapest first). Prices are USD per million tokens.
+          </span>
+        </div>
         <div class="flex items-center gap-3">
           <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="testOpenRouter">
             Test Connection

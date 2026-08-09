@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -32,11 +32,19 @@ from app.integrations.bazarr.paths import (
     mappings_from_settings,
 )
 from app.services.candidates import CandidateService, to_bazarr_code2
+from app.services.glossary import GlossaryService
 from app.services.settings import SettingsService
-from app.subtitles.embedded import EmbeddedError, extract_text_track
+from app.subtitles.embedded import (
+    EmbeddedError,
+    extract_text_track,
+    pick_extractable_track,
+    probe_subtitle_tracks,
+)
 from app.subtitles.filenames import (
+    LANG_SUFFIX_RE,
     build_external_subtitle_path,
     build_target_subtitle_path,
+    find_source_srt_beside_media,
     language_matches,
     normalize_language_code,
 )
@@ -50,7 +58,9 @@ from app.translation.openrouter.service import OpenRouterTranslationService
 logger = get_logger("jobs")
 
 REQUEST_POLL_SECONDS = 5.0
-REQUEST_TIMEOUT_SECONDS = 180.0
+REQUEST_TIMEOUT_SECONDS = 60.0
+REQUEST_HI_RETRY_AFTER_SECONDS = 20.0
+REQUEST_NOT_FOUND_COOLDOWN_HOURS = 24
 
 
 def utcnow() -> datetime:
@@ -474,6 +484,23 @@ class JobService:
             return candidate.bazarr_movie_id is not None
         return candidate.bazarr_episode_id is not None and candidate.bazarr_series_id is not None
 
+    def _recent_not_found_cooldown(self, candidate_key: str) -> JobRow | None:
+        """Return a recent not_found request job if still inside the cooldown window."""
+        cutoff = utcnow() - timedelta(hours=REQUEST_NOT_FOUND_COOLDOWN_HOURS)
+        return self.db.scalar(
+            select(JobRow)
+            .where(
+                JobRow.job_kind == "request",
+                JobRow.candidate_key == candidate_key,
+                JobRow.reason_code == "not_found",
+                JobRow.status.in_(["skipped", "failed"]),
+                JobRow.completed_at.is_not(None),
+                JobRow.completed_at >= cutoff,
+            )
+            .order_by(JobRow.completed_at.desc())
+            .limit(1)
+        )
+
     async def batch_request_missing_source(
         self,
         language: str | None = None,
@@ -490,6 +517,9 @@ class JobService:
                 skipped_count += 1
                 continue
             if not self._can_request_source(match):
+                skipped_count += 1
+                continue
+            if self._recent_not_found_cooldown(match.key):
                 skipped_count += 1
                 continue
             try:
@@ -717,23 +747,18 @@ class JobService:
             mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
             code2 = to_bazarr_code2(row.source_language or "en")
 
+            # Fast path: subtitle may already be on disk (including .en.hi.srt).
+            found_path = await self._lookup_requested_subtitle(client, row, code2, mappings)
+            if found_path:
+                await self._complete_request_job(job_id, found_path, label)
+                return
+
             row.progress = 5
             row.progress_detail = f"Asking Bazarr to search for {label}"
             self.db.add(row)
             self.db.commit()
 
-            if row.media_type == "movie":
-                if row.bazarr_movie_id is None:
-                    raise ValueError("Missing Bazarr movie ID")
-                await client.download_movie_subtitle(row.bazarr_movie_id, code2)
-            else:
-                if row.bazarr_episode_id is None or row.bazarr_series_id is None:
-                    raise ValueError("Missing Bazarr series/episode IDs")
-                await client.download_episode_subtitle(
-                    row.bazarr_series_id,
-                    row.bazarr_episode_id,
-                    code2,
-                )
+            await self._trigger_bazarr_download(client, row, code2, hi=False)
 
             row = self.db.get(JobRow, job_id)
             if not row or row.status == "cancelled":
@@ -744,7 +769,8 @@ class JobService:
             self.db.commit()
 
             deadline = monotonic() + REQUEST_TIMEOUT_SECONDS
-            found_path: str | None = None
+            hi_requested = False
+            found_path = None
             while monotonic() < deadline:
                 row = self.db.get(JobRow, job_id)
                 if not row or row.status == "cancelled":
@@ -760,7 +786,24 @@ class JobService:
                     break
 
                 elapsed = REQUEST_TIMEOUT_SECONDS - (deadline - monotonic())
+                if not hi_requested and elapsed >= REQUEST_HI_RETRY_AFTER_SECONDS:
+                    hi_requested = True
+                    row.progress_detail = f"Also searching Bazarr for {label} (HI)"
+                    self.db.add(row)
+                    self.db.commit()
+                    try:
+                        await self._trigger_bazarr_download(client, row, code2, hi=True)
+                    except BazarrError as exc:
+                        log.warning(
+                            "HI Bazarr search failed job_id=%s error=%s",
+                            job_id,
+                            exc,
+                        )
+
                 pct = min(90, 15 + int(75 * (elapsed / REQUEST_TIMEOUT_SECONDS)))
+                row = self.db.get(JobRow, job_id)
+                if not row or row.status == "cancelled":
+                    return
                 row.progress = pct
                 row.progress_detail = f"Still searching for {label} via Bazarr…"
                 self.db.add(row)
@@ -772,31 +815,46 @@ class JobService:
                 return
 
             if found_path:
-                row.source_subtitle_path = found_path
-                row.target_subtitle_path = found_path
+                await self._complete_request_job(job_id, found_path, label)
+                return
+
+            # Fallback: extract an embedded text track when Bazarr finds nothing.
+            extracted = await self._extract_fallback_for_request(row, code2)
+            if extracted:
+                row = self.db.get(JobRow, job_id)
+                if not row or row.status == "cancelled":
+                    return
+                row.source_subtitle_path = extracted
+                row.target_subtitle_path = extracted
                 row.status = "completed"
                 row.progress = 100
-                row.progress_detail = f"Found {label} subtitle"
+                row.progress_detail = f"Extracted embedded {label} subtitle"
                 row.completed_at = utcnow()
                 row.error = None
+                row.warning = (
+                    f"Bazarr found no external {label} subtitle within "
+                    f"{int(REQUEST_TIMEOUT_SECONDS)}s; used embedded extract fallback."
+                )
                 row.reason_code = None
                 self.db.add(row)
                 self.db.commit()
-                log.info("Request job completed job_id=%s path=%s", job_id, found_path)
+                log.info("Request job completed via extract fallback job_id=%s path=%s", job_id, extracted)
                 return
 
-            row.status = "failed"
+            # Nothing available — skip (not fail) so retries/batch don't thrash.
+            row.status = "skipped"
             row.progress = 100
             row.progress_detail = f"No {label} subtitle found"
             row.error = (
                 f"Bazarr searched for {label} but no external subtitle appeared "
-                f"within {int(REQUEST_TIMEOUT_SECONDS)}s."
+                f"within {int(REQUEST_TIMEOUT_SECONDS)}s, and no extractable embedded "
+                f"track was available."
             )
             row.reason_code = "not_found"
             row.completed_at = utcnow()
             self.db.add(row)
             self.db.commit()
-            log.info("Request job finished without subtitle job_id=%s", job_id)
+            log.info("Request job skipped without subtitle job_id=%s", job_id)
         except Exception as exc:  # noqa: BLE001
             log.error("Request job failed job_id=%s error=%s", job_id, exc)
             current = self.db.get(JobRow, job_id)
@@ -807,6 +865,69 @@ class JobService:
                 current.completed_at = utcnow()
                 self.db.add(current)
                 self.db.commit()
+
+    async def _complete_request_job(self, job_id: int, found_path: str, label: str) -> None:
+        row = self.db.get(JobRow, job_id)
+        if not row or row.status == "cancelled":
+            return
+        row.source_subtitle_path = found_path
+        row.target_subtitle_path = found_path
+        row.status = "completed"
+        row.progress = 100
+        row.progress_detail = f"Found {label} subtitle"
+        row.completed_at = utcnow()
+        row.error = None
+        row.reason_code = None
+        self.db.add(row)
+        self.db.commit()
+        get_logger("jobs").info("Request job completed job_id=%s path=%s", job_id, found_path)
+
+    async def _trigger_bazarr_download(
+        self,
+        client: BazarrClient,
+        row: JobRow,
+        code2: str,
+        *,
+        hi: bool,
+    ) -> None:
+        if row.media_type == "movie":
+            if row.bazarr_movie_id is None:
+                raise ValueError("Missing Bazarr movie ID")
+            await client.download_movie_subtitle(row.bazarr_movie_id, code2, hi=hi)
+            return
+        if row.bazarr_episode_id is None or row.bazarr_series_id is None:
+            raise ValueError("Missing Bazarr series/episode IDs")
+        await client.download_episode_subtitle(
+            row.bazarr_series_id,
+            row.bazarr_episode_id,
+            code2,
+            hi=hi,
+        )
+
+    async def _extract_fallback_for_request(self, row: JobRow, code2: str) -> str | None:
+        media = Path(row.media_path)
+        if not media.is_file():
+            return None
+        try:
+            tracks = await probe_subtitle_tracks(media)
+        except EmbeddedError:
+            return None
+        track = pick_extractable_track(tracks, [code2, row.source_language or code2])
+        if track is None or track.stream_index is None:
+            return None
+        output = build_external_subtitle_path(media, code2)
+        if output.exists() and output.stat().st_size > 0:
+            return str(output)
+        try:
+            await extract_text_track(media, track.stream_index, output)
+        except EmbeddedError as exc:
+            get_logger("jobs").warning(
+                "Extract fallback failed job_id=%s error=%s",
+                row.id,
+                exc,
+            )
+            return None
+        return str(output)
 
     async def _lookup_requested_subtitle(
         self,
@@ -833,6 +954,24 @@ class JobService:
         expected = Path(row.target_subtitle_path)
         if expected.exists() and expected.stat().st_size > 0:
             return str(expected)
+
+        # Accept HI/SDH sidecars beside the media even when Bazarr metadata lags.
+        media = Path(row.media_path)
+        found_local = find_source_srt_beside_media(media, [language])
+        if found_local:
+            path, _lang = found_local
+            if path.exists() and path.stat().st_size > 0:
+                return str(path)
+
+        if media.parent.is_dir():
+            stem = media.stem
+            for path in sorted(media.parent.glob("*.srt")):
+                match = LANG_SUFFIX_RE.match(path.name)
+                if not match or match.group("stem") != stem:
+                    continue
+                code = normalize_language_code(match.group("lang"))
+                if code and language_matches(code, [language]) and path.stat().st_size > 0:
+                    return str(path)
 
         for path in candidates:
             local = Path(path)
@@ -939,11 +1078,45 @@ class JobService:
             client = OpenRouterClient(openrouter_key, exchange_log=exchange_log)
             service = OpenRouterTranslationService(client)
 
+            current = self.db.get(JobRow, job_id)
+            if current:
+                current.progress = 5
+                current.progress_detail = "Building glossary"
+                self.db.add(current)
+                self.db.commit()
+
+            glossary = await GlossaryService(self.db).prepare_for_translation(
+                client=client,
+                model=resolved_model,
+                media_type=row.media_type,
+                media_title=row.media_title,
+                target_language_code=row.target_language,
+                target_language_name=public.target_language.name,
+                bazarr_series_id=row.bazarr_series_id,
+                bazarr_movie_id=row.bazarr_movie_id,
+                document=document,
+            )
+            exchange_log.record(
+                {
+                    "event": "glossary_ready",
+                    "leaf_scope_id": glossary.leaf_scope.id,
+                    "leaf_scope_key": glossary.leaf_scope.key,
+                    "universe_key": glossary.universe_key,
+                    "scope_ids": [s.id for s in glossary.scopes],
+                    "term_count": len(glossary.terms),
+                    "suggested_new": glossary.suggested_new,
+                    "input_tokens": glossary.usage_input_tokens,
+                    "output_tokens": glossary.usage_output_tokens,
+                    "total_tokens": glossary.usage_total_tokens,
+                }
+            )
+
             async def on_progress(done: int, total: int) -> None:
                 current = self.db.get(JobRow, job_id)
                 if not current or current.status == "cancelled":
                     raise RuntimeError("Job cancelled")
-                current.progress = round((done / total) * 100, 2)
+                # Reserve ~5% for glossary prep.
+                current.progress = round(5 + (done / total) * 95, 2)
                 current.progress_detail = f"{done} / {total} batches"
                 self.db.add(current)
                 self.db.commit()
@@ -955,7 +1128,15 @@ class JobService:
                 target_language_name=public.target_language.name,
                 batch_size=public.batch_size,
                 progress_callback=on_progress,
+                glossary_terms=glossary.terms,
             )
+            outcome.usage.input_tokens += glossary.usage_input_tokens
+            outcome.usage.output_tokens += glossary.usage_output_tokens
+            outcome.usage.total_tokens += glossary.usage_total_tokens
+            if glossary.suggested_new:
+                outcome.warnings.append(
+                    f"glossary_suggested:{glossary.suggested_new} new term(s) awaiting review"
+                )
 
             current = self.db.get(JobRow, job_id)
             if not current or current.status == "cancelled":
@@ -972,6 +1153,17 @@ class JobService:
             current.progress_detail = "Written"
             current.status = "completed"
             current.completed_at = utcnow()
+            if outcome.warnings:
+                # Markup mismatches are soft warnings; file was still written.
+                current.warning = "; ".join(outcome.warnings)
+                if any(w.startswith("glossary_suggested:") for w in outcome.warnings) and all(
+                    w.startswith("glossary_suggested:") for w in outcome.warnings
+                ):
+                    current.reason_code = "glossary_review"
+                else:
+                    current.reason_code = "markup_warning"
+            else:
+                current.warning = None
 
             self.db.add(
                 TranslationCacheRow(
@@ -987,7 +1179,11 @@ class JobService:
                 await self._rescan(current)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Bazarr rescan failed job_id=%s error=%s", job_id, exc)
-                current.warning = str(exc)
+                rescan_warning = str(exc)
+                if current.warning:
+                    current.warning = f"{current.warning}; {rescan_warning}"
+                else:
+                    current.warning = rescan_warning
                 current.reason_code = "bazarr_rescan_failed"
 
             self.db.add(current)
@@ -1000,6 +1196,7 @@ class JobService:
                     "output_tokens": outcome.usage.output_tokens,
                     "total_tokens": outcome.usage.total_tokens,
                     "warning": current.warning,
+                    "translation_warnings": outcome.warnings,
                 }
             )
             log.info("Job completed job_id=%s", job_id)

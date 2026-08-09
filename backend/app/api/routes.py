@@ -11,10 +11,20 @@ from app.api.schemas import (
     CandidateOut,
     ConnectionTestResult,
     ExtractCreate,
+    GlossaryScopeCreate,
+    GlossaryScopeOut,
+    GlossaryScopeUpdate,
+    GlossaryTermCreate,
+    GlossaryTermOut,
+    GlossaryTermReview,
+    GlossaryTermUpdate,
+    GlossaryUniverseOut,
     HealthOut,
     JobCreate,
     JobLogOut,
     JobOut,
+    OpenRouterModelOut,
+    OpenRouterModelsOut,
     RequestSubtitleCreate,
     SettingsOut,
     SettingsUpdate,
@@ -24,6 +34,8 @@ from app.db import get_db
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.jobs.service import JobService
 from app.services.candidates import CandidateService
+from app.services.glossary import GlossaryService
+from app.services.glossary_universes import UNIVERSES
 from app.services.settings import SettingsService
 from app.subtitles.embedded import EmbeddedError
 from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
@@ -89,6 +101,28 @@ async def test_openrouter(db: Session = Depends(get_db)) -> ConnectionTestResult
         )
     except OpenRouterError as exc:
         return ConnectionTestResult(ok=False, message=str(exc))
+
+
+@router.get("/settings/openrouter/models", response_model=OpenRouterModelsOut)
+async def list_openrouter_models(db: Session = Depends(get_db)) -> OpenRouterModelsOut:
+    service = SettingsService(db)
+    key, _model = service.get_openrouter_credentials()
+    try:
+        models = await OpenRouterClient.list_models(api_key=key or None)
+    except OpenRouterError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OpenRouterModelsOut(
+        models=[
+            OpenRouterModelOut(
+                id=m.id,
+                name=m.name,
+                prompt_price_per_million=m.prompt_price_per_million,
+                completion_price_per_million=m.completion_price_per_million,
+                context_length=m.context_length,
+            )
+            for m in models
+        ]
+    )
 
 
 @router.get("/candidates", response_model=list[CandidateOut])
@@ -211,3 +245,204 @@ async def retry_bazarr_sync(job_id: int, db: Session = Depends(get_db)) -> JobOu
 @router.get("/stats", response_model=StatsOut)
 def stats(db: Session = Depends(get_db)) -> StatsOut:
     return JobService(db).stats()
+
+
+def _scope_out(scope) -> GlossaryScopeOut:
+    terms = scope.terms or []
+    return GlossaryScopeOut(
+        id=scope.id,
+        kind=scope.kind,
+        key=scope.key,
+        display_name=scope.display_name,
+        target_language=scope.target_language,
+        parent_scope_id=scope.parent_scope_id,
+        bazarr_series_id=scope.bazarr_series_id,
+        bazarr_movie_id=scope.bazarr_movie_id,
+        term_count=len(terms),
+        suggested_count=sum(1 for t in terms if t.status == "suggested"),
+        created_at=scope.created_at,
+        updated_at=scope.updated_at,
+    )
+
+
+def _term_out(term, *, scope=None) -> GlossaryTermOut:
+    return GlossaryTermOut(
+        id=term.id,
+        scope_id=term.scope_id,
+        source=term.source,
+        target=term.target,
+        term_type=term.term_type,
+        policy=term.policy,
+        status=term.status,
+        locked=term.locked,
+        source_origin=term.source_origin,
+        notes=term.notes,
+        scope_kind=scope.kind if scope is not None else getattr(term, "scope_kind", None),
+        scope_name=scope.display_name if scope is not None else getattr(term, "scope_name", None),
+        created_at=term.created_at,
+        updated_at=term.updated_at,
+    )
+
+
+@router.get("/glossary/universes", response_model=list[GlossaryUniverseOut])
+def list_glossary_universes() -> list[GlossaryUniverseOut]:
+    return [GlossaryUniverseOut(key=u.key, display_name=u.display_name) for u in UNIVERSES]
+
+
+@router.get("/glossary/scopes", response_model=list[GlossaryScopeOut])
+def list_glossary_scopes(
+    target_language: str | None = None,
+    kind: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[GlossaryScopeOut]:
+    scopes = GlossaryService(db).list_scopes(target_language=target_language, kind=kind)
+    return [_scope_out(scope) for scope in scopes]
+
+
+@router.post("/glossary/scopes", response_model=GlossaryScopeOut)
+def create_glossary_scope(
+    payload: GlossaryScopeCreate,
+    db: Session = Depends(get_db),
+) -> GlossaryScopeOut:
+    try:
+        scope = GlossaryService(db).create_scope(
+            kind=payload.kind,
+            key=payload.key.strip(),
+            display_name=payload.display_name.strip(),
+            target_language=payload.target_language.strip(),
+            parent_scope_id=payload.parent_scope_id,
+            bazarr_series_id=payload.bazarr_series_id,
+            bazarr_movie_id=payload.bazarr_movie_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _scope_out(scope)
+
+
+@router.get("/glossary/scopes/{scope_id}", response_model=GlossaryScopeOut)
+def get_glossary_scope(scope_id: int, db: Session = Depends(get_db)) -> GlossaryScopeOut:
+    scope = GlossaryService(db).get_scope(scope_id)
+    if not scope:
+        raise HTTPException(status_code=404, detail="Glossary scope not found")
+    return _scope_out(scope)
+
+
+@router.patch("/glossary/scopes/{scope_id}", response_model=GlossaryScopeOut)
+def update_glossary_scope(
+    scope_id: int,
+    payload: GlossaryScopeUpdate,
+    db: Session = Depends(get_db),
+) -> GlossaryScopeOut:
+    try:
+        scope = GlossaryService(db).update_scope(
+            scope_id,
+            display_name=payload.display_name,
+            parent_scope_id=payload.parent_scope_id,
+            clear_parent=payload.clear_parent,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _scope_out(scope)
+
+
+@router.delete("/glossary/scopes/{scope_id}", status_code=204)
+def delete_glossary_scope(scope_id: int, db: Session = Depends(get_db)) -> None:
+    try:
+        GlossaryService(db).delete_scope(scope_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/glossary/scopes/{scope_id}/terms", response_model=list[GlossaryTermOut])
+def list_glossary_terms(
+    scope_id: int,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[GlossaryTermOut]:
+    service = GlossaryService(db)
+    scope = service.get_scope(scope_id)
+    if not scope:
+        raise HTTPException(status_code=404, detail="Glossary scope not found")
+    terms = service.list_terms(scope_id, status=status)
+    return [_term_out(term, scope=scope) for term in terms]
+
+
+@router.post("/glossary/scopes/{scope_id}/terms", response_model=GlossaryTermOut)
+def create_glossary_term(
+    scope_id: int,
+    payload: GlossaryTermCreate,
+    db: Session = Depends(get_db),
+) -> GlossaryTermOut:
+    service = GlossaryService(db)
+    try:
+        term = service.create_term(
+            scope_id,
+            source=payload.source,
+            target=payload.target,
+            term_type=payload.term_type,
+            policy=payload.policy,
+            status=payload.status,
+            locked=payload.locked,
+            notes=payload.notes,
+            source_origin="user",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    scope = service.get_scope(scope_id)
+    return _term_out(term, scope=scope)
+
+
+@router.patch("/glossary/terms/{term_id}", response_model=GlossaryTermOut)
+def update_glossary_term(
+    term_id: int,
+    payload: GlossaryTermUpdate,
+    db: Session = Depends(get_db),
+) -> GlossaryTermOut:
+    service = GlossaryService(db)
+    try:
+        term = service.update_term(
+            term_id,
+            source=payload.source,
+            target=payload.target,
+            term_type=payload.term_type,
+            policy=payload.policy,
+            status=payload.status,
+            locked=payload.locked,
+            notes=payload.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    scope = service.get_scope(term.scope_id)
+    return _term_out(term, scope=scope)
+
+
+@router.delete("/glossary/terms/{term_id}", status_code=204)
+def delete_glossary_term(term_id: int, db: Session = Depends(get_db)) -> None:
+    try:
+        GlossaryService(db).delete_term(term_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/glossary/terms/{term_id}/review", response_model=GlossaryTermOut)
+def review_glossary_term(
+    term_id: int,
+    payload: GlossaryTermReview,
+    db: Session = Depends(get_db),
+) -> GlossaryTermOut:
+    service = GlossaryService(db)
+    try:
+        term = service.review_term(term_id, approve=payload.approve, lock=payload.lock)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    scope = service.get_scope(term.scope_id)
+    return _term_out(term, scope=scope)
+
+
+@router.get("/glossary/suggested", response_model=list[GlossaryTermOut])
+def list_suggested_glossary_terms(
+    target_language: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[GlossaryTermOut]:
+    rows = GlossaryService(db).list_suggested(target_language=target_language)
+    return [_term_out(term, scope=scope) for term, scope in rows]

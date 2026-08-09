@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.logging import get_logger
 from app.subtitles.markup import protect_markup, restore_markup
@@ -21,6 +21,7 @@ logger = get_logger("translation")
 
 # Bounded recovery: a few targeted repairs, then split the batch and retry.
 MAX_CORRECTION_ATTEMPTS = 2
+DEFAULT_BATCH_SIZE = 25
 
 
 @dataclass
@@ -40,6 +41,7 @@ class TranslationOutcome:
     document: SubtitleDocument
     usage: TranslationUsage
     model: str
+    warnings: list[str] = field(default_factory=list)
 
 
 class OpenRouterTranslationService:
@@ -53,20 +55,26 @@ class OpenRouterTranslationService:
         model: str,
         target_language_code: str,
         target_language_name: str,
-        batch_size: int = 50,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         progress_callback=None,
+        glossary_terms=None,
     ) -> TranslationOutcome:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
 
-        system_prompt = build_system_prompt(target_language_code, target_language_name)
+        system_prompt = build_system_prompt(
+            target_language_code,
+            target_language_name,
+            glossary_terms=glossary_terms,
+        )
         usage = TranslationUsage()
-        translated_blocks: list[SubtitleBlock] = []
+        translated_by_id: dict[int, SubtitleBlock] = {}
         batches = [
             document.blocks[i : i + batch_size]
             for i in range(0, len(document.blocks), batch_size)
         ]
         total_batches = len(batches)
+        warnings: list[str] = []
 
         for batch_index, batch in enumerate(batches, start=1):
             protected_payload: list[tuple[int, str, list[str]]] = []
@@ -84,30 +92,104 @@ class OpenRouterTranslationService:
             for block, (block_id, _protected, tags) in zip(batch, protected_payload, strict=True):
                 raw = mapping[block_id]
                 restored = restore_markup(raw, tags)
-                translated_blocks.append(
-                    SubtitleBlock(
-                        index=block.index,
-                        start=block.start,
-                        end=block.end,
-                        text=restored,
-                        original_text=block.original_text or block.text,
-                    )
+                translated_by_id[block.index] = SubtitleBlock(
+                    index=block.index,
+                    start=block.start,
+                    end=block.end,
+                    text=restored,
+                    original_text=block.original_text or block.text,
                 )
 
             if progress_callback:
                 await progress_callback(batch_index, total_batches)
 
+        # Final validation: markup mismatches are warnings; hard issues re-translate
+        # the offending blocks one-by-one (split + retry).
+        for _round in range(3):
+            result_doc = SubtitleDocument(
+                format=document.format,
+                encoding=document.encoding,
+                blocks=[translated_by_id[b.index] for b in document.blocks],
+            )
+            validation = validate_translation(document, result_doc, check_markup=True)
+            for issue in validation.soft_issues:
+                message = f"{issue.code}: {issue.message}"
+                if message not in warnings:
+                    warnings.append(message)
+                    logger.warning("Translation soft validation: %s", message)
+
+            hard_ids = validation.hard_block_ids()
+            if validation.hard_ok:
+                break
+            if not hard_ids:
+                raise OpenRouterError(
+                    f"Translation response failed validation. {validation.error_message}"
+                )
+
+            logger.warning(
+                "Hard validation failed for blocks %s; splitting and retrying individually",
+                hard_ids,
+            )
+            source_by_id = {block.index: block for block in document.blocks}
+            for block_id in hard_ids:
+                source_block = source_by_id[block_id]
+                protection = protect_markup(source_block.text)
+                mapping = await self._translate_batch(
+                    model=model,
+                    system_prompt=system_prompt,
+                    protected_payload=[
+                        (source_block.index, protection.protected_text, protection.tags)
+                    ],
+                    usage=usage,
+                )
+                restored = restore_markup(mapping[block_id], protection.tags)
+                translated_by_id[block_id] = SubtitleBlock(
+                    index=source_block.index,
+                    start=source_block.start,
+                    end=source_block.end,
+                    text=restored,
+                    original_text=source_block.original_text or source_block.text,
+                )
+        else:
+            result_doc = SubtitleDocument(
+                format=document.format,
+                encoding=document.encoding,
+                blocks=[translated_by_id[b.index] for b in document.blocks],
+            )
+            validation = validate_translation(document, result_doc, check_markup=True)
+            if not validation.hard_ok:
+                raise OpenRouterError(
+                    f"Translation response failed validation. "
+                    + "; ".join(f"{i.code}: {i.message}" for i in validation.hard_issues)
+                )
+            for issue in validation.soft_issues:
+                message = f"{issue.code}: {issue.message}"
+                if message not in warnings:
+                    warnings.append(message)
+
         result_doc = SubtitleDocument(
             format=document.format,
             encoding=document.encoding,
-            blocks=translated_blocks,
+            blocks=[translated_by_id[b.index] for b in document.blocks],
         )
-        validation = validate_translation(document, result_doc, check_markup=True)
-        if not validation.ok:
+        # Re-collect soft markup warnings from the final document.
+        final_validation = validate_translation(document, result_doc, check_markup=True)
+        for issue in final_validation.soft_issues:
+            message = f"{issue.code}: {issue.message}"
+            if message not in warnings:
+                warnings.append(message)
+        if not final_validation.hard_ok:
             raise OpenRouterError(
-                f"Translation response failed validation. {validation.error_message}"
+                f"Translation response failed validation. "
+                + "; ".join(f"{i.code}: {i.message}" for i in final_validation.hard_issues)
             )
-        return TranslationOutcome(document=result_doc, usage=usage, model=model)
+
+        return TranslationOutcome(
+            document=result_doc,
+            usage=usage,
+            model=model,
+            warnings=warnings,
+        )
 
     async def _translate_batch(
         self,

@@ -106,6 +106,54 @@ async def test_openrouter_rate_limit_then_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openrouter_list_models_sorted_by_price(monkeypatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/models")
+        assert request.url.params["sort"] == "pricing-low-to-high"
+        assert request.url.params["output_modalities"] == "text"
+        assert request.headers["Authorization"] == "Bearer test-key"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "expensive/model",
+                        "name": "Expensive",
+                        "pricing": {"prompt": "0.000002", "completion": "0.000004"},
+                        "context_length": 8000,
+                    },
+                    {
+                        "id": "cheap/model",
+                        "name": "Cheap",
+                        "pricing": {"prompt": "0.0000001", "completion": "0.0000002"},
+                        "context_length": 16000,
+                    },
+                    {
+                        "id": "free/model",
+                        "name": "Free",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                        "context_length": 4000,
+                    },
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    models = await OpenRouterClient.list_models(api_key="test-key")
+    assert [m.id for m in models] == ["free/model", "cheap/model", "expensive/model"]
+    assert models[0].prompt_price_per_million == 0.0
+    assert models[1].prompt_price_per_million == pytest.approx(0.1)
+    assert models[2].completion_price_per_million == pytest.approx(4.0)
+
+
+@pytest.mark.asyncio
 async def test_openrouter_logs_request_and_response(tmp_path: Path, monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -167,7 +215,9 @@ async def test_openrouter_logs_malformed_response(tmp_path: Path, monkeypatch):
         await client.chat_completion(model="x", messages=[{"role": "user", "content": "hi"}])
 
     lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 3  # retries malformed responses
     assert lines[0]["response"]["body"] == {"unexpected": True}
+    assert all(line["response"]["body"] == {"unexpected": True} for line in lines)
 
 
 def test_parse_batch_response():
@@ -350,3 +400,60 @@ Hello
             target_language_name="Portuguese (Portugal)",
             batch_size=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_translation_markup_mismatch_is_warning(monkeypatch):
+    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+        from app.translation.openrouter.client import ChatResult
+
+        # Return translation without restoring italic tags (TAG0/TAG1 dropped).
+        return ChatResult(content="[001]\nOlá\n", model=model, total_tokens=1)
+
+    client = OpenRouterClient("key")
+    monkeypatch.setattr(client, "chat_completion", fake_chat)
+    service = OpenRouterTranslationService(client)
+    source = """1
+00:00:01,000 --> 00:00:02,000
+<i>Hello</i>
+"""
+    outcome = await service.translate_document(
+        parse_srt(source),
+        model="m",
+        target_language_code="pt-PT",
+        target_language_name="Portuguese (Portugal)",
+        batch_size=1,
+    )
+    assert outcome.document.blocks[0].text == "Olá"
+    assert outcome.warnings
+    assert any("markup" in warning for warning in outcome.warnings)
+
+
+@pytest.mark.asyncio
+async def test_translation_retries_hard_block_individually(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+        from app.translation.openrouter.client import ChatResult
+
+        calls["n"] += 1
+        user = messages[-1]["content"]
+        # First batch returns only block 1; later single-block retries succeed.
+        if "[002]" in user and "[001]" in user:
+            return ChatResult(content="[001]\nOlá\n", model=model, total_tokens=1)
+        if "[002]" in user:
+            return ChatResult(content="[002]\nMundo\n", model=model, total_tokens=1)
+        return ChatResult(content="[001]\nOlá\n", model=model, total_tokens=1)
+
+    client = OpenRouterClient("key")
+    monkeypatch.setattr(client, "chat_completion", fake_chat)
+    service = OpenRouterTranslationService(client)
+    outcome = await service.translate_document(
+        parse_srt(SAMPLE),
+        model="m",
+        target_language_code="pt-PT",
+        target_language_name="Portuguese (Portugal)",
+        batch_size=50,
+    )
+    assert [b.text for b in outcome.document.blocks] == ["Olá", "Mundo"]
+    assert calls["n"] > 1

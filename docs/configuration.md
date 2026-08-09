@@ -34,8 +34,10 @@ Every OpenRouter request/response attempt for that job is appended (including re
 ### OpenRouter
 
 - API key
-- Model string (not hard-coded in logic)
+- Searchable model picker (fetched from OpenRouter `GET /api/v1/models`, sorted by price)
 - Test Connection
+
+`GET /api/settings/openrouter/models` proxies the OpenRouter models catalog (text models), converts token prices to USD per million tokens, and returns them cheapest-first.
 
 ### Translation
 

@@ -150,7 +150,7 @@ async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
     )
 
     patch_calls: list[dict] = []
-    polls = {"n": 0}
+    polls_after_patch = {"n": 0}
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/api/movies/wanted"):
@@ -172,13 +172,14 @@ async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
         if request.url.path.endswith("/api/episodes/wanted"):
             return httpx.Response(200, json={"data": [], "total": 0})
         if request.url.path.endswith("/api/movies"):
-            polls["n"] += 1
             subs = []
-            if polls["n"] >= 3:
-                subs = [{"code2": "en", "path": "/movies/Empty/Empty.en.srt"}]
-                (media_dir / "Empty.en.srt").write_text(
-                    "1\n00:00:01,000 --> 00:00:02,000\nHi\n", encoding="utf-8"
-                )
+            if patch_calls:
+                polls_after_patch["n"] += 1
+                if polls_after_patch["n"] >= 2:
+                    subs = [{"code2": "en", "path": "/movies/Empty/Empty.en.srt"}]
+                    (media_dir / "Empty.en.srt").write_text(
+                        "1\n00:00:01,000 --> 00:00:02,000\nHi\n", encoding="utf-8"
+                    )
             return httpx.Response(
                 200,
                 json={
@@ -208,6 +209,7 @@ async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
     monkeypatch.setattr("app.jobs.service.REQUEST_POLL_SECONDS", 0.01)
     monkeypatch.setattr("app.jobs.service.REQUEST_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr("app.jobs.service.REQUEST_HI_RETRY_AFTER_SECONDS", 10.0)
 
     from app.jobs.service import JobService
 
@@ -225,9 +227,13 @@ async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
     assert done is not None
     assert done.status == "completed"
     assert done.progress_detail and "Found EN" in done.progress_detail
-    assert patch_calls == [
-        {"apikey": "k", "radarrid": "11", "language": "en", "forced": "false", "hi": "false"}
-    ]
+    assert patch_calls[0] == {
+        "apikey": "k",
+        "radarrid": "11",
+        "language": "en",
+        "forced": "false",
+        "hi": "false",
+    }
 
 
 @pytest.mark.asyncio
@@ -366,3 +372,102 @@ async def test_candidate_service(tmp_path, monkeypatch):
     assert blocked[0].reason_code == "no_source"
     episode = next(c for c in candidates if c.media_type == "episode")
     assert "S01E01" in episode.title
+
+
+@pytest.mark.asyncio
+async def test_request_job_skips_when_not_found(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    get_app_config.cache_clear()
+
+    media_dir = tmp_path / "Empty"
+    media_dir.mkdir()
+    (media_dir / "Empty.mkv").write_text("x")
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    fernet = load_or_create_fernet(config_dir / "secret.key")
+    settings = SettingsService(db, fernet=fernet)
+    settings.update(
+        SettingsUpdate(
+            bazarr_url="http://bazarr:6767",
+            bazarr_api_key="k",
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            source_languages=["en"],
+            media_roots=[str(tmp_path)],
+            path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
+        )
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/movies/wanted"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "No Source",
+                            "radarrId": 11,
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/episodes/wanted"):
+            return httpx.Response(200, json={"data": [], "total": 0})
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "No Source",
+                            "path": "/movies/Empty/Empty.mkv",
+                            "radarrId": 11,
+                            "subtitles": [],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/movies/subtitles") and request.method == "PATCH":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    monkeypatch.setattr("app.jobs.service.REQUEST_POLL_SECONDS", 0.01)
+    monkeypatch.setattr("app.jobs.service.REQUEST_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("app.jobs.service.REQUEST_HI_RETRY_AFTER_SECONDS", 0.01)
+
+    async def fake_probe(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("app.jobs.service.probe_subtitle_tracks", fake_probe)
+
+    from app.jobs.service import JobService
+
+    candidates = await CandidateService(db).list_candidates()
+    blocked = next(c for c in candidates if c.reason_code == "no_source")
+    created = await JobService(db).create_request_subtitle_job(blocked.key)
+    claimed = JobService(db).claim_next_job()
+    assert claimed is not None
+    await JobService(db).process_job(claimed.id)
+    done = JobService(db).get_job(claimed.id)
+    assert done is not None
+    assert done.status == "skipped"
+    assert done.reason_code == "not_found"
+    assert created.id == done.id

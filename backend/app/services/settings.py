@@ -28,7 +28,7 @@ class SettingsService:
                 source_languages=["en"],
                 media_roots=[str(config.media_root_default)],
                 path_mappings=[],
-                batch_size=50,
+                batch_size=25,
             )
             self.db.add(row)
             self.db.commit()

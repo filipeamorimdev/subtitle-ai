@@ -105,7 +105,8 @@ def test_validate_markup_mismatch():
     )
     result = validate_translation(source, translated)
     assert not result.ok
-    assert any(i.code == "markup" for i in result.issues)
+    assert result.hard_ok
+    assert any(i.code == "markup" for i in result.soft_issues)
 
 
 def test_validate_batch_mapping():
@@ -118,10 +119,25 @@ def test_filenames():
     assert detect_language_from_filename("movie.en.srt") == "en"
     assert detect_language_from_filename("movie.eng.srt") == "en"
     assert detect_language_from_filename("movie.en-US.srt") == "en"
+    assert detect_language_from_filename("movie.en.hi.srt") == "en"
+    assert detect_language_from_filename("movie.en.sdh.srt") == "en"
     assert str(build_target_subtitle_path("movie.en.srt", "pt-PT")) == "movie.pt-PT.srt"
+    assert str(build_target_subtitle_path("movie.en.hi.srt", "pt-PT")) == "movie.pt-PT.srt"
     assert str(build_target_subtitle_path("movie.srt", "pt-PT")) == "movie.pt-PT.srt"
     assert str(build_target_subtitle_path("/media/x/movie.eng.srt", "pt-PT")).endswith("movie.pt-PT.srt")
 
+
+def test_find_source_accepts_hi(tmp_path):
+    from app.subtitles.filenames import find_source_srt_beside_media
+
+    media = tmp_path / "Show - S01E01.mkv"
+    media.write_bytes(b"x")
+    hi = tmp_path / "Show - S01E01.en.hi.srt"
+    hi.write_text("1\n00:00:01,000 --> 00:00:02,000\nHi\n", encoding="utf-8")
+    found = find_source_srt_beside_media(media, ["en"])
+    assert found is not None
+    assert found[0] == hi
+    assert found[1] == "en"
 
 def test_atomic_write(tmp_path):
     doc = parse_srt(SAMPLE)

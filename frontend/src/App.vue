@@ -42,6 +42,13 @@ onMounted(() => {
           <RouterLink
             class="rounded-md px-3 py-2 text-ink-600 hover:bg-ink-100 dark:text-ink-200 dark:hover:bg-ink-800"
             active-class="bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white"
+            to="/glossaries"
+          >
+            Glossaries
+          </RouterLink>
+          <RouterLink
+            class="rounded-md px-3 py-2 text-ink-600 hover:bg-ink-100 dark:text-ink-200 dark:hover:bg-ink-800"
+            active-class="bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white"
             to="/settings"
           >
             Settings

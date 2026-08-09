@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import CandidatesView from '../views/CandidatesView.vue'
+import GlossariesView from '../views/GlossariesView.vue'
 import JobsView from '../views/JobsView.vue'
 import JobDetailView from '../views/JobDetailView.vue'
 import SettingsView from '../views/SettingsView.vue'
@@ -10,6 +11,7 @@ const router = createRouter({
     { path: '/', name: 'candidates', component: CandidatesView },
     { path: '/jobs', name: 'jobs', component: JobsView },
     { path: '/jobs/:id', name: 'job-detail', component: JobDetailView, props: true },
+    { path: '/glossaries', name: 'glossaries', component: GlossariesView },
     { path: '/settings', name: 'settings', component: SettingsView },
   ],
 })

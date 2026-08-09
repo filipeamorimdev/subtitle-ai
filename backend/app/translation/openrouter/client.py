@@ -32,6 +32,22 @@ class ChatResult:
     total_tokens: int | None = None
 
 
+@dataclass
+class OpenRouterModelInfo:
+    id: str
+    name: str
+    prompt_price_per_million: float
+    completion_price_per_million: float
+    context_length: int | None = None
+
+
+def _parse_token_price(value: Any) -> float:
+    try:
+        return float(value or 0) * 1_000_000
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _response_body(response: httpx.Response) -> Any:
     try:
         return response.json()
@@ -83,6 +99,81 @@ class OpenRouterClient:
             max_tokens=16,
         )
         return {"ok": True, "model": result.model, "sample": result.content[:80]}
+
+    @staticmethod
+    async def list_models(
+        *,
+        api_key: str | None = None,
+        base_url: str = OPENROUTER_BASE_URL,
+        timeout: float = 60.0,
+    ) -> list[OpenRouterModelInfo]:
+        """Fetch text models from OpenRouter, sorted cheapest prompt price first."""
+        url = f"{base_url.rstrip('/')}/models"
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/subtitle-ai/subtitle-ai",
+            "X-Title": "Subtitle AI",
+        }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        params = {
+            "output_modalities": "text",
+            "sort": "pricing-low-to-high",
+        }
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            try:
+                response = await client.get(url, headers=headers, params=params)
+            except httpx.TimeoutException as exc:
+                raise OpenRouterError("OpenRouter request timed out", retryable=True) from exc
+            except httpx.HTTPError as exc:
+                raise OpenRouterError(f"OpenRouter connection error: {exc}", retryable=True) from exc
+
+        if response.status_code == 401:
+            raise OpenRouterError("OpenRouter authentication failed.", status_code=401)
+        if response.status_code >= 400:
+            detail = response.text[:300]
+            raise OpenRouterError(
+                f"OpenRouter request failed ({response.status_code}): {detail}",
+                status_code=response.status_code,
+            )
+
+        body = _response_body(response)
+        if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+            raise OpenRouterError("Malformed OpenRouter models response.")
+
+        models: list[OpenRouterModelInfo] = []
+        for item in body["data"]:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            pricing = item.get("pricing") or {}
+            if not isinstance(pricing, dict):
+                pricing = {}
+            name = item.get("name")
+            models.append(
+                OpenRouterModelInfo(
+                    id=model_id,
+                    name=name if isinstance(name, str) and name else model_id,
+                    prompt_price_per_million=_parse_token_price(pricing.get("prompt")),
+                    completion_price_per_million=_parse_token_price(pricing.get("completion")),
+                    context_length=item.get("context_length")
+                    if isinstance(item.get("context_length"), int)
+                    else None,
+                )
+            )
+
+        models.sort(
+            key=lambda m: (
+                m.prompt_price_per_million,
+                m.completion_price_per_million,
+                m.name.lower(),
+            )
+        )
+        return models
 
     async def chat_completion(
         self,
@@ -189,11 +280,22 @@ class OpenRouterClient:
 
                 data = body if isinstance(body, dict) else None
                 if data is None:
-                    raise OpenRouterError("Malformed OpenRouter response.")
+                    last_error = OpenRouterError("Malformed OpenRouter response.", retryable=True)
+                    logger.warning("Malformed OpenRouter response attempt=%s", attempt)
+                    continue
                 try:
                     content = data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, TypeError) as exc:
-                    raise OpenRouterError("Malformed OpenRouter response.") from exc
+                    last_error = OpenRouterError(
+                        "Malformed OpenRouter response.",
+                        retryable=True,
+                    )
+                    logger.warning(
+                        "Malformed OpenRouter response attempt=%s detail=%s",
+                        attempt,
+                        exc,
+                    )
+                    continue
 
                 usage = data.get("usage") or {}
                 return ChatResult(

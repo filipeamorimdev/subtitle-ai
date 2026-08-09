@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.db import Base
@@ -25,7 +25,7 @@ class SettingsRow(Base):
     source_languages: Mapped[list[Any]] = mapped_column(JSON, default=lambda: ["en"])
     media_roots: Mapped[list[Any]] = mapped_column(JSON, default=lambda: ["/media"])
     path_mappings: Mapped[list[Any]] = mapped_column(JSON, default=lambda: [])
-    batch_size: Mapped[int] = mapped_column(Integer, default=50)
+    batch_size: Mapped[int] = mapped_column(Integer, default=25)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -75,3 +75,58 @@ class TranslationCacheRow(Base):
     target_subtitle_path: Mapped[str] = mapped_column(String(1024))
     job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GlossaryScopeRow(Base):
+    __tablename__ = "glossary_scopes"
+    __table_args__ = (UniqueConstraint("key", "target_language", name="uq_glossary_scope_key_lang"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)  # universe | series | movie
+    key: Mapped[str] = mapped_column(String(256), index=True)
+    display_name: Mapped[str] = mapped_column(String(512))
+    target_language: Mapped[str] = mapped_column(String(32), index=True)
+    parent_scope_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("glossary_scopes.id"), nullable=True, index=True
+    )
+    bazarr_series_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    bazarr_movie_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    parent = relationship("GlossaryScopeRow", remote_side="GlossaryScopeRow.id", uselist=False)
+    terms = relationship(
+        "GlossaryTermRow",
+        back_populates="scope",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class GlossaryTermRow(Base):
+    __tablename__ = "glossary_terms"
+    __table_args__ = (
+        UniqueConstraint("scope_id", "source_normalized", name="uq_glossary_term_scope_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("glossary_scopes.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(512))
+    source_normalized: Mapped[str] = mapped_column(String(512))
+    target: Mapped[str] = mapped_column(String(512))
+    term_type: Mapped[str] = mapped_column(String(32), default="other")
+    policy: Mapped[str] = mapped_column(String(32), default="keep")
+    status: Mapped[str] = mapped_column(String(32), default="suggested", index=True)
+    locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_origin: Mapped[str] = mapped_column(String(32), default="llm")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    scope = relationship("GlossaryScopeRow", back_populates="terms")

@@ -53,6 +53,18 @@ class ConnectionTestResult(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class OpenRouterModelOut(BaseModel):
+    id: str
+    name: str
+    prompt_price_per_million: float
+    completion_price_per_million: float
+    context_length: int | None = None
+
+
+class OpenRouterModelsOut(BaseModel):
+    models: list[OpenRouterModelOut]
+
+
 class EmbeddedSubtitleOut(BaseModel):
     language: str | None = None
     codec: str | None = None
@@ -187,3 +199,81 @@ class HealthOut(BaseModel):
     database: str = "healthy"
     bazarr: str = "unknown"
     openrouter: str = "unknown"
+
+
+class GlossaryScopeOut(BaseModel):
+    id: int
+    kind: str
+    key: str
+    display_name: str
+    target_language: str
+    parent_scope_id: int | None
+    bazarr_series_id: int | None
+    bazarr_movie_id: int | None
+    term_count: int = 0
+    suggested_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class GlossaryScopeCreate(BaseModel):
+    kind: Literal["universe", "series", "movie"]
+    key: str
+    display_name: str
+    target_language: str
+    parent_scope_id: int | None = None
+    bazarr_series_id: int | None = None
+    bazarr_movie_id: int | None = None
+
+
+class GlossaryScopeUpdate(BaseModel):
+    display_name: str | None = None
+    parent_scope_id: int | None = None
+    clear_parent: bool = False
+
+
+class GlossaryTermOut(BaseModel):
+    id: int
+    scope_id: int
+    source: str
+    target: str
+    term_type: str
+    policy: str
+    status: str
+    locked: bool
+    source_origin: str
+    notes: str | None = None
+    scope_kind: str | None = None
+    scope_name: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class GlossaryTermCreate(BaseModel):
+    source: str
+    target: str
+    term_type: str = "other"
+    policy: str = "keep"
+    status: str = "active"
+    locked: bool = False
+    notes: str | None = None
+
+
+class GlossaryTermUpdate(BaseModel):
+    source: str | None = None
+    target: str | None = None
+    term_type: str | None = None
+    policy: str | None = None
+    status: str | None = None
+    locked: bool | None = None
+    notes: str | None = None
+
+
+class GlossaryTermReview(BaseModel):
+    approve: bool
+    lock: bool = False
+
+
+class GlossaryUniverseOut(BaseModel):
+    key: str
+    display_name: str

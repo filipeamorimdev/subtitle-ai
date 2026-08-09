@@ -2,8 +2,15 @@ import type {
   BatchJobsResult,
   Candidate,
   ConnectionTestResult,
+  GlossaryScope,
+  GlossaryScopeCreate,
+  GlossaryTerm,
+  GlossaryTermCreate,
+  GlossaryTermUpdate,
+  GlossaryUniverse,
   Job,
   JobLog,
+  OpenRouterModelsResult,
   Settings,
   SettingsUpdate,
   Stats,
@@ -41,6 +48,7 @@ export const api = {
     request<ConnectionTestResult>('/api/settings/test/bazarr', { method: 'POST' }),
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
+  getOpenRouterModels: () => request<OpenRouterModelsResult>('/api/settings/openrouter/models'),
   getCandidates: () => request<Candidate[]>('/api/candidates'),
   refreshCandidates: () =>
     request<Candidate[]>('/api/candidates/refresh', { method: 'POST' }),
@@ -70,4 +78,55 @@ export const api = {
   retryBazarrSync: (id: number) =>
     request<Job>(`/api/jobs/${id}/retry-bazarr-sync`, { method: 'POST' }),
   getStats: () => request<Stats>('/api/stats'),
+  getGlossaryUniverses: () => request<GlossaryUniverse[]>('/api/glossary/universes'),
+  getGlossaryScopes: (params?: { target_language?: string; kind?: string }) => {
+    const query = new URLSearchParams()
+    if (params?.target_language) query.set('target_language', params.target_language)
+    if (params?.kind) query.set('kind', params.kind)
+    const suffix = query.toString() ? `?${query}` : ''
+    return request<GlossaryScope[]>(`/api/glossary/scopes${suffix}`)
+  },
+  getGlossaryScope: (id: number) => request<GlossaryScope>(`/api/glossary/scopes/${id}`),
+  createGlossaryScope: (payload: GlossaryScopeCreate) =>
+    request<GlossaryScope>('/api/glossary/scopes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateGlossaryScope: (
+    id: number,
+    payload: { display_name?: string; parent_scope_id?: number | null; clear_parent?: boolean },
+  ) =>
+    request<GlossaryScope>(`/api/glossary/scopes/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteGlossaryScope: (id: number) =>
+    request<void>(`/api/glossary/scopes/${id}`, { method: 'DELETE' }),
+  getGlossaryTerms: (scopeId: number, status?: string) => {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : ''
+    return request<GlossaryTerm[]>(`/api/glossary/scopes/${scopeId}/terms${suffix}`)
+  },
+  createGlossaryTerm: (scopeId: number, payload: GlossaryTermCreate) =>
+    request<GlossaryTerm>(`/api/glossary/scopes/${scopeId}/terms`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateGlossaryTerm: (termId: number, payload: GlossaryTermUpdate) =>
+    request<GlossaryTerm>(`/api/glossary/terms/${termId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteGlossaryTerm: (termId: number) =>
+    request<void>(`/api/glossary/terms/${termId}`, { method: 'DELETE' }),
+  reviewGlossaryTerm: (termId: number, approve: boolean, lock = false) =>
+    request<GlossaryTerm>(`/api/glossary/terms/${termId}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ approve, lock }),
+    }),
+  getSuggestedGlossaryTerms: (target_language?: string) => {
+    const suffix = target_language
+      ? `?target_language=${encodeURIComponent(target_language)}`
+      : ''
+    return request<GlossaryTerm[]>(`/api/glossary/suggested${suffix}`)
+  },
 }

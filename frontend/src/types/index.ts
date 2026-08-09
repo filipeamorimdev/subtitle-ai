@@ -132,3 +132,80 @@ export interface ConnectionTestResult {
   message: string
   details?: Record<string, unknown> | null
 }
+
+export interface OpenRouterModel {
+  id: string
+  name: string
+  prompt_price_per_million: number
+  completion_price_per_million: number
+  context_length: number | null
+}
+
+export interface OpenRouterModelsResult {
+  models: OpenRouterModel[]
+}
+
+export interface GlossaryUniverse {
+  key: string
+  display_name: string
+}
+
+export interface GlossaryScope {
+  id: number
+  kind: 'universe' | 'series' | 'movie' | string
+  key: string
+  display_name: string
+  target_language: string
+  parent_scope_id: number | null
+  bazarr_series_id: number | null
+  bazarr_movie_id: number | null
+  term_count: number
+  suggested_count: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface GlossaryTerm {
+  id: number
+  scope_id: number
+  source: string
+  target: string
+  term_type: string
+  policy: string
+  status: 'active' | 'suggested' | 'rejected' | string
+  locked: boolean
+  source_origin: string
+  notes: string | null
+  scope_kind: string | null
+  scope_name: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface GlossaryScopeCreate {
+  kind: 'universe' | 'series' | 'movie'
+  key: string
+  display_name: string
+  target_language: string
+  parent_scope_id?: number | null
+}
+
+export interface GlossaryTermCreate {
+  source: string
+  target: string
+  term_type?: string
+  policy?: string
+  status?: string
+  locked?: boolean
+  notes?: string | null
+}
+
+export interface GlossaryTermUpdate {
+  source?: string
+  target?: string
+  term_type?: string
+  policy?: string
+  status?: string
+  locked?: boolean
+  notes?: string | null
+}

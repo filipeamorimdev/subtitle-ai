@@ -32,12 +32,16 @@ LANGUAGE_ALIASES: dict[str, str] = {
     "italian": "it",
 }
 
-# movie.en.srt, movie.en-US.srt, movie.English.srt, movie.srt
+# movie.en.srt, movie.en-US.srt, movie.en.hi.srt, movie.English.srt, movie.srt
 LANG_SUFFIX_RE = re.compile(
-    r"^(?P<stem>.+?)\.(?P<lang>[A-Za-z]{2,3}(?:-[A-Za-z]{2})?|English|Portuguese|Spanish|French|German|Italian)\.srt$",
+    r"^(?P<stem>.+?)"
+    r"\.(?P<lang>[A-Za-z]{2,3}(?:-[A-Za-z]{2})?|English|Portuguese|Spanish|French|German|Italian)"
+    r"(?:\.(?P<flag>hi|sdh|forced|cc))?"
+    r"\.srt$",
     re.IGNORECASE,
 )
 PLAIN_SRT_RE = re.compile(r"^(?P<stem>.+)\.srt$", re.IGNORECASE)
+HI_FLAGS = frozenset({"hi", "sdh", "cc"})
 
 
 def normalize_language_code(value: str | None) -> str | None:
@@ -53,6 +57,14 @@ def detect_language_from_filename(path: str | Path) -> str | None:
     if match:
         return normalize_language_code(match.group("lang"))
     return None
+
+
+def is_hi_subtitle_filename(path: str | Path) -> bool:
+    match = LANG_SUFFIX_RE.match(Path(path).name)
+    if not match:
+        return False
+    flag = (match.group("flag") or "").lower()
+    return flag in HI_FLAGS
 
 
 def build_target_subtitle_path(source_path: str | Path, target_language: str) -> Path:
@@ -108,24 +120,26 @@ def find_source_srt_beside_media(
         return None
 
     stem = media.stem
-    candidates: list[tuple[int, Path, str]] = []
+    candidates: list[tuple[int, int, Path, str]] = []
     for path in directory.glob("*.srt"):
         lang = detect_language_from_filename(path)
+        lang_match = LANG_SUFFIX_RE.match(path.name)
         if lang and language_matches(lang, source_languages):
-            # Prefer exact stem match
-            priority = 0 if path.name.startswith(stem + ".") or path.stem.startswith(stem) else 1
-            # Also accept files that share stem before language suffix
-            lang_match = LANG_SUFFIX_RE.match(path.name)
-            if lang_match and lang_match.group("stem") == stem:
+            # Prefer exact stem match, then non-HI over HI/SDH
+            priority = 0 if lang_match and lang_match.group("stem") == stem else 1
+            if not (lang_match and lang_match.group("stem") == stem) and (
+                path.name.startswith(stem + ".") or path.stem.startswith(stem)
+            ):
                 priority = 0
-            candidates.append((priority, path, lang))
+            hi_penalty = 1 if is_hi_subtitle_filename(path) else 0
+            candidates.append((priority, hi_penalty, path, lang))
         elif lang is None and path.name == f"{stem}.srt":
             # Bare .srt next to media — treat as first preferred language
             default_lang = normalize_language_code(source_languages[0]) or "en"
-            candidates.append((2, path, default_lang))
+            candidates.append((2, 0, path, default_lang))
 
     if not candidates:
         return None
-    candidates.sort(key=lambda item: (item[0], item[1].name))
-    _, path, lang = candidates[0]
+    candidates.sort(key=lambda item: (item[0], item[1], item[2].name))
+    _, _, path, lang = candidates[0]
     return path, lang

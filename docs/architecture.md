@@ -45,6 +45,7 @@ Bazarr rescan (best effort)
 - `settings` — singleton configuration
 - `jobs` — user-triggered translation work
 - `translation_cache` — completed hash/language/model triples
+- `glossary_scopes` / `glossary_terms` — persistent term memory (universe/series/movie)
 
 Candidates are fetched on demand from Bazarr (not a primary table).
 

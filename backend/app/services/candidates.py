@@ -209,7 +209,8 @@ class CandidateService:
             source_path: str | None = None
             source_lang: str | None = None
 
-            # Prefer Bazarr subtitle metadata
+            # Prefer Bazarr subtitle metadata (non-forced, then non-HI, then path order)
+            bazarr_sources: list[tuple[int, int, str, str]] = []
             for sub in item.subtitles:
                 if not sub.path:
                     continue
@@ -219,9 +220,18 @@ class CandidateService:
                 if lang and language_matches(lang, source_langs):
                     mapped = apply_path_mapping(sub.path, mappings)
                     if mapped.lower().endswith(".srt"):
-                        source_path = mapped
-                        source_lang = lang
-                        break
+                        bazarr_sources.append(
+                            (
+                                1 if sub.forced else 0,
+                                1 if sub.hi else 0,
+                                mapped,
+                                lang,
+                            )
+                        )
+            if bazarr_sources:
+                bazarr_sources.sort(key=lambda item: (item[0], item[1], item[2]))
+                source_path = bazarr_sources[0][2]
+                source_lang = bazarr_sources[0][3]
 
             if source_path is None:
                 found = find_source_srt_beside_media(local_media, source_langs)
