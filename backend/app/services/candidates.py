@@ -20,6 +20,7 @@ from app.subtitles.embedded import (
     probe_subtitle_tracks,
 )
 from app.subtitles.filenames import (
+    build_external_subtitle_path,
     build_target_subtitle_path,
     detect_language_from_filename,
     find_source_srt_beside_media,
@@ -256,15 +257,28 @@ class CandidateService:
             reason_code: str | None = None
             reason: str | None = None
 
+            media_target = build_external_subtitle_path(local_media, target)
             if source_path:
                 target_path = str(
                     build_target_subtitle_path(source_path, target, media_path=local_media)
                 )
-                if Path(target_path).exists():
-                    reason_code = "target_exists"
-                    reason = "Target subtitle already exists."
-                    can_translate = False
-                elif not Path(source_path).exists():
+            elif media_target.exists():
+                target_path = str(media_target)
+
+            if target_path and Path(target_path).exists():
+                reason_code = "target_exists"
+                reason = "Target subtitle already exists."
+                can_translate = False
+                can_extract = False
+            elif media_target.exists():
+                # Source-derived path differed, but media-stem target is present
+                target_path = str(media_target)
+                reason_code = "target_exists"
+                reason = "Target subtitle already exists."
+                can_translate = False
+                can_extract = False
+            elif source_path:
+                if not Path(source_path).exists():
                     reason_code = "source_missing_on_disk"
                     reason = "Source subtitle path is not readable on disk."
                     can_translate = False

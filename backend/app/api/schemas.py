@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from app.core.timefmt import DateTimeOut
 
 
 class LanguageOut(BaseModel):
@@ -161,9 +162,9 @@ class JobOut(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     total_tokens: int | None
-    created_at: datetime | None
-    started_at: datetime | None
-    completed_at: datetime | None
+    created_at: DateTimeOut
+    started_at: DateTimeOut
+    completed_at: DateTimeOut
 
 
 class BatchJobsOut(BaseModel):
@@ -174,6 +175,18 @@ class BatchJobsOut(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class JobActionOut(BaseModel):
+    """A single job run treated as an action on the same media/episode."""
+
+    id: int
+    action: str
+    status: str
+    datetime: DateTimeOut
+    duration_seconds: float | None = None
+    message: str | None = None
+    current: bool = False
+
+
 class JobLogOut(BaseModel):
     job_id: int
     exists: bool
@@ -181,6 +194,80 @@ class JobLogOut(BaseModel):
     entry_count: int = 0
     content: str | None = None
     entries: list[dict[str, Any]] | None = None
+
+
+class JobUsageExchangeOut(BaseModel):
+    index: int
+    ts: str | None = None
+    model: str
+    action: str
+    attempt: int | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float | None = None
+    cost_estimated: bool = False
+    status_code: int | None = None
+    ok: bool = False
+    error: str | None = None
+
+
+class JobUsageModelOut(BaseModel):
+    model: str
+    name: str | None = None
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float | None = None
+    prompt_price_per_million: float | None = None
+    completion_price_per_million: float | None = None
+
+
+class JobUsageActionOut(BaseModel):
+    action: str
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float | None = None
+
+
+class JobUsageRelatedOut(BaseModel):
+    id: int
+    action: str
+    status: str
+    model: str
+    datetime: DateTimeOut = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    current: bool = False
+
+
+class JobUsageTotalsOut(BaseModel):
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float | None = None
+    blended_cost_per_million: float | None = None
+
+
+class JobUsageOut(BaseModel):
+    job_id: int
+    media_title: str | None = None
+    job_kind: str = "translate"
+    model: str
+    status: str
+    log_exists: bool = False
+    pricing_source: str = "none"
+    totals: JobUsageTotalsOut
+    by_model: list[JobUsageModelOut] = Field(default_factory=list)
+    by_action: list[JobUsageActionOut] = Field(default_factory=list)
+    exchanges: list[JobUsageExchangeOut] = Field(default_factory=list)
+    related_actions: list[JobUsageRelatedOut] = Field(default_factory=list)
 
 
 class StatsOut(BaseModel):
@@ -212,8 +299,8 @@ class GlossaryScopeOut(BaseModel):
     bazarr_movie_id: int | None
     term_count: int = 0
     suggested_count: int = 0
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: DateTimeOut = None
+    updated_at: DateTimeOut = None
 
 
 class GlossaryScopeCreate(BaseModel):
@@ -245,8 +332,8 @@ class GlossaryTermOut(BaseModel):
     notes: str | None = None
     scope_kind: str | None = None
     scope_name: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: DateTimeOut = None
+    updated_at: DateTimeOut = None
 
 
 class GlossaryTermCreate(BaseModel):

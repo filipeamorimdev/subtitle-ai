@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useAppStore } from '../stores/app'
+import { formatDateTime } from '../utils/datetime'
 
 const store = useAppStore()
 let timer: number | undefined
@@ -106,7 +107,7 @@ onUnmounted(() => {
           </div>
           <div>
             <dt class="text-ink-500">Created</dt>
-            <dd class="break-all text-ink-500">{{ job.created_at }}</dd>
+            <dd class="break-all text-ink-500">{{ formatDateTime(job.created_at) }}</dd>
           </div>
         </dl>
       </article>
@@ -150,7 +151,7 @@ onUnmounted(() => {
                 ({{ job.progress }}%)
               </span>
             </td>
-            <td class="px-4 py-3 text-ink-500">{{ job.created_at }}</td>
+            <td class="px-4 py-3 text-ink-500">{{ formatDateTime(job.created_at) }}</td>
           </tr>
         </tbody>
       </table>

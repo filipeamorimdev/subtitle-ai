@@ -25,7 +25,7 @@ def setup_logging(level: str = "INFO") -> None:
     handler.setFormatter(
         ComponentFormatter(
             fmt="%(asctime)s level=%(levelname)s component=%(component)s job_id=%(job_id)s %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S",
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
     root.addHandler(handler)

@@ -18,16 +18,24 @@ const sourceLabel = computed(() => {
   return code.split('-')[0].toUpperCase()
 })
 
+function isTargetDone(item: Candidate) {
+  return item.reason_code === 'target_exists'
+}
+
+const openCandidates = computed(() => store.candidates.filter((item) => !isTargetDone(item)))
+
+const doneCandidates = computed(() => store.candidates.filter((item) => isTargetDone(item)))
+
 const requestableCount = computed(
-  () => store.candidates.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
+  () => openCandidates.value.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
 )
 
 const extractableCount = computed(
-  () => store.candidates.filter((item) => item.can_extract && !item.active_extract_job_id).length,
+  () => openCandidates.value.filter((item) => item.can_extract && !item.active_extract_job_id).length,
 )
 
 const translatableCount = computed(
-  () => store.candidates.filter((item) => item.can_translate).length,
+  () => openCandidates.value.filter((item) => item.can_translate).length,
 )
 
 onMounted(() => {
@@ -168,10 +176,12 @@ function extractLabel(item: Candidate) {
 }
 
 function canShowExtract(item: Candidate) {
+  if (isTargetDone(item)) return false
   return item.can_extract || item.active_extract_job_id != null
 }
 
 function canRequestSource(item: Candidate) {
+  if (isTargetDone(item)) return false
   if (item.active_request_job_id != null) return true
   if (item.source_subtitle_path) return false
   if (item.media_type === 'movie') return item.bazarr_movie_id != null
@@ -186,6 +196,7 @@ function requestLabel(item: Candidate) {
 
 function statusText(item: Candidate) {
   if (item.can_translate) return 'Ready'
+  if (isTargetDone(item)) return 'Target already exists'
   return item.reason || item.reason_code || 'Unavailable'
 }
 </script>
@@ -249,11 +260,15 @@ function statusText(item: Candidate) {
 
     <!-- Mobile / tablet card list -->
     <div class="space-y-3 lg:hidden">
-      <p v-if="!store.candidates.length" class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60">
-        No candidates yet. Configure Bazarr in Settings, then refresh.
+      <p v-if="!openCandidates.length" class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60">
+        {{
+          doneCandidates.length
+            ? 'No open candidates. Finished items are listed below.'
+            : 'No candidates yet. Configure Bazarr in Settings, then refresh.'
+        }}
       </p>
       <article
-        v-for="item in store.candidates"
+        v-for="item in openCandidates"
         :key="`card-${item.key}`"
         class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
       >
@@ -367,13 +382,17 @@ function statusText(item: Candidate) {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!store.candidates.length">
+          <tr v-if="!openCandidates.length">
             <td class="px-4 py-8 text-ink-500" colspan="6">
-              No candidates yet. Configure Bazarr in Settings, then refresh.
+              {{
+                doneCandidates.length
+                  ? 'No open candidates. Finished items are listed below.'
+                  : 'No candidates yet. Configure Bazarr in Settings, then refresh.'
+              }}
             </td>
           </tr>
           <tr
-            v-for="item in store.candidates"
+            v-for="item in openCandidates"
             :key="item.key"
             class="border-t border-ink-100 dark:border-ink-800"
           >
@@ -453,5 +472,85 @@ function statusText(item: Candidate) {
         </tbody>
       </table>
     </div>
+
+    <details
+      v-if="doneCandidates.length"
+      class="group rounded-xl border border-ink-200 bg-white/60 dark:border-ink-800 dark:bg-ink-900/40"
+    >
+      <summary
+        class="cursor-pointer list-none px-4 py-3 text-sm font-medium text-ink-600 marker:content-none dark:text-ink-300 [&::-webkit-details-marker]:hidden"
+      >
+        <span class="inline-flex items-center gap-2">
+          <span class="text-ink-400 transition group-open:rotate-90" aria-hidden="true">▸</span>
+          Target already exists ({{ doneCandidates.length }})
+        </span>
+      </summary>
+      <div class="space-y-3 border-t border-ink-200 p-3 lg:hidden dark:border-ink-800">
+        <article
+          v-for="item in doneCandidates"
+          :key="`done-card-${item.key}`"
+          class="rounded-lg border border-ink-100 bg-ink-50/50 p-3 dark:border-ink-800 dark:bg-ink-950/30"
+        >
+          <div class="min-w-0">
+            <h2 class="font-medium leading-snug text-ink-800 dark:text-ink-100">{{ item.title }}</h2>
+            <p class="mt-1 break-all text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</p>
+          </div>
+          <p class="mt-2 text-xs text-ink-500">{{ statusText(item) }}</p>
+          <button
+            v-if="item.latest_job_id != null"
+            class="mt-3 rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+            type="button"
+            @click="viewLogs(item)"
+          >
+            View logs
+          </button>
+        </article>
+      </div>
+      <div class="hidden border-t border-ink-200 lg:block dark:border-ink-800">
+        <table class="w-full min-w-[40rem] table-fixed text-left text-sm">
+          <colgroup>
+            <col class="w-[52%]" />
+            <col class="w-[10%]" />
+            <col class="w-[10%]" />
+            <col class="w-[16%]" />
+            <col class="w-[12%]" />
+          </colgroup>
+          <thead class="bg-ink-50/60 text-ink-500 dark:bg-ink-950/40 dark:text-ink-400">
+            <tr>
+              <th class="px-4 py-2 font-medium">Title</th>
+              <th class="px-4 py-2 font-medium">Type</th>
+              <th class="px-4 py-2 font-medium">Target</th>
+              <th class="px-4 py-2 font-medium">Status</th>
+              <th class="px-4 py-2 font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="item in doneCandidates"
+              :key="`done-${item.key}`"
+              class="border-t border-ink-100 dark:border-ink-800"
+            >
+              <td class="px-4 py-2.5 align-top">
+                <div class="font-medium text-ink-800 dark:text-ink-100">{{ item.title }}</div>
+                <div class="mt-0.5 truncate text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</div>
+              </td>
+              <td class="px-4 py-2.5 align-top capitalize text-ink-600 dark:text-ink-300">{{ item.media_type }}</td>
+              <td class="px-4 py-2.5 align-top text-ink-600 dark:text-ink-300">{{ item.target_language }}</td>
+              <td class="px-4 py-2.5 align-top text-ink-500">{{ statusText(item) }}</td>
+              <td class="px-4 py-2.5 align-top">
+                <button
+                  v-if="item.latest_job_id != null"
+                  class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+                  type="button"
+                  @click="viewLogs(item)"
+                >
+                  View logs
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
   </section>
 </template>

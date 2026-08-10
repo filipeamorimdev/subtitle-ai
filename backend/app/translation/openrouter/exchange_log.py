@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from app.core.timefmt import utcnow_formatted
+
 
 def utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """Return current UTC time as Y-m-d H:i:s (name kept for call sites)."""
+    return utcnow_formatted()
 
 
 def job_openrouter_log_path(config_dir: Path, job_id: int) -> Path:

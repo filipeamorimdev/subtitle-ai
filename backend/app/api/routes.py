@@ -20,9 +20,11 @@ from app.api.schemas import (
     GlossaryTermUpdate,
     GlossaryUniverseOut,
     HealthOut,
+    JobActionOut,
     JobCreate,
     JobLogOut,
     JobOut,
+    JobUsageOut,
     OpenRouterModelOut,
     OpenRouterModelsOut,
     RequestSubtitleCreate,
@@ -202,12 +204,28 @@ def get_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
     return job
 
 
+@router.get("/jobs/{job_id}/actions", response_model=list[JobActionOut])
+def list_job_actions(job_id: int, db: Session = Depends(get_db)) -> list[JobActionOut]:
+    actions = JobService(db).list_job_actions(job_id)
+    if actions is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return actions
+
+
 @router.get("/jobs/{job_id}/log", response_model=JobLogOut)
 def get_job_log(job_id: int, db: Session = Depends(get_db)) -> JobLogOut:
     log = JobService(db).get_job_log(job_id)
     if not log:
         raise HTTPException(status_code=404, detail="Job not found")
     return log
+
+
+@router.get("/jobs/{job_id}/usage", response_model=JobUsageOut)
+async def get_job_usage(job_id: int, db: Session = Depends(get_db)) -> JobUsageOut:
+    usage = await JobService(db).get_job_usage(job_id)
+    if not usage:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return usage
 
 
 @router.post("/jobs", response_model=JobOut)

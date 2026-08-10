@@ -329,6 +329,19 @@ def test_api_candidates_and_manual_job(app_env, monkeypatch):
         assert log_body["entry_count"] >= 2
         assert any(entry.get("event") == "job_start" for entry in log_body["entries"])
         assert any(entry.get("event") == "job_end" for entry in log_body["entries"])
+
+        actions_response = client.get(f"/api/jobs/{completed['id']}/actions")
+        assert actions_response.status_code == 200
+        actions = actions_response.json()
+        assert len(actions) >= 1
+        assert any(a["id"] == completed["id"] and a["current"] is True for a in actions)
+        assert all(
+            {"id", "action", "status", "datetime", "duration_seconds", "message", "current"} <= set(a)
+            for a in actions
+        )
+        current_action = next(a for a in actions if a["id"] == completed["id"])
+        assert current_action["duration_seconds"] is None or current_action["duration_seconds"] >= 0
+
         stats = client.get("/api/stats").json()
         assert stats["total"] >= 1
         assert stats["completed"] >= 1

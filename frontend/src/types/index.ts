@@ -100,6 +100,16 @@ export interface Job {
   completed_at: string | null
 }
 
+export interface JobAction {
+  id: number
+  action: string
+  status: string
+  datetime: string | null
+  duration_seconds: number | null
+  message: string | null
+  current: boolean
+}
+
 export interface JobLog {
   job_id: number
   exists: boolean
@@ -107,6 +117,80 @@ export interface JobLog {
   entry_count: number
   content: string | null
   entries: Record<string, unknown>[] | null
+}
+
+export interface JobUsageExchange {
+  index: number
+  ts: string | null
+  model: string
+  action: string
+  attempt: number | null
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cost_usd: number | null
+  cost_estimated: boolean
+  status_code: number | null
+  ok: boolean
+  error: string | null
+}
+
+export interface JobUsageModel {
+  model: string
+  name: string | null
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cost_usd: number | null
+  prompt_price_per_million: number | null
+  completion_price_per_million: number | null
+}
+
+export interface JobUsageActionKind {
+  action: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cost_usd: number | null
+}
+
+export interface JobUsageRelated {
+  id: number
+  action: string
+  status: string
+  model: string
+  datetime: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  cost_usd: number | null
+  current: boolean
+}
+
+export interface JobUsageTotals {
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cost_usd: number | null
+  blended_cost_per_million: number | null
+}
+
+export interface JobUsage {
+  job_id: number
+  media_title: string | null
+  job_kind: string
+  model: string
+  status: string
+  log_exists: boolean
+  pricing_source: string
+  totals: JobUsageTotals
+  by_model: JobUsageModel[]
+  by_action: JobUsageActionKind[]
+  exchanges: JobUsageExchange[]
+  related_actions: JobUsageRelated[]
 }
 
 export interface BatchJobsResult {

@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { api } from '../services/api'
-import type { Job, JobLog } from '../types'
+import type { Job, JobAction, JobLog } from '../types'
+import { formatDateTime, formatDuration } from '../utils/datetime'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
 const job = ref<Job | null>(null)
+const actions = ref<JobAction[]>([])
 const error = ref<string | null>(null)
+const actionsError = ref<string | null>(null)
 const busy = ref(false)
 const logBusy = ref(false)
 const logVisible = ref(false)
@@ -21,7 +24,15 @@ const isTranslateJob = computed(() => (job.value?.job_kind || 'translate') === '
 const formattedLog = computed(() => {
   if (!jobLog.value?.exists) return ''
   if (jobLog.value.entries?.length) {
-    return jobLog.value.entries.map((entry) => JSON.stringify(entry, null, 2)).join('\n\n')
+    return jobLog.value.entries
+      .map((entry) => {
+        const normalized = { ...entry }
+        if (typeof normalized.ts === 'string') {
+          normalized.ts = formatDateTime(normalized.ts)
+        }
+        return JSON.stringify(normalized, null, 2)
+      })
+      .join('\n\n')
   }
   return jobLog.value.content || ''
 })
@@ -44,9 +55,27 @@ function notifyFinished(current: Job) {
   }
 }
 
+function statusClass(status: string) {
+  if (status === 'completed') return 'text-emerald-700 dark:text-emerald-300'
+  if (status === 'failed') return 'text-red-700 dark:text-red-300'
+  if (status === 'cancelled' || status === 'skipped') return 'text-amber-700 dark:text-amber-300'
+  if (status === 'processing') return 'text-accent'
+  return 'text-ink-700 dark:text-ink-200'
+}
+
+async function loadActions() {
+  try {
+    actions.value = await api.getJobActions(Number(props.id))
+    actionsError.value = null
+  } catch (err) {
+    actionsError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 async function load() {
   try {
     job.value = await api.getJob(Number(props.id))
+    await loadActions()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   }
@@ -74,6 +103,8 @@ watch(
     logVisible.value = false
     jobLog.value = null
     logError.value = null
+    actions.value = []
+    actionsError.value = null
     load()
   },
 )
@@ -112,6 +143,7 @@ async function cancel() {
   error.value = null
   try {
     job.value = await api.cancelJob(Number(props.id))
+    await loadActions()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -124,6 +156,7 @@ async function retrySync() {
   error.value = null
   try {
     job.value = await api.retryBazarrSync(Number(props.id))
+    await loadActions()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -198,6 +231,12 @@ async function toggleLog() {
         >
           {{ logVisible ? 'Hide log' : logBusy ? 'Loading log…' : 'View log' }}
         </button>
+        <RouterLink
+          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+          :to="`/jobs/${job.id}/stats`"
+        >
+          Usage stats
+        </RouterLink>
       </div>
     </div>
 
@@ -227,6 +266,80 @@ async function toggleLog() {
         v-else-if="formattedLog"
         class="mt-4 max-h-[32rem] overflow-auto rounded-lg bg-ink-950 p-4 text-xs leading-relaxed text-ink-100"
       >{{ formattedLog }}</pre>
+    </div>
+
+    <div class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="font-display text-lg font-bold">Actions</h2>
+          <p class="mt-1 text-sm text-ink-500">
+            Every request, extract, and translate run for this
+            {{ job.media_type === 'episode' ? 'episode' : 'media item' }}.
+          </p>
+        </div>
+        <p class="text-sm text-ink-500">{{ actions.length }} total</p>
+      </div>
+
+      <p v-if="actionsError" class="mt-3 text-sm text-red-700 dark:text-red-300">{{ actionsError }}</p>
+
+      <div v-else class="mt-4 overflow-x-auto">
+        <table class="min-w-full text-left text-sm">
+          <thead class="border-b border-ink-200 text-ink-500 dark:border-ink-800 dark:text-ink-300">
+            <tr>
+              <th class="py-2 pr-4 font-medium">Action</th>
+              <th class="py-2 pr-4 font-medium">Date / time</th>
+              <th class="py-2 pr-4 font-medium">Duration</th>
+              <th class="py-2 pr-4 font-medium">Status</th>
+              <th class="py-2 font-medium">Message</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!actions.length">
+              <td colspan="5" class="py-4 text-ink-500">No actions recorded yet.</td>
+            </tr>
+            <tr
+              v-for="item in actions"
+              :key="item.id"
+              class="border-b border-ink-100 last:border-0 dark:border-ink-800/80"
+              :class="item.current ? 'bg-accent/5' : ''"
+            >
+              <td class="py-3 pr-4 align-top">
+                <RouterLink
+                  v-if="!item.current"
+                  class="capitalize text-accent hover:underline"
+                  :to="`/jobs/${item.id}`"
+                >
+                  {{ item.action }}
+                  <span class="text-ink-500">#{{ item.id }}</span>
+                </RouterLink>
+                <span v-else class="capitalize font-medium">
+                  {{ item.action }}
+                  <span class="text-ink-500">#{{ item.id }}</span>
+                </span>
+              </td>
+              <td class="py-3 pr-4 align-top whitespace-nowrap text-ink-600 dark:text-ink-300">
+                {{ formatDateTime(item.datetime) }}
+              </td>
+              <td class="py-3 pr-4 align-top whitespace-nowrap text-ink-600 dark:text-ink-300">
+                {{ formatDuration(item.duration_seconds) }}
+              </td>
+              <td class="py-3 pr-4 align-top capitalize" :class="statusClass(item.status)">
+                {{ item.status }}
+              </td>
+              <td
+                class="py-3 align-top break-words"
+                :class="
+                  item.status === 'failed'
+                    ? 'text-red-700 dark:text-red-300'
+                    : 'text-ink-600 dark:text-ink-300'
+                "
+              >
+                {{ item.message || '—' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2">
@@ -265,23 +378,25 @@ async function toggleLog() {
       <div>
         <dt class="text-ink-500">Tokens</dt>
         <dd class="mt-1">
-          {{ job.total_tokens ?? '—' }}
-          <span v-if="job.input_tokens != null" class="text-ink-500">
-            (in {{ job.input_tokens }} / out {{ job.output_tokens }})
-          </span>
+          <RouterLink class="text-accent hover:underline" :to="`/jobs/${job.id}/stats`">
+            {{ job.total_tokens ?? '—' }}
+            <span v-if="job.input_tokens != null" class="text-ink-500">
+              (in {{ job.input_tokens }} / out {{ job.output_tokens }})
+            </span>
+          </RouterLink>
         </dd>
       </div>
       <div>
         <dt class="text-ink-500">Created</dt>
-        <dd class="mt-1">{{ job.created_at }}</dd>
+        <dd class="mt-1">{{ formatDateTime(job.created_at) }}</dd>
       </div>
       <div>
         <dt class="text-ink-500">Started</dt>
-        <dd class="mt-1">{{ job.started_at || '—' }}</dd>
+        <dd class="mt-1">{{ formatDateTime(job.started_at) }}</dd>
       </div>
       <div>
         <dt class="text-ink-500">Completed</dt>
-        <dd class="mt-1">{{ job.completed_at || '—' }}</dd>
+        <dd class="mt-1">{{ formatDateTime(job.completed_at) }}</dd>
       </div>
       <div>
         <dt class="text-ink-500">Reason</dt>

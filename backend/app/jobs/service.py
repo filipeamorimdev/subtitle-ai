@@ -16,9 +16,16 @@ from app.api.schemas import (
     BatchJobsOut,
     CandidateOut,
     ExtractCreate,
+    JobActionOut,
     JobCreate,
     JobLogOut,
     JobOut,
+    JobUsageActionOut,
+    JobUsageExchangeOut,
+    JobUsageModelOut,
+    JobUsageOut,
+    JobUsageRelatedOut,
+    JobUsageTotalsOut,
     StatsOut,
 )
 from app.core.config import get_app_config
@@ -51,6 +58,7 @@ from app.subtitles.filenames import (
 from app.subtitles.parsers.srt import parse_srt
 from app.subtitles.validation import validate_source
 from app.subtitles.writer.srt import write_srt_atomic
+from app.jobs.usage import ModelPricing, aggregate_usage, estimate_cost_usd, parse_exchanges
 from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.openrouter.service import OpenRouterTranslationService
@@ -112,6 +120,33 @@ def job_to_out(row: JobRow) -> JobOut:
     )
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _action_duration_seconds(row: JobRow, *, now: datetime | None = None) -> float | None:
+    """Elapsed seconds for a job action from start until completion (or now if still running)."""
+    start = _as_utc(row.started_at) or _as_utc(row.created_at)
+    if start is None:
+        return None
+    if row.completed_at is not None:
+        end = _as_utc(row.completed_at)
+    elif row.status in {"pending", "processing"}:
+        end = now or datetime.now(timezone.utc)
+    else:
+        # Cancelled/failed/skipped without completed_at — fall back to created/start only if both exist
+        end = _as_utc(row.completed_at)
+        if end is None:
+            return None
+    if end is None or end < start:
+        return None
+    return round((end - start).total_seconds(), 3)
+
+
 class JobService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -126,6 +161,51 @@ class JobService:
     def get_job(self, job_id: int) -> JobOut | None:
         row = self.db.get(JobRow, job_id)
         return job_to_out(row) if row else None
+
+    def list_job_actions(self, job_id: int, limit: int = 200) -> list[JobActionOut] | None:
+        """Return every job run for the same episode/media as ``job_id``."""
+        row = self.db.get(JobRow, job_id)
+        if row is None:
+            return None
+
+        query = select(JobRow)
+        if row.candidate_key:
+            query = query.where(JobRow.candidate_key == row.candidate_key)
+        elif row.media_type == "episode" and row.bazarr_episode_id is not None:
+            query = query.where(
+                JobRow.media_type == "episode",
+                JobRow.bazarr_episode_id == row.bazarr_episode_id,
+            )
+        elif row.media_type == "movie" and row.bazarr_movie_id is not None:
+            query = query.where(
+                JobRow.media_type == "movie",
+                JobRow.bazarr_movie_id == row.bazarr_movie_id,
+            )
+        else:
+            query = query.where(JobRow.media_path == row.media_path)
+
+        related = self.db.scalars(
+            query.order_by(JobRow.created_at.desc(), JobRow.id.desc()).limit(limit)
+        ).all()
+
+        actions: list[JobActionOut] = []
+        now = datetime.now(timezone.utc)
+        for item in related:
+            message = item.error
+            if not message and item.status == "skipped" and item.progress_detail:
+                message = item.progress_detail
+            actions.append(
+                JobActionOut(
+                    id=item.id,
+                    action=getattr(item, "job_kind", None) or "translate",
+                    status=item.status,
+                    datetime=item.completed_at or item.started_at or item.created_at,
+                    duration_seconds=_action_duration_seconds(item, now=now),
+                    message=message,
+                    current=item.id == job_id,
+                )
+            )
+        return actions
 
     def get_job_log(self, job_id: int) -> JobLogOut | None:
         row = self.db.get(JobRow, job_id)
@@ -156,6 +236,165 @@ class JobService:
             entry_count=len(entries),
             content=content,
             entries=entries,
+        )
+
+    async def get_job_usage(self, job_id: int) -> JobUsageOut | None:
+        """Aggregate token/cost stats from the job OpenRouter exchange log."""
+        row = self.db.get(JobRow, job_id)
+        if row is None:
+            return None
+
+        log = self.get_job_log(job_id)
+        assert log is not None
+        entries = log.entries or []
+
+        pricing_by_model: dict[str, ModelPricing] = {}
+        try:
+            key, _ = self.settings.get_openrouter_credentials()
+            models = await OpenRouterClient.list_models(api_key=key or None)
+            for model in models:
+                pricing_by_model[model.id] = ModelPricing(
+                    name=model.name,
+                    prompt_price_per_million=model.prompt_price_per_million,
+                    completion_price_per_million=model.completion_price_per_million,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not load OpenRouter pricing for job usage: %s", exc)
+
+        exchanges = parse_exchanges(
+            entries,
+            fallback_model=row.model,
+            pricing_by_model=pricing_by_model,
+        )
+        agg = aggregate_usage(exchanges)
+
+        by_model: list[JobUsageModelOut] = []
+        for item in agg["by_model"]:
+            pricing = pricing_by_model.get(item["model"])
+            by_model.append(
+                JobUsageModelOut(
+                    model=item["model"],
+                    name=pricing.name if pricing else None,
+                    requests=item["requests"],
+                    input_tokens=item["input_tokens"],
+                    output_tokens=item["output_tokens"],
+                    total_tokens=item["total_tokens"],
+                    cost_usd=item["cost_usd"],
+                    prompt_price_per_million=(
+                        pricing.prompt_price_per_million if pricing else None
+                    ),
+                    completion_price_per_million=(
+                        pricing.completion_price_per_million if pricing else None
+                    ),
+                )
+            )
+
+        by_action = [
+            JobUsageActionOut(
+                action=item["action"],
+                requests=item["requests"],
+                input_tokens=item["input_tokens"],
+                output_tokens=item["output_tokens"],
+                total_tokens=item["total_tokens"],
+                cost_usd=item["cost_usd"],
+            )
+            for item in agg["by_action"]
+        ]
+
+        exchange_outs = [
+            JobUsageExchangeOut(
+                index=item["index"],
+                ts=item.get("ts") if isinstance(item.get("ts"), str) else None,
+                model=item["model"],
+                action=item["action"],
+                attempt=item.get("attempt"),
+                input_tokens=item["input_tokens"],
+                output_tokens=item["output_tokens"],
+                total_tokens=item["total_tokens"],
+                cost_usd=item.get("cost_usd"),
+                cost_estimated=bool(item.get("cost_estimated")),
+                status_code=item.get("status_code"),
+                ok=bool(item.get("ok")),
+                error=item.get("error") if isinstance(item.get("error"), str) else None,
+            )
+            for item in exchanges
+        ]
+
+        related_actions: list[JobUsageRelatedOut] = []
+        actions = self.list_job_actions(job_id) or []
+        for action in actions:
+            related = self.db.get(JobRow, action.id)
+            if related is None:
+                continue
+            related_cost = None
+            if related.input_tokens is not None or related.output_tokens is not None:
+                related_cost = estimate_cost_usd(
+                    input_tokens=related.input_tokens or 0,
+                    output_tokens=related.output_tokens or 0,
+                    pricing=pricing_by_model.get(related.model),
+                )
+            related_actions.append(
+                JobUsageRelatedOut(
+                    id=related.id,
+                    action=action.action,
+                    status=related.status,
+                    model=related.model,
+                    datetime=action.datetime,
+                    input_tokens=related.input_tokens,
+                    output_tokens=related.output_tokens,
+                    total_tokens=related.total_tokens,
+                    cost_usd=related_cost,
+                    current=action.current,
+                )
+            )
+
+        # Prefer live log totals; fall back to persisted job token columns when log is empty
+        if agg["requests"] > 0:
+            totals = JobUsageTotalsOut(
+                requests=agg["requests"],
+                input_tokens=agg["input_tokens"],
+                output_tokens=agg["output_tokens"],
+                total_tokens=agg["total_tokens"],
+                cost_usd=agg["cost_usd"],
+                blended_cost_per_million=agg["blended_cost_per_million"],
+            )
+            pricing_source = agg["pricing_source"]
+        else:
+            totals = JobUsageTotalsOut(
+                requests=0,
+                input_tokens=row.input_tokens or 0,
+                output_tokens=row.output_tokens or 0,
+                total_tokens=row.total_tokens or 0,
+                cost_usd=None,
+                blended_cost_per_million=None,
+            )
+            pricing_source = "none"
+            if totals.input_tokens or totals.output_tokens:
+                totals.cost_usd = estimate_cost_usd(
+                    input_tokens=totals.input_tokens,
+                    output_tokens=totals.output_tokens,
+                    pricing=pricing_by_model.get(row.model),
+                )
+                if totals.cost_usd is not None and totals.total_tokens > 0:
+                    totals.blended_cost_per_million = (
+                        totals.cost_usd / totals.total_tokens
+                    ) * 1_000_000
+                if totals.cost_usd is not None:
+                    pricing_source = "estimated"
+
+        return JobUsageOut(
+            job_id=row.id,
+            media_title=row.media_title,
+            job_kind=getattr(row, "job_kind", None) or "translate",
+            model=row.model,
+            status=row.status,
+            log_exists=log.exists,
+            pricing_source=pricing_source,
+            totals=totals,
+            by_model=by_model,
+            by_action=by_action,
+            exchanges=exchange_outs,
+            related_actions=related_actions,
         )
 
     def stats(self) -> StatsOut:
@@ -478,6 +717,8 @@ class JobService:
 
     @staticmethod
     def _can_request_source(candidate: CandidateOut) -> bool:
+        if candidate.reason_code == "target_exists":
+            return False
         if candidate.source_subtitle_path:
             return False
         if candidate.media_type == "movie":
