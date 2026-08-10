@@ -12,6 +12,7 @@ const requestingKey = ref<string | null>(null)
 const batchBusy = ref<'request' | 'extract' | 'translate' | null>(null)
 const actionError = ref<string | null>(null)
 const actionInfo = ref<string | null>(null)
+const selectedKeys = ref<Set<string>>(new Set())
 
 const sourceLabel = computed(() => {
   const code = store.settings?.source_languages?.[0] || 'en'
@@ -38,6 +39,28 @@ const translatableCount = computed(
   () => openCandidates.value.filter((item) => item.can_translate).length,
 )
 
+const selectedCandidates = computed(() =>
+  openCandidates.value.filter((item) => selectedKeys.value.has(item.key)),
+)
+
+const selectedCount = computed(() => selectedCandidates.value.length)
+
+const allSelected = computed(
+  () => openCandidates.value.length > 0 && openCandidates.value.every((item) => selectedKeys.value.has(item.key)),
+)
+
+const selectedRequestable = computed(() =>
+  selectedCandidates.value.filter((item) => canRequestSource(item) && !item.active_request_job_id),
+)
+
+const selectedExtractable = computed(() =>
+  selectedCandidates.value.filter((item) => item.can_extract && !item.active_extract_job_id),
+)
+
+const selectedTranslatable = computed(() =>
+  selectedCandidates.value.filter((item) => item.can_translate),
+)
+
 onMounted(() => {
   store.loadSettings().catch(() => undefined)
   store.loadCandidates().catch(() => undefined)
@@ -56,9 +79,114 @@ async function refresh() {
   actionInfo.value = null
   try {
     await store.loadCandidates()
+    pruneSelectedKeys()
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
   }
+}
+
+function pruneSelectedKeys() {
+  const valid = new Set(openCandidates.value.map((item) => item.key))
+  const next = new Set<string>()
+  for (const key of selectedKeys.value) {
+    if (valid.has(key)) next.add(key)
+  }
+  selectedKeys.value = next
+}
+
+function isSelected(key: string) {
+  return selectedKeys.value.has(key)
+}
+
+function toggleSelected(key: string, checked: boolean) {
+  const next = new Set(selectedKeys.value)
+  if (checked) next.add(key)
+  else next.delete(key)
+  selectedKeys.value = next
+}
+
+function onRowCheckboxChange(key: string, event: Event) {
+  const target = event.target as HTMLInputElement
+  toggleSelected(key, target.checked)
+}
+
+function toggleAllSelected(checked: boolean) {
+  selectedKeys.value = checked
+    ? new Set(openCandidates.value.map((item) => item.key))
+    : new Set()
+}
+
+function onToggleAllSelected(event: Event) {
+  const target = event.target as HTMLInputElement
+  toggleAllSelected(target.checked)
+}
+
+async function runSelected(
+  action: 'request' | 'extract' | 'translate',
+  items: Candidate[],
+  label: string,
+  runOne: (item: Candidate) => Promise<unknown>,
+) {
+  if (!items.length) return
+  batchBusy.value = action
+  actionError.value = null
+  actionInfo.value = null
+  let created = 0
+  const errors: string[] = []
+  try {
+    for (const item of items) {
+      try {
+        await runOne(item)
+        created += 1
+      } catch (err) {
+        errors.push(`${item.title}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    selectedKeys.value = new Set()
+    actionInfo.value = `${label}: queued ${created}`
+    if (errors.length) {
+      actionError.value = errors.slice(0, 5).join(' · ')
+    }
+    try {
+      await store.loadCandidates()
+    } catch {
+      /* keep action result even if refresh fails */
+    }
+    if (created > 0) {
+      await router.push('/jobs')
+    }
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    batchBusy.value = null
+  }
+}
+
+async function requestMultiple() {
+  await runSelected(
+    'request',
+    selectedRequestable.value,
+    `Request ${sourceLabel.value}`,
+    (item) => store.requestSubtitle(item.key),
+  )
+}
+
+async function extractMultiple() {
+  await runSelected(
+    'extract',
+    selectedExtractable.value,
+    'Extract',
+    (item) => store.extractCandidate(item.key),
+  )
+}
+
+async function translateMultiple() {
+  await runSelected(
+    'translate',
+    selectedTranslatable.value,
+    'Translate',
+    (item) => store.translateCandidate(item.key),
+  )
 }
 
 async function requestAllMissing() {
@@ -211,43 +339,75 @@ function statusText(item: Candidate) {
             Movies and episodes missing your target subtitle.
           </p>
         </div>
-        <button
-          class="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
-          type="button"
-          :disabled="store.loading || batchBusy != null"
-          @click="refresh"
-        >
-          {{ store.loading ? 'Refreshing…' : 'Refresh' }}
-        </button>
+        <div class="flex shrink-0 flex-col items-end gap-2">
+          <button
+            class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
+            type="button"
+            :disabled="store.loading || batchBusy != null"
+            @click="refresh"
+          >
+            {{ store.loading ? 'Refreshing…' : 'Refresh' }}
+          </button>
+          <div class="flex flex-wrap justify-end gap-2">
+            <button
+              class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+              type="button"
+              :disabled="store.loading || batchBusy != null || requestableCount === 0"
+              @click="requestAllMissing"
+            >
+              {{
+                batchBusy === 'request'
+                  ? `Requesting ${sourceLabel}…`
+                  : `Request all ${sourceLabel}`
+              }}
+            </button>
+            <button
+              class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+              type="button"
+              :disabled="store.loading || batchBusy != null || extractableCount === 0"
+              @click="extractAll"
+            >
+              {{ batchBusy === 'extract' ? 'Queuing…' : 'Extract all' }}
+            </button>
+            <button
+              class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+              type="button"
+              :disabled="store.loading || batchBusy != null || translatableCount === 0"
+              @click="translateAll"
+            >
+              {{ batchBusy === 'translate' ? 'Queuing…' : 'Translate all' }}
+            </button>
+          </div>
+        </div>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div v-if="selectedCount" class="flex flex-wrap gap-2">
         <button
-          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="store.loading || batchBusy != null || requestableCount === 0"
-          @click="requestAllMissing"
+          :disabled="store.loading || batchBusy != null || selectedRequestable.length === 0"
+          @click="requestMultiple"
         >
           {{
             batchBusy === 'request'
               ? `Requesting ${sourceLabel}…`
-              : `Request all ${sourceLabel}`
+              : `Request multiple ${sourceLabel} (${selectedRequestable.length})`
           }}
         </button>
         <button
-          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="store.loading || batchBusy != null || extractableCount === 0"
-          @click="extractAll"
+          :disabled="store.loading || batchBusy != null || selectedExtractable.length === 0"
+          @click="extractMultiple"
         >
-          {{ batchBusy === 'extract' ? 'Queuing…' : 'Extract all' }}
+          {{ batchBusy === 'extract' ? 'Queuing…' : `Extract multiple (${selectedExtractable.length})` }}
         </button>
         <button
-          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="store.loading || batchBusy != null || translatableCount === 0"
-          @click="translateAll"
+          :disabled="store.loading || batchBusy != null || selectedTranslatable.length === 0"
+          @click="translateMultiple"
         >
-          {{ batchBusy === 'translate' ? 'Queuing…' : 'Translate all' }}
+          {{ batchBusy === 'translate' ? 'Queuing…' : `Translate multiple (${selectedTranslatable.length})` }}
         </button>
       </div>
     </div>
@@ -273,9 +433,18 @@ function statusText(item: Candidate) {
         :key="`card-${item.key}`"
         class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
       >
-        <div class="min-w-0">
-          <h2 class="font-medium leading-snug text-ink-900 dark:text-ink-50">{{ item.title }}</h2>
-          <p class="mt-1 break-all text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</p>
+        <div class="flex items-start gap-3">
+          <input
+            class="mt-1"
+            type="checkbox"
+            :checked="isSelected(item.key)"
+            :aria-label="`Select ${item.title}`"
+            @change="onRowCheckboxChange(item.key, $event)"
+          />
+          <div class="min-w-0 flex-1">
+            <h2 class="font-medium leading-snug text-ink-900 dark:text-ink-50">{{ item.title }}</h2>
+            <p class="mt-1 break-all text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</p>
+          </div>
         </div>
 
         <dl class="mt-3 text-xs">
@@ -358,7 +527,19 @@ function statusText(item: Candidate) {
           <tr>
             <th class="px-4 py-3 font-medium">Title</th>
             <th class="px-4 py-3 font-medium">Status</th>
-            <th class="sticky right-0 bg-ink-50/95 px-4 py-3 font-medium dark:bg-ink-950/95">Actions</th>
+            <th class="sticky right-0 bg-ink-50/95 px-4 py-3 font-medium dark:bg-ink-950/95">
+              <label class="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="allSelected"
+                  :disabled="!openCandidates.length"
+                  :indeterminate.prop="selectedCount > 0 && !allSelected"
+                  aria-label="Select all candidates"
+                  @change="onToggleAllSelected($event)"
+                />
+                Actions
+              </label>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -404,6 +585,12 @@ function statusText(item: Candidate) {
               class="sticky right-0 bg-white/95 px-4 py-3 align-top shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] dark:bg-ink-900/95"
             >
               <div class="flex flex-wrap items-center justify-end gap-2">
+                <input
+                  type="checkbox"
+                  :checked="isSelected(item.key)"
+                  :aria-label="`Select ${item.title}`"
+                  @change="onRowCheckboxChange(item.key, $event)"
+                />
                 <button
                   v-if="item.latest_job_id != null"
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"

@@ -7,6 +7,7 @@ Settings are stored in SQLite under `/config/subtitle-ai.db`. Secrets are Fernet
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SUBTITLE_AI_CONFIG_DIR` | `/config` | Persistent config directory |
+| `SUBTITLE_AI_MEDIA_ROOTS` | `/media` | Comma-separated container paths allowed for media/subtitles (must match volume mounts) |
 | `SUBTITLE_AI_LOG_LEVEL` | `INFO` | Log level |
 | `SUBTITLE_AI_HOST` / `PORT` | `0.0.0.0` / `6768` | Bind address (uvicorn CLI usually sets this) |
 | `SUBTITLE_AI_FRONTEND_DIST` | auto-detected | Built Vue assets directory |
@@ -43,10 +44,11 @@ Every OpenRouter request/response attempt for that job is appended (including re
 
 - Target language code/name
 - Source language preference list
+- Batch size (subtitle blocks per OpenRouter request; used by translation jobs)
 
 ### Media
 
-- Media roots (default `/media`)
+- Media roots are **read-only** in the UI — set via `SUBTITLE_AI_MEDIA_ROOTS` in Docker
 - Path mappings: `bazarr_prefix => local_prefix`
 
 ## Masking

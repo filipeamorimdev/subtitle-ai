@@ -35,7 +35,7 @@ const form = reactive({
   target_language_code: 'pt-PT',
   target_language_name: 'Portuguese (Portugal)',
   source_language_code: 'en',
-  media_roots: '/media',
+  batch_size: 25,
   path_mappings: '' as string,
 })
 
@@ -77,7 +77,7 @@ onMounted(async () => {
   form.target_language_code = s.target_language.code
   form.target_language_name = s.target_language.name
   form.source_language_code = s.source_languages?.[0] || 'en'
-  form.media_roots = s.media_roots.join(', ')
+  form.batch_size = s.batch_size
   form.path_mappings = mappingsToText(s.path_mappings)
   await loadOpenRouterModels()
 })
@@ -108,7 +108,7 @@ async function save() {
       target_language_code: form.target_language_code,
       target_language_name: form.target_language_name,
       source_languages: [form.source_language_code || 'en'],
-      media_roots: form.media_roots.split(',').map((s) => s.trim()).filter(Boolean),
+      batch_size: Number(form.batch_size) || 25,
       path_mappings: textToMappings(form.path_mappings),
     })
     form.bazarr_api_key = ''
@@ -237,17 +237,35 @@ async function testOpenRouter() {
             <option v-for="lang in LANGUAGES" :key="`target-${lang.code}`" :value="lang.code">{{ lang.name }} ({{ lang.code }})</option>
           </select>
         </label>
+        <label class="block text-sm">
+          <span class="text-ink-500">Batch size</span>
+          <input
+            v-model.number="form.batch_size"
+            type="number"
+            min="1"
+            max="200"
+            class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            Number of subtitle blocks sent per OpenRouter request during translation (1–200).
+          </span>
+        </label>
       </fieldset>
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Media</legend>
-        <label class="block text-sm">
-          <span class="text-ink-500">Container media roots (comma-separated)</span>
-          <input v-model="form.media_roots" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" />
-        </label>
+        <div class="text-sm">
+          <span class="text-ink-500">Container media roots</span>
+          <p class="mt-1 font-mono text-xs text-ink-700 dark:text-ink-300">
+            {{ (store.settings?.media_roots || []).join(', ') || '—' }}
+          </p>
+          <span class="mt-1 block text-xs text-ink-500">
+            Set via Docker env <code class="font-mono">SUBTITLE_AI_MEDIA_ROOTS</code> (comma-separated). Not editable here.
+          </span>
+        </div>
         <label class="block text-sm">
           <span class="text-ink-500">Path mappings (one per line: Bazarr path => local path)</span>
-          <textarea v-model="form.path_mappings" rows="4" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 font-mono text-xs dark:border-ink-600" placeholder="/movies => /media/movies" />
+          <textarea v-model="form.path_mappings" rows="4" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 font-mono text-xs dark:border-ink-600" placeholder="/movies => /data/movies" />
           <span class="mt-1 block text-xs text-ink-500">
             Bazarr and Subtitle AI must see compatible media paths. Map prefixes when they differ.
           </span>

@@ -8,7 +8,6 @@ const route = useRoute()
 const navOpen = ref(false)
 
 onMounted(() => {
-  store.initTheme()
   store.loadSettings().catch(() => undefined)
   store.loadJobs().catch(() => undefined)
 })
@@ -57,13 +56,6 @@ const links = [
                 {{ link.label }}
               </RouterLink>
             </nav>
-            <button
-              class="rounded-md px-3 py-2 text-sm font-medium text-ink-600 hover:bg-ink-100 dark:text-ink-200 dark:hover:bg-ink-800"
-              type="button"
-              @click="store.toggleTheme()"
-            >
-              {{ store.dark ? 'Light' : 'Dark' }}
-            </button>
             <button
               class="rounded-md px-3 py-2 text-sm font-medium text-ink-600 hover:bg-ink-100 md:hidden dark:text-ink-200 dark:hover:bg-ink-800"
               type="button"

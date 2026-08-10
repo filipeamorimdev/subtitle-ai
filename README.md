@@ -10,7 +10,7 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 
 ## Workflow
 
-1. Configure Bazarr, OpenRouter, languages, and media roots / path mappings under **Settings**.
+1. Configure Bazarr, OpenRouter, languages, batch size, and path mappings under **Settings**. Mount media via Docker (`SUBTITLE_AI_MEDIA_ROOTS`).
 2. Open **Home** (logo) for pipeline and job status, or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
 3. For each item, use the action that matches its state:
    - **Request EN** (or your source language) — ask Bazarr to search for a source SRT; if none is found and an embedded text track exists, Subtitle AI falls back to ffmpeg extract.
@@ -32,7 +32,7 @@ Automatic enqueue / scan intervals are intentionally deferred.
 | **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
 | **Usage stats** | Token and cost breakdown by model and action |
 | **Glossaries** | Universe / series / movie term scopes; lock terms; review suggested terms |
-| **Settings** | Bazarr, OpenRouter (searchable model picker with pricing), languages, media roots |
+| **Settings** | Bazarr, OpenRouter (searchable model picker with pricing), languages, batch size, path mappings |
 
 ## Architecture
 
@@ -92,7 +92,7 @@ ghcr.io/filipeamorimdev/subtitle-ai:latest
 2. Under the repo **Packages**, open the image and set visibility to **Public** (or add `ghcr.io` in Portainer **Registries** with a PAT that has `read:packages`).
 3. In Portainer, create/update a stack using [`docker-compose.portainer.yml`](docker-compose.portainer.yml) (Web editor or Git compose path).
 4. Adjust host volume paths if needed, deploy, open port **6768**.
-5. In the UI set Bazarr to `http://bazarr:6767` and media roots to `/data/movies,/data/tv`.
+5. In the UI set Bazarr to `http://bazarr:6767`. Media roots come from `SUBTITLE_AI_MEDIA_ROOTS` in the compose file (`/data/movies,/data/tv`).
 
 If Subtitle AI is in a **different stack** than Bazarr, attach it to the media stack network (see comments in the Portainer compose file).
 
@@ -129,11 +129,12 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 
 - Source language (default English / `en`)
 - Target language (default Portuguese Portugal / `pt-PT`; also `pt-BR`, `es`, `fr`, `de`, `it`, …)
+- Batch size (subtitle blocks per OpenRouter request; used by translation jobs)
 
 ### Media
 
-- Media roots (comma-separated paths inside the container)
-- Path mappings (`bazarrPath => localPath`) when Bazarr and Subtitle AI mounts differ
+- Media roots via Docker env `SUBTITLE_AI_MEDIA_ROOTS` (comma-separated container paths; must match volume mounts)
+- Path mappings in Settings (`bazarrPath => localPath`) when Bazarr and Subtitle AI mounts differ
 
 ## Development
 

@@ -29,7 +29,6 @@ class SettingsUpdate(BaseModel):
     target_language_code: str | None = None
     target_language_name: str | None = None
     source_languages: list[str] | None = None
-    media_roots: list[str] | None = None
     path_mappings: list[PathMappingIn] | None = None
     batch_size: int | None = Field(default=None, ge=1, le=200)
 

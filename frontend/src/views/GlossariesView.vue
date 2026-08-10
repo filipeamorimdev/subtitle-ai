@@ -16,6 +16,7 @@ const selectedScopeId = ref<number | null>(null)
 const busy = ref(false)
 const error = ref<string | null>(null)
 const tab = ref<'scopes' | 'review'>('scopes')
+const selectedReviewIds = ref<Set<number>>(new Set())
 
 const newTerm = ref({
   source: '',
@@ -34,6 +35,12 @@ const selectedScope = computed(() =>
 const universeScopes = computed(() => scopes.value.filter((s) => s.kind === 'universe'))
 const mediaScopes = computed(() => scopes.value.filter((s) => s.kind !== 'universe'))
 
+const selectedReviewCount = computed(() => selectedReviewIds.value.size)
+
+const allReviewSelected = computed(
+  () => suggested.value.length > 0 && suggested.value.every((term) => selectedReviewIds.value.has(term.id)),
+)
+
 const termTypes = ['character', 'place', 'organization', 'title', 'catchphrase', 'other']
 const policies = ['keep', 'localize', 'transliterate']
 
@@ -48,6 +55,7 @@ async function loadAll() {
     ])
     scopes.value = scopeRows
     suggested.value = suggestedRows
+    pruneSelectedReviewIds()
     if (selectedScopeId.value == null && scopeRows.length) {
       const fromQuery = Number(route.query.scope)
       selectedScopeId.value = Number.isFinite(fromQuery) && fromQuery > 0
@@ -141,9 +149,74 @@ async function removeTerm(term: GlossaryTerm) {
 
 async function review(term: GlossaryTerm, approve: boolean, lock = false) {
   busy.value = true
+  error.value = null
   try {
     await api.reviewGlossaryTerm(term.id, approve, lock)
     await loadAll()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+function pruneSelectedReviewIds() {
+  const valid = new Set(suggested.value.map((term) => term.id))
+  const next = new Set<number>()
+  for (const id of selectedReviewIds.value) {
+    if (valid.has(id)) next.add(id)
+  }
+  selectedReviewIds.value = next
+}
+
+function isReviewSelected(id: number) {
+  return selectedReviewIds.value.has(id)
+}
+
+function toggleReviewSelected(id: number, checked: boolean) {
+  const next = new Set(selectedReviewIds.value)
+  if (checked) next.add(id)
+  else next.delete(id)
+  selectedReviewIds.value = next
+}
+
+function onReviewCheckboxChange(id: number, event: Event) {
+  const target = event.target as HTMLInputElement
+  toggleReviewSelected(id, target.checked)
+}
+
+function toggleAllReviewSelected(checked: boolean) {
+  selectedReviewIds.value = checked
+    ? new Set(suggested.value.map((term) => term.id))
+    : new Set()
+}
+
+function onToggleAllReviewSelected(event: Event) {
+  const target = event.target as HTMLInputElement
+  toggleAllReviewSelected(target.checked)
+}
+
+async function reviewMultiple(approve: boolean) {
+  const ids = [...selectedReviewIds.value]
+  if (!ids.length) return
+  busy.value = true
+  error.value = null
+  try {
+    let failureCount = 0
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          await api.reviewGlossaryTerm(id, approve)
+        } catch {
+          failureCount += 1
+        }
+      }),
+    )
+    selectedReviewIds.value = new Set()
+    await loadAll()
+    if (failureCount) {
+      error.value = `Failed to ${approve ? 'approve' : 'reject'} ${failureCount} of ${ids.length} term(s).`
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -217,6 +290,25 @@ watch(
       </div>
     </div>
 
+    <div v-if="selectedReviewCount" class="flex flex-wrap gap-2">
+      <button
+        type="button"
+        class="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+        :disabled="busy"
+        @click="reviewMultiple(true)"
+      >
+        Approve multiple ({{ selectedReviewCount }})
+      </button>
+      <button
+        type="button"
+        class="rounded-md bg-red-600/90 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+        :disabled="busy"
+        @click="reviewMultiple(false)"
+      >
+        Reject multiple ({{ selectedReviewCount }})
+      </button>
+    </div>
+
     <p v-if="error" class="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
       {{ error }}
     </p>
@@ -236,11 +328,22 @@ watch(
           :key="`review-card-${term.id}`"
           class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
         >
-          <button class="text-left text-sm text-accent hover:underline" type="button" @click="selectScope(term.scope_id)">
-            {{ term.scope_name || term.scope_id }}
-          </button>
-          <div class="mt-2 font-medium">{{ term.source }} → {{ term.target }}</div>
-          <div class="mt-1 text-xs text-ink-500">{{ term.term_type }} · {{ term.policy }}</div>
+          <div class="flex items-start gap-3">
+            <input
+              class="mt-1"
+              type="checkbox"
+              :checked="isReviewSelected(term.id)"
+              :aria-label="`Select ${term.source}`"
+              @change="onReviewCheckboxChange(term.id, $event)"
+            />
+            <div class="min-w-0 flex-1">
+              <button class="text-left text-sm text-accent hover:underline" type="button" @click="selectScope(term.scope_id)">
+                {{ term.scope_name || term.scope_id }}
+              </button>
+              <div class="mt-2 font-medium">{{ term.source }} → {{ term.target }}</div>
+              <div class="mt-1 text-xs text-ink-500">{{ term.term_type }} · {{ term.policy }}</div>
+            </div>
+          </div>
           <div class="mt-3 flex flex-wrap gap-2">
             <button
               class="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
@@ -279,7 +382,19 @@ watch(
               <th class="px-4 py-3 font-medium">Target</th>
               <th class="px-4 py-3 font-medium">Type</th>
               <th class="px-4 py-3 font-medium">Policy</th>
-              <th class="px-4 py-3 font-medium">Actions</th>
+              <th class="px-4 py-3 font-medium">
+                <label class="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    :checked="allReviewSelected"
+                    :disabled="!suggested.length"
+                    :indeterminate.prop="selectedReviewCount > 0 && !allReviewSelected"
+                    aria-label="Select all suggested terms"
+                    @change="onToggleAllReviewSelected($event)"
+                  />
+                  Actions
+                </label>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -301,7 +416,13 @@ watch(
               <td class="px-4 py-3">{{ term.term_type }}</td>
               <td class="px-4 py-3">{{ term.policy }}</td>
               <td class="px-4 py-3">
-                <div class="flex flex-wrap gap-2">
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    type="checkbox"
+                    :checked="isReviewSelected(term.id)"
+                    :aria-label="`Select ${term.source}`"
+                    @change="onReviewCheckboxChange(term.id, $event)"
+                  />
                   <button
                     class="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
                     type="button"

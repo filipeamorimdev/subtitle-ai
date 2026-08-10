@@ -39,6 +39,7 @@ def app_env(tmp_path, monkeypatch):
     source.write_text(SAMPLE_SRT, encoding="utf-8")
 
     monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path / "media"))
     get_app_config.cache_clear()
 
     engine = create_engine(f"sqlite:///{config_dir / 'test.db'}")
@@ -62,7 +63,6 @@ def app_env(tmp_path, monkeypatch):
             target_language_code="pt-PT",
             target_language_name="Portuguese (Portugal)",
             source_languages=["en"],
-            media_roots=[str(tmp_path / "media")],
             path_mappings=[
                 PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path / "media"))
             ],

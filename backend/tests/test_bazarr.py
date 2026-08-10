@@ -125,6 +125,7 @@ async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path))
     get_app_config.cache_clear()
 
     media_dir = tmp_path / "Empty"
@@ -144,7 +145,6 @@ async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
             target_language_code="pt-PT",
             target_language_name="Portuguese (Portugal)",
             source_languages=["en"],
-            media_roots=[str(tmp_path)],
             path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
         )
     )
@@ -241,6 +241,7 @@ async def test_candidate_service(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path))
     get_app_config.cache_clear()
 
     media_dir = tmp_path / "Example"
@@ -264,7 +265,6 @@ async def test_candidate_service(tmp_path, monkeypatch):
             target_language_code="pt-PT",
             target_language_name="Portuguese (Portugal)",
             source_languages=["en"],
-            media_roots=[str(tmp_path)],
             path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
         )
     )
@@ -379,6 +379,7 @@ async def test_request_job_skips_when_not_found(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path))
     get_app_config.cache_clear()
 
     media_dir = tmp_path / "Empty"
@@ -398,7 +399,6 @@ async def test_request_job_skips_when_not_found(tmp_path, monkeypatch):
             target_language_code="pt-PT",
             target_language_name="Portuguese (Portugal)",
             source_languages=["en"],
-            media_roots=[str(tmp_path)],
             path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
         )
     )

@@ -268,6 +268,72 @@ async function toggleLog() {
       >{{ formattedLog }}</pre>
     </div>
 
+    <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2">
+      <div>
+        <dt class="text-ink-500">Media</dt>
+        <dd class="mt-1 break-all">{{ job.media_path }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Kind</dt>
+        <dd class="mt-1 capitalize">{{ job.job_kind || 'translate' }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Type</dt>
+        <dd class="mt-1 capitalize">{{ job.media_type }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Source subtitle</dt>
+        <dd class="mt-1 break-all">{{ job.source_subtitle_path }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Target subtitle</dt>
+        <dd class="mt-1 break-all">{{ job.target_subtitle_path }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Model</dt>
+        <dd class="mt-1">{{ job.model }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Progress</dt>
+        <dd class="mt-1">{{ job.progress_detail || `${job.progress}%` }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Tokens</dt>
+        <dd class="mt-1">
+          <RouterLink class="text-accent hover:underline" :to="`/jobs/${job.id}/stats`">
+            {{ job.total_tokens ?? '—' }}
+            <span v-if="job.input_tokens != null" class="text-ink-500">
+              (in {{ job.input_tokens }} / out {{ job.output_tokens }})
+            </span>
+          </RouterLink>
+        </dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Created</dt>
+        <dd class="mt-1">{{ formatDateTime(job.created_at) }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Started</dt>
+        <dd class="mt-1">{{ formatDateTime(job.started_at) }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Completed</dt>
+        <dd class="mt-1">{{ formatDateTime(job.completed_at) }}</dd>
+      </div>
+      <div>
+        <dt class="text-ink-500">Reason</dt>
+        <dd class="mt-1">{{ job.reason_code || '—' }}</dd>
+      </div>
+      <div class="sm:col-span-2" v-if="job.error">
+        <dt class="text-ink-500">Error</dt>
+        <dd class="mt-1 text-red-700 dark:text-red-300">{{ job.error }}</dd>
+      </div>
+      <div class="sm:col-span-2" v-if="job.warning">
+        <dt class="text-ink-500">Warning</dt>
+        <dd class="mt-1 text-amber-700 dark:text-amber-300">{{ job.warning }}</dd>
+      </div>
+    </dl>
+
     <div class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -341,76 +407,6 @@ async function toggleLog() {
         </table>
       </div>
     </div>
-
-    <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2">
-      <div>
-        <dt class="text-ink-500">Media</dt>
-        <dd class="mt-1 break-all">{{ job.media_path }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Kind</dt>
-        <dd class="mt-1 capitalize">{{ job.job_kind || 'translate' }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Type</dt>
-        <dd class="mt-1 capitalize">{{ job.media_type }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Source subtitle</dt>
-        <dd class="mt-1 break-all">{{ job.source_subtitle_path }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Target subtitle</dt>
-        <dd class="mt-1 break-all">{{ job.target_subtitle_path }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Languages</dt>
-        <dd class="mt-1">{{ job.source_language }} → {{ job.target_language }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Model</dt>
-        <dd class="mt-1">{{ job.model }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Progress</dt>
-        <dd class="mt-1">{{ job.progress_detail || `${job.progress}%` }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Tokens</dt>
-        <dd class="mt-1">
-          <RouterLink class="text-accent hover:underline" :to="`/jobs/${job.id}/stats`">
-            {{ job.total_tokens ?? '—' }}
-            <span v-if="job.input_tokens != null" class="text-ink-500">
-              (in {{ job.input_tokens }} / out {{ job.output_tokens }})
-            </span>
-          </RouterLink>
-        </dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Created</dt>
-        <dd class="mt-1">{{ formatDateTime(job.created_at) }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Started</dt>
-        <dd class="mt-1">{{ formatDateTime(job.started_at) }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Completed</dt>
-        <dd class="mt-1">{{ formatDateTime(job.completed_at) }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Reason</dt>
-        <dd class="mt-1">{{ job.reason_code || '—' }}</dd>
-      </div>
-      <div class="sm:col-span-2" v-if="job.error">
-        <dt class="text-ink-500">Error</dt>
-        <dd class="mt-1 text-red-700 dark:text-red-300">{{ job.error }}</dd>
-      </div>
-      <div class="sm:col-span-2" v-if="job.warning">
-        <dt class="text-ink-500">Warning</dt>
-        <dd class="mt-1 text-amber-700 dark:text-amber-300">{{ job.warning }}</dd>
-      </div>
-    </dl>
   </section>
   <p v-else class="text-ink-500">Loading job…</p>
 </template>

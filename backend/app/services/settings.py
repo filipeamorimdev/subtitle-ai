@@ -26,7 +26,7 @@ class SettingsService:
                 target_language_code="pt-PT",
                 target_language_name="Portuguese (Portugal)",
                 source_languages=["en"],
-                media_roots=[str(config.media_root_default)],
+                media_roots=list(config.media_roots),
                 path_mappings=[],
                 batch_size=25,
             )
@@ -37,6 +37,7 @@ class SettingsService:
 
     def get_public(self) -> SettingsOut:
         row = self.get_or_create_row()
+        config = get_app_config()
         bazarr_key = decrypt_secret(self.fernet, row.bazarr_api_key_encrypted)
         openrouter_key = decrypt_secret(self.fernet, row.openrouter_api_key_encrypted)
         return SettingsOut(
@@ -51,7 +52,7 @@ class SettingsService:
                 name=row.target_language_name,
             ),
             source_languages=list(row.source_languages or ["en"]),
-            media_roots=list(row.media_roots or ["/media"]),
+            media_roots=list(config.media_roots),
             path_mappings=[PathMappingIn(**m) for m in (row.path_mappings or [])],
             batch_size=row.batch_size,
         )
@@ -78,8 +79,6 @@ class SettingsService:
             row.target_language_name = payload.target_language_name.strip()
         if payload.source_languages is not None:
             row.source_languages = payload.source_languages or ["en"]
-        if payload.media_roots is not None:
-            row.media_roots = payload.media_roots or ["/media"]
         if payload.path_mappings is not None:
             row.path_mappings = [m.model_dump() for m in payload.path_mappings]
         if payload.batch_size is not None:

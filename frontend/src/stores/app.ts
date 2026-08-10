@@ -10,23 +10,6 @@ export const useAppStore = defineStore('app', () => {
   const stats = ref<Stats | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
-  const dark = ref(false)
-
-  function applyTheme() {
-    document.documentElement.classList.toggle('dark', dark.value)
-  }
-
-  function toggleTheme() {
-    dark.value = !dark.value
-    localStorage.setItem('subtitle-ai-theme', dark.value ? 'dark' : 'light')
-    applyTheme()
-  }
-
-  function initTheme() {
-    const saved = localStorage.getItem('subtitle-ai-theme')
-    dark.value = saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)
-    applyTheme()
-  }
 
   async function loadSettings() {
     settings.value = await api.getSettings()
@@ -113,9 +96,6 @@ export const useAppStore = defineStore('app', () => {
     stats,
     loading,
     error,
-    dark,
-    initTheme,
-    toggleTheme,
     loadSettings,
     loadCandidates,
     loadCandidatesCached,

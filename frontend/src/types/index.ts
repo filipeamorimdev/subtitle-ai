@@ -19,6 +19,7 @@ export interface Settings {
   source_languages: string[]
   media_roots: string[]
   path_mappings: PathMapping[]
+  batch_size: number
 }
 
 export interface SettingsUpdate {
@@ -31,8 +32,8 @@ export interface SettingsUpdate {
   target_language_code?: string
   target_language_name?: string
   source_languages?: string[]
-  media_roots?: string[]
   path_mappings?: PathMapping[]
+  batch_size?: number
 }
 
 export interface EmbeddedSubtitle {

@@ -12,3 +12,4 @@ services:
       - TZ=Europe/Lisbon
       - SUBTITLE_AI_CONFIG_DIR=/config
       - SUBTITLE_AI_LOG_LEVEL=INFO
+      - SUBTITLE_AI_MEDIA_ROOTS=/media

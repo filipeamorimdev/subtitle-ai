@@ -10,8 +10,8 @@
 #
 # In the Subtitle AI UI:
 #   Bazarr URL:     http://bazarr:6767
-#   Media roots:    /data/movies,/data/tv
 #   Path mappings:  (leave empty if mounts match Bazarr)
+# Media roots come from SUBTITLE_AI_MEDIA_ROOTS below (must match volume mounts).
 
 services:
   subtitle-ai:
@@ -28,6 +28,7 @@ services:
       - TZ=Europe/Lisbon
       - SUBTITLE_AI_CONFIG_DIR=/config
       - SUBTITLE_AI_LOG_LEVEL=INFO
+      - SUBTITLE_AI_MEDIA_ROOTS=/data/movies,/data/tv
     # Uncomment if this is a separate stack and you need to reach Bazarr by name:
     # networks:
     #   - media-stack_default
