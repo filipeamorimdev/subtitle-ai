@@ -8,6 +8,7 @@ import type {
   GlossaryTermCreate,
   GlossaryTermUpdate,
   GlossaryUniverse,
+  Health,
   Job,
   JobAction,
   JobLog,
@@ -43,6 +44,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getHealth: () => request<Health>('/api/health'),
   getSettings: () => request<Settings>('/api/settings'),
   updateSettings: (payload: SettingsUpdate) =>
     request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),

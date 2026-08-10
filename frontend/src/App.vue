@@ -21,7 +21,7 @@ watch(
 )
 
 const links = [
-  { to: '/', label: 'Candidates' },
+  { to: '/candidates', label: 'Candidates' },
   { to: '/jobs', label: 'Jobs' },
   { to: '/glossaries', label: 'Glossaries' },
   { to: '/settings', label: 'Settings' },
@@ -34,9 +34,12 @@ const links = [
       <div class="mx-auto max-w-6xl px-4 py-3 sm:py-4">
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0">
-            <p class="font-display text-xl font-bold tracking-tight text-ink-900 sm:text-2xl dark:text-ink-50">
+            <RouterLink
+              class="font-display text-xl font-bold tracking-tight text-ink-900 hover:text-accent sm:text-2xl dark:text-ink-50 dark:hover:text-accent"
+              to="/"
+            >
               Subtitle AI
-            </p>
+            </RouterLink>
             <p class="hidden text-sm text-ink-500 sm:block dark:text-ink-300">
               Translate missing Bazarr subtitles with OpenRouter
             </p>

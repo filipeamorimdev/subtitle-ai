@@ -141,9 +141,6 @@ async function testOpenRouter() {
   <section class="space-y-8">
     <div>
       <h1 class="font-display text-2xl font-bold sm:text-3xl">Settings</h1>
-      <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
-        Trusted local-network app. SRT only. Automatic translation is deferred — candidates refresh on demand.
-      </p>
     </div>
 
     <p v-if="message" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">

@@ -45,6 +45,11 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  /** Load last cached candidate list without hitting Bazarr. */
+  async function loadCandidatesCached() {
+    candidates.value = await api.getCandidates()
+  }
+
   async function loadJobs() {
     jobs.value = await api.getJobs()
     stats.value = await api.getStats()
@@ -113,6 +118,7 @@ export const useAppStore = defineStore('app', () => {
     toggleTheme,
     loadSettings,
     loadCandidates,
+    loadCandidatesCached,
     loadJobs,
     translateCandidate,
     extractCandidate,

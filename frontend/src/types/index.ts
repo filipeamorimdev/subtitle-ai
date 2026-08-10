@@ -211,6 +211,14 @@ export interface Stats {
   total: number
 }
 
+export interface Health {
+  status: string
+  version: string
+  database: string
+  bazarr: string
+  openrouter: string
+}
+
 export interface ConnectionTestResult {
   ok: boolean
   message: string

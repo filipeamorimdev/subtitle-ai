@@ -204,12 +204,21 @@ function statusText(item: Candidate) {
 <template>
   <section class="space-y-6">
     <div class="space-y-4">
-      <div class="min-w-0">
-        <h1 class="font-display text-2xl font-bold text-ink-900 sm:text-3xl dark:text-ink-50">Candidates</h1>
-        <p class="mt-1 max-w-2xl text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          Movies and episodes missing your target subtitle. Refresh to query Bazarr. Request a source
-          language from Bazarr, extract embedded text tracks when needed, then Translate.
-        </p>
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <h1 class="font-display text-2xl font-bold text-ink-900 sm:text-3xl dark:text-ink-50">Candidates</h1>
+          <p class="mt-1 max-w-2xl text-sm text-ink-600 sm:text-base dark:text-ink-300">
+            Movies and episodes missing your target subtitle.
+          </p>
+        </div>
+        <button
+          class="shrink-0 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
+          type="button"
+          :disabled="store.loading || batchBusy != null"
+          @click="refresh"
+        >
+          {{ store.loading ? 'Refreshing…' : 'Refresh' }}
+        </button>
       </div>
       <div class="flex flex-wrap gap-2">
         <button
@@ -240,14 +249,6 @@ function statusText(item: Candidate) {
         >
           {{ batchBusy === 'translate' ? 'Queuing…' : 'Translate all' }}
         </button>
-        <button
-          class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:opacity-60"
-          type="button"
-          :disabled="store.loading || batchBusy != null"
-          @click="refresh"
-        >
-          {{ store.loading ? 'Refreshing…' : 'Refresh' }}
-        </button>
       </div>
     </div>
 
@@ -277,23 +278,8 @@ function statusText(item: Candidate) {
           <p class="mt-1 break-all text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</p>
         </div>
 
-        <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+        <dl class="mt-3 text-xs">
           <div>
-            <dt class="text-ink-500">Type</dt>
-            <dd class="capitalize text-ink-800 dark:text-ink-100">{{ item.media_type }}</dd>
-          </div>
-          <div>
-            <dt class="text-ink-500">Target</dt>
-            <dd class="text-ink-800 dark:text-ink-100">{{ item.target_language }}</dd>
-          </div>
-          <div>
-            <dt class="text-ink-500">Source</dt>
-            <dd class="text-ink-800 dark:text-ink-100">
-              <span v-if="item.source_subtitle_path">{{ item.source_language || 'source' }}</span>
-              <span v-else class="text-ink-500">None</span>
-            </dd>
-          </div>
-          <div class="col-span-2">
             <dt class="text-ink-500">Status</dt>
             <dd
               class="break-words"
@@ -362,28 +348,22 @@ function statusText(item: Candidate) {
 
     <!-- Desktop table -->
     <div class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
-      <table class="w-full min-w-[56rem] table-fixed text-left text-sm">
+      <table class="w-full min-w-[40rem] table-fixed text-left text-sm">
         <colgroup>
-          <col class="w-[36%]" />
-          <col class="w-[8%]" />
-          <col class="w-[8%]" />
-          <col class="w-[8%]" />
-          <col class="w-[14%]" />
-          <col class="w-[26%]" />
+          <col class="w-[50%]" />
+          <col class="w-[20%]" />
+          <col class="w-[30%]" />
         </colgroup>
         <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
           <tr>
             <th class="px-4 py-3 font-medium">Title</th>
-            <th class="px-4 py-3 font-medium">Type</th>
-            <th class="px-4 py-3 font-medium">Target</th>
-            <th class="px-4 py-3 font-medium">Source</th>
             <th class="px-4 py-3 font-medium">Status</th>
             <th class="sticky right-0 bg-ink-50/95 px-4 py-3 font-medium dark:bg-ink-950/95">Actions</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!openCandidates.length">
-            <td class="px-4 py-8 text-ink-500" colspan="6">
+            <td class="px-4 py-8 text-ink-500" colspan="3">
               {{
                 doneCandidates.length
                   ? 'No open candidates. Finished items are listed below.'
@@ -415,14 +395,6 @@ function statusText(item: Candidate) {
                   Embedded {{ track.label }}
                 </span>
               </div>
-            </td>
-            <td class="px-4 py-3 align-top capitalize">{{ item.media_type }}</td>
-            <td class="px-4 py-3 align-top">{{ item.target_language }}</td>
-            <td class="px-4 py-3 align-top">
-              <span v-if="item.source_subtitle_path">
-                {{ item.source_language || 'source' }}
-              </span>
-              <span v-else class="text-ink-500">None</span>
             </td>
             <td class="px-4 py-3 align-top">
               <span v-if="item.can_translate" class="text-emerald-700 dark:text-emerald-300">Ready</span>
@@ -507,19 +479,15 @@ function statusText(item: Candidate) {
         </article>
       </div>
       <div class="hidden border-t border-ink-200 lg:block dark:border-ink-800">
-        <table class="w-full min-w-[40rem] table-fixed text-left text-sm">
+        <table class="w-full min-w-[32rem] table-fixed text-left text-sm">
           <colgroup>
-            <col class="w-[52%]" />
-            <col class="w-[10%]" />
-            <col class="w-[10%]" />
-            <col class="w-[16%]" />
-            <col class="w-[12%]" />
+            <col class="w-[55%]" />
+            <col class="w-[25%]" />
+            <col class="w-[20%]" />
           </colgroup>
           <thead class="bg-ink-50/60 text-ink-500 dark:bg-ink-950/40 dark:text-ink-400">
             <tr>
               <th class="px-4 py-2 font-medium">Title</th>
-              <th class="px-4 py-2 font-medium">Type</th>
-              <th class="px-4 py-2 font-medium">Target</th>
               <th class="px-4 py-2 font-medium">Status</th>
               <th class="px-4 py-2 font-medium">Actions</th>
             </tr>
@@ -534,8 +502,6 @@ function statusText(item: Candidate) {
                 <div class="font-medium text-ink-800 dark:text-ink-100">{{ item.title }}</div>
                 <div class="mt-0.5 truncate text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</div>
               </td>
-              <td class="px-4 py-2.5 align-top capitalize text-ink-600 dark:text-ink-300">{{ item.media_type }}</td>
-              <td class="px-4 py-2.5 align-top text-ink-600 dark:text-ink-300">{{ item.target_language }}</td>
               <td class="px-4 py-2.5 align-top text-ink-500">{{ statusText(item) }}</td>
               <td class="px-4 py-2.5 align-top">
                 <button
