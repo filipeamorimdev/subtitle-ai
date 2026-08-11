@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app import __version__
 from app.api.schemas import (
     BatchJobsOut,
     CandidateOut,
+    ClearDataResult,
+    ClearGlossariesRequest,
+    ClearJobsRequest,
     ConnectionTestResult,
     ExtractCreate,
     GlossaryScopeCreate,
@@ -127,6 +130,39 @@ async def list_openrouter_models(db: Session = Depends(get_db)) -> OpenRouterMod
     )
 
 
+@router.post("/settings/clear/jobs", response_model=ClearDataResult)
+def clear_jobs(
+    payload: ClearJobsRequest = ClearJobsRequest(),
+    db: Session = Depends(get_db),
+) -> ClearDataResult:
+    return JobService(db).clear_jobs(job_kind=payload.job_kind)
+
+
+@router.post("/settings/clear/glossaries", response_model=ClearDataResult)
+def clear_glossaries(
+    payload: ClearGlossariesRequest = ClearGlossariesRequest(),
+    db: Session = Depends(get_db),
+) -> ClearDataResult:
+    deleted = GlossaryService(db).clear_scopes(kind=payload.kind)
+    label = f"{payload.kind} " if payload.kind else ""
+    if deleted == 0:
+        return ClearDataResult(
+            deleted=0,
+            message=f"No {label}glossaries to clear.",
+            details={"kind": payload.kind},
+        )
+    return ClearDataResult(
+        deleted=deleted,
+        message=f"Cleared {deleted} {label}glossary scope(s).",
+        details={"kind": payload.kind},
+    )
+
+
+@router.post("/settings/clear/usage", response_model=ClearDataResult)
+def clear_usage_stats(db: Session = Depends(get_db)) -> ClearDataResult:
+    return JobService(db).clear_usage_stats()
+
+
 @router.get("/candidates", response_model=list[CandidateOut])
 async def list_candidates(db: Session = Depends(get_db)) -> list[CandidateOut]:
     try:
@@ -192,8 +228,12 @@ async def batch_translate(db: Session = Depends(get_db)) -> BatchJobsOut:
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs(db: Session = Depends(get_db)) -> list[JobOut]:
-    return JobService(db).list_jobs()
+def list_jobs(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+) -> list[JobOut]:
+    return JobService(db).list_jobs(status=status, limit=limit)
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)

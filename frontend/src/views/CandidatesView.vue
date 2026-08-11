@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import type { BatchJobsResult, Candidate } from '../types'
 
+type CandidateFilter = 'ready' | 'extract' | 'need-source' | 'target-exists'
+
+const FILTER_VALUES: CandidateFilter[] = ['ready', 'extract', 'need-source', 'target-exists']
+
 const store = useAppStore()
 const router = useRouter()
+const route = useRoute()
 const translatingKey = ref<string | null>(null)
 const extractingKey = ref<string | null>(null)
 const requestingKey = ref<string | null>(null)
@@ -13,40 +18,107 @@ const batchBusy = ref<'request' | 'extract' | 'translate' | null>(null)
 const actionError = ref<string | null>(null)
 const actionInfo = ref<string | null>(null)
 const selectedKeys = ref<Set<string>>(new Set())
-
-const sourceLabel = computed(() => {
-  const code = store.settings?.source_languages?.[0] || 'en'
-  return code.split('-')[0].toUpperCase()
-})
+const categoryFilter = ref<CandidateFilter | null>(null)
 
 function isTargetDone(item: Candidate) {
   return item.reason_code === 'target_exists'
+}
+
+function parseFilter(value: unknown): CandidateFilter | null {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw !== 'string') return null
+  return FILTER_VALUES.includes(raw as CandidateFilter) ? (raw as CandidateFilter) : null
+}
+
+function syncFilterFromRoute() {
+  categoryFilter.value = parseFilter(route.query.filter)
+}
+
+function setCategoryFilter(filter: CandidateFilter | null) {
+  categoryFilter.value = filter
+  const query = { ...route.query }
+  if (filter) query.filter = filter
+  else delete query.filter
+  router.replace({ query })
+}
+
+function toggleCategoryFilter(filter: CandidateFilter) {
+  setCategoryFilter(categoryFilter.value === filter ? null : filter)
+}
+
+function canRequestSource(item: Candidate) {
+  if (isTargetDone(item)) return false
+  if (item.active_request_job_id != null) return true
+  if (item.source_subtitle_path) return false
+  if (item.media_type === 'movie') return item.bazarr_movie_id != null
+  return item.bazarr_episode_id != null && item.bazarr_series_id != null
+}
+
+function matchesOpenFilter(item: Candidate, filter: CandidateFilter) {
+  if (filter === 'ready') return item.can_translate
+  if (filter === 'extract') return item.can_extract && !item.active_extract_job_id
+  if (filter === 'need-source') return canRequestSource(item) && !item.active_request_job_id
+  return false
 }
 
 const openCandidates = computed(() => store.candidates.filter((item) => !isTargetDone(item)))
 
 const doneCandidates = computed(() => store.candidates.filter((item) => isTargetDone(item)))
 
+const pipelineCounts = computed(() => {
+  const open = openCandidates.value
+  return {
+    ready: open.filter((item) => item.can_translate).length,
+    extract: open.filter((item) => item.can_extract && !item.active_extract_job_id).length,
+    needSource: open.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
+    done: doneCandidates.value.length,
+  }
+})
+
+const filterCards = computed(() => [
+  { label: 'Ready to translate', filter: 'ready' as const, count: pipelineCounts.value.ready },
+  { label: 'Can extract', filter: 'extract' as const, count: pipelineCounts.value.extract },
+  { label: 'Need source', filter: 'need-source' as const, count: pipelineCounts.value.needSource },
+  { label: 'Target exists', filter: 'target-exists' as const, count: pipelineCounts.value.done },
+])
+
+const filteredOpenCandidates = computed(() => {
+  const filter = categoryFilter.value
+  if (!filter) return openCandidates.value
+  if (filter === 'target-exists') return []
+  return openCandidates.value.filter((item) => matchesOpenFilter(item, filter))
+})
+
+const showOpenList = computed(() => categoryFilter.value !== 'target-exists')
+
+const showDoneAsMain = computed(() => categoryFilter.value === 'target-exists')
+
+const showDoneSection = computed(
+  () => !categoryFilter.value && doneCandidates.value.length > 0,
+)
+
 const requestableCount = computed(
-  () => openCandidates.value.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
+  () => filteredOpenCandidates.value.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
 )
 
 const extractableCount = computed(
-  () => openCandidates.value.filter((item) => item.can_extract && !item.active_extract_job_id).length,
+  () => filteredOpenCandidates.value.filter((item) => item.can_extract && !item.active_extract_job_id).length,
 )
 
 const translatableCount = computed(
-  () => openCandidates.value.filter((item) => item.can_translate).length,
+  () => filteredOpenCandidates.value.filter((item) => item.can_translate).length,
 )
 
 const selectedCandidates = computed(() =>
-  openCandidates.value.filter((item) => selectedKeys.value.has(item.key)),
+  filteredOpenCandidates.value.filter((item) => selectedKeys.value.has(item.key)),
 )
 
 const selectedCount = computed(() => selectedCandidates.value.length)
 
 const allSelected = computed(
-  () => openCandidates.value.length > 0 && openCandidates.value.every((item) => selectedKeys.value.has(item.key)),
+  () =>
+    filteredOpenCandidates.value.length > 0 &&
+    filteredOpenCandidates.value.every((item) => selectedKeys.value.has(item.key)),
 )
 
 const selectedRequestable = computed(() =>
@@ -61,10 +133,30 @@ const selectedTranslatable = computed(() =>
   selectedCandidates.value.filter((item) => item.can_translate),
 )
 
+const emptyOpenMessage = computed(() => {
+  if (categoryFilter.value && categoryFilter.value !== 'target-exists') {
+    const card = filterCards.value.find((item) => item.filter === categoryFilter.value)
+    return card ? `No candidates in “${card.label}”.` : 'No candidates match this filter.'
+  }
+  if (doneCandidates.value.length) {
+    return 'No open candidates. Finished items are listed below.'
+  }
+  return 'No candidates yet. Configure Bazarr in Settings, then refresh.'
+})
+
 onMounted(() => {
+  syncFilterFromRoute()
   store.loadSettings().catch(() => undefined)
   store.loadCandidates().catch(() => undefined)
 })
+
+watch(
+  () => route.query.filter,
+  () => {
+    syncFilterFromRoute()
+    pruneSelectedKeys()
+  },
+)
 
 function summarizeBatch(result: BatchJobsResult, action: string) {
   const parts = [`${action}: queued ${result.created_count}`]
@@ -86,7 +178,7 @@ async function refresh() {
 }
 
 function pruneSelectedKeys() {
-  const valid = new Set(openCandidates.value.map((item) => item.key))
+  const valid = new Set(filteredOpenCandidates.value.map((item) => item.key))
   const next = new Set<string>()
   for (const key of selectedKeys.value) {
     if (valid.has(key)) next.add(key)
@@ -112,7 +204,7 @@ function onRowCheckboxChange(key: string, event: Event) {
 
 function toggleAllSelected(checked: boolean) {
   selectedKeys.value = checked
-    ? new Set(openCandidates.value.map((item) => item.key))
+    ? new Set(filteredOpenCandidates.value.map((item) => item.key))
     : new Set()
 }
 
@@ -166,7 +258,7 @@ async function requestMultiple() {
   await runSelected(
     'request',
     selectedRequestable.value,
-    `Request ${sourceLabel.value}`,
+    'Request source',
     (item) => store.requestSubtitle(item.key),
   )
 }
@@ -190,12 +282,23 @@ async function translateMultiple() {
 }
 
 async function requestAllMissing() {
+  if (categoryFilter.value) {
+    await runSelected(
+      'request',
+      filteredOpenCandidates.value.filter(
+        (item) => canRequestSource(item) && !item.active_request_job_id,
+      ),
+      'Request source',
+      (item) => store.requestSubtitle(item.key),
+    )
+    return
+  }
   batchBusy.value = 'request'
   actionError.value = null
   actionInfo.value = null
   try {
     const result = await store.batchRequestSubtitles()
-    actionInfo.value = summarizeBatch(result, `Request ${sourceLabel.value}`)
+    actionInfo.value = summarizeBatch(result, 'Request source')
     if (result.errors.length) {
       actionError.value = result.errors.slice(0, 5).join(' · ')
     }
@@ -210,6 +313,17 @@ async function requestAllMissing() {
 }
 
 async function extractAll() {
+  if (categoryFilter.value) {
+    await runSelected(
+      'extract',
+      filteredOpenCandidates.value.filter(
+        (item) => item.can_extract && !item.active_extract_job_id,
+      ),
+      'Extract',
+      (item) => store.extractCandidate(item.key),
+    )
+    return
+  }
   batchBusy.value = 'extract'
   actionError.value = null
   actionInfo.value = null
@@ -230,6 +344,15 @@ async function extractAll() {
 }
 
 async function translateAll() {
+  if (categoryFilter.value) {
+    await runSelected(
+      'translate',
+      filteredOpenCandidates.value.filter((item) => item.can_translate),
+      'Translate',
+      (item) => store.translateCandidate(item.key),
+    )
+    return
+  }
   batchBusy.value = 'translate'
   actionError.value = null
   actionInfo.value = null
@@ -308,18 +431,10 @@ function canShowExtract(item: Candidate) {
   return item.can_extract || item.active_extract_job_id != null
 }
 
-function canRequestSource(item: Candidate) {
-  if (isTargetDone(item)) return false
-  if (item.active_request_job_id != null) return true
-  if (item.source_subtitle_path) return false
-  if (item.media_type === 'movie') return item.bazarr_movie_id != null
-  return item.bazarr_episode_id != null && item.bazarr_series_id != null
-}
-
 function requestLabel(item: Candidate) {
   if (item.active_request_job_id) return 'Searching…'
   if (requestingKey.value === item.key) return 'Starting…'
-  return `Request ${sourceLabel.value}`
+  return 'Request source'
 }
 
 function statusText(item: Candidate) {
@@ -355,11 +470,7 @@ function statusText(item: Candidate) {
               :disabled="store.loading || batchBusy != null || requestableCount === 0"
               @click="requestAllMissing"
             >
-              {{
-                batchBusy === 'request'
-                  ? `Requesting ${sourceLabel}…`
-                  : `Request all ${sourceLabel}`
-              }}
+              {{ batchBusy === 'request' ? 'Requesting source…' : 'Request all sources' }}
             </button>
             <button
               class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
@@ -389,8 +500,8 @@ function statusText(item: Candidate) {
         >
           {{
             batchBusy === 'request'
-              ? `Requesting ${sourceLabel}…`
-              : `Request multiple ${sourceLabel} (${selectedRequestable.length})`
+              ? 'Requesting source…'
+              : `Request multiple sources (${selectedRequestable.length})`
           }}
         </button>
         <button
@@ -412,6 +523,25 @@ function statusText(item: Candidate) {
       </div>
     </div>
 
+    <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
+      <button
+        v-for="item in filterCards"
+        :key="item.filter"
+        type="button"
+        class="rounded-xl border px-3 py-3 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:px-4"
+        :class="
+          categoryFilter === item.filter
+            ? 'border-accent bg-accent/10 dark:bg-accent/20'
+            : 'border-ink-200 bg-white/80 hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50'
+        "
+        :aria-pressed="categoryFilter === item.filter"
+        @click="toggleCategoryFilter(item.filter)"
+      >
+        <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ item.label }}</div>
+        <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ item.count }}</div>
+      </button>
+    </div>
+
     <p v-if="actionError || store.error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
       {{ actionError || store.error }}
     </p>
@@ -420,16 +550,12 @@ function statusText(item: Candidate) {
     </p>
 
     <!-- Mobile / tablet card list -->
-    <div class="space-y-3 lg:hidden">
-      <p v-if="!openCandidates.length" class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60">
-        {{
-          doneCandidates.length
-            ? 'No open candidates. Finished items are listed below.'
-            : 'No candidates yet. Configure Bazarr in Settings, then refresh.'
-        }}
+    <div v-if="showOpenList" class="space-y-3 lg:hidden">
+      <p v-if="!filteredOpenCandidates.length" class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60">
+        {{ emptyOpenMessage }}
       </p>
       <article
-        v-for="item in openCandidates"
+        v-for="item in filteredOpenCandidates"
         :key="`card-${item.key}`"
         class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
       >
@@ -516,7 +642,10 @@ function statusText(item: Candidate) {
     </div>
 
     <!-- Desktop table -->
-    <div class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
+    <div
+      v-if="showOpenList"
+      class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60"
+    >
       <table class="w-full min-w-[40rem] table-fixed text-left text-sm">
         <colgroup>
           <col class="w-[50%]" />
@@ -525,56 +654,65 @@ function statusText(item: Candidate) {
         </colgroup>
         <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
           <tr>
-            <th class="px-4 py-3 font-medium">Title</th>
-            <th class="px-4 py-3 font-medium">Status</th>
-            <th class="sticky right-0 bg-ink-50/95 px-4 py-3 font-medium dark:bg-ink-950/95">
+            <th class="px-4 py-3 font-medium">
               <label class="inline-flex items-center gap-2">
                 <input
                   type="checkbox"
                   :checked="allSelected"
-                  :disabled="!openCandidates.length"
+                  :disabled="!filteredOpenCandidates.length"
                   :indeterminate.prop="selectedCount > 0 && !allSelected"
                   aria-label="Select all candidates"
                   @change="onToggleAllSelected($event)"
                 />
-                Actions
+                Title
               </label>
+            </th>
+            <th class="px-4 py-3 font-medium">Status</th>
+            <th class="sticky right-0 bg-ink-50/95 px-4 py-3 font-medium dark:bg-ink-950/95">
+              Actions
             </th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!openCandidates.length">
+          <tr v-if="!filteredOpenCandidates.length">
             <td class="px-4 py-8 text-ink-500" colspan="3">
-              {{
-                doneCandidates.length
-                  ? 'No open candidates. Finished items are listed below.'
-                  : 'No candidates yet. Configure Bazarr in Settings, then refresh.'
-              }}
+              {{ emptyOpenMessage }}
             </td>
           </tr>
           <tr
-            v-for="item in openCandidates"
+            v-for="item in filteredOpenCandidates"
             :key="item.key"
             class="border-t border-ink-100 dark:border-ink-800"
           >
             <td class="px-4 py-3 align-top">
-              <div class="font-medium text-ink-900 dark:text-ink-50">{{ item.title }}</div>
-              <div class="mt-0.5 truncate text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</div>
-              <div v-if="item.has_embedded" class="mt-2 flex flex-wrap gap-1.5">
-                <span
-                  v-for="(track, idx) in item.embedded_subtitles"
-                  :key="`${track.label}-${idx}`"
-                  class="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
-                  :class="
-                    track.kind === 'text'
-                      ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
-                      : track.kind === 'image'
-                        ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200'
-                        : 'border-ink-300 bg-ink-50 text-ink-600 dark:border-ink-700 dark:bg-ink-950/50 dark:text-ink-300'
-                  "
-                >
-                  Embedded {{ track.label }}
-                </span>
+              <div class="flex items-start gap-3">
+                <input
+                  class="mt-0.5"
+                  type="checkbox"
+                  :checked="isSelected(item.key)"
+                  :aria-label="`Select ${item.title}`"
+                  @change="onRowCheckboxChange(item.key, $event)"
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="font-medium text-ink-900 dark:text-ink-50">{{ item.title }}</div>
+                  <div class="mt-0.5 truncate text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</div>
+                  <div v-if="item.has_embedded" class="mt-2 flex flex-wrap gap-1.5">
+                    <span
+                      v-for="(track, idx) in item.embedded_subtitles"
+                      :key="`${track.label}-${idx}`"
+                      class="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                      :class="
+                        track.kind === 'text'
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
+                          : track.kind === 'image'
+                            ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200'
+                            : 'border-ink-300 bg-ink-50 text-ink-600 dark:border-ink-700 dark:bg-ink-950/50 dark:text-ink-300'
+                      "
+                    >
+                      Embedded {{ track.label }}
+                    </span>
+                  </div>
+                </div>
               </div>
             </td>
             <td class="px-4 py-3 align-top">
@@ -585,12 +723,6 @@ function statusText(item: Candidate) {
               class="sticky right-0 bg-white/95 px-4 py-3 align-top shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] dark:bg-ink-900/95"
             >
               <div class="flex flex-wrap items-center justify-end gap-2">
-                <input
-                  type="checkbox"
-                  :checked="isSelected(item.key)"
-                  :aria-label="`Select ${item.title}`"
-                  @change="onRowCheckboxChange(item.key, $event)"
-                />
                 <button
                   v-if="item.latest_job_id != null"
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
@@ -632,8 +764,85 @@ function statusText(item: Candidate) {
       </table>
     </div>
 
+    <!-- Target exists filter: primary list -->
+    <div v-if="showDoneAsMain" class="space-y-3 lg:hidden">
+      <p
+        v-if="!doneCandidates.length"
+        class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60"
+      >
+        No candidates with target subtitles yet.
+      </p>
+      <article
+        v-for="item in doneCandidates"
+        :key="`done-main-card-${item.key}`"
+        class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
+      >
+        <div class="min-w-0">
+          <h2 class="font-medium leading-snug text-ink-900 dark:text-ink-50">{{ item.title }}</h2>
+          <p class="mt-1 break-all text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</p>
+        </div>
+        <p class="mt-2 text-xs text-ink-500">{{ statusText(item) }}</p>
+        <button
+          v-if="item.latest_job_id != null"
+          class="mt-3 rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          type="button"
+          @click="viewLogs(item)"
+        >
+          View logs
+        </button>
+      </article>
+    </div>
+
+    <div
+      v-if="showDoneAsMain"
+      class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60"
+    >
+      <table class="w-full min-w-[32rem] table-fixed text-left text-sm">
+        <colgroup>
+          <col class="w-[55%]" />
+          <col class="w-[25%]" />
+          <col class="w-[20%]" />
+        </colgroup>
+        <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
+          <tr>
+            <th class="px-4 py-3 font-medium">Title</th>
+            <th class="px-4 py-3 font-medium">Status</th>
+            <th class="px-4 py-3 font-medium">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="!doneCandidates.length">
+            <td class="px-4 py-8 text-ink-500" colspan="3">
+              No candidates with target subtitles yet.
+            </td>
+          </tr>
+          <tr
+            v-for="item in doneCandidates"
+            :key="`done-main-${item.key}`"
+            class="border-t border-ink-100 dark:border-ink-800"
+          >
+            <td class="px-4 py-3 align-top">
+              <div class="font-medium text-ink-900 dark:text-ink-50">{{ item.title }}</div>
+              <div class="mt-0.5 truncate text-xs text-ink-500" :title="item.media_path">{{ item.media_path }}</div>
+            </td>
+            <td class="px-4 py-3 align-top text-ink-500">{{ statusText(item) }}</td>
+            <td class="px-4 py-3 align-top">
+              <button
+                v-if="item.latest_job_id != null"
+                class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+                type="button"
+                @click="viewLogs(item)"
+              >
+                View logs
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
     <details
-      v-if="doneCandidates.length"
+      v-if="showDoneSection"
       class="group rounded-xl border border-ink-200 bg-white/60 dark:border-ink-800 dark:bg-ink-900/40"
     >
       <summary

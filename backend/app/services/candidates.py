@@ -289,7 +289,7 @@ class CandidateService:
                 if can_extract:
                     reason = "Embedded text subtitle available — extract to create a source SRT."
                 elif any(t.kind == "image" for t in embedded_tracks):
-                    reason = "Only image-based embedded subtitles found (not extractable in v0.1)."
+                    reason = "not possible to translate"
                 elif embedded_tracks:
                     reason = "Embedded subtitles found, but none are extractable text tracks."
                 else:

@@ -26,7 +26,7 @@ class SettingsService:
                 target_language_code="pt-PT",
                 target_language_name="Portuguese (Portugal)",
                 source_languages=["en"],
-                media_roots=list(config.media_roots),
+                media_roots=list(config.resolved_media_roots),
                 path_mappings=[],
                 batch_size=25,
             )
@@ -52,7 +52,7 @@ class SettingsService:
                 name=row.target_language_name,
             ),
             source_languages=list(row.source_languages or ["en"]),
-            media_roots=list(config.media_roots),
+            media_roots=list(config.resolved_media_roots),
             path_mappings=[PathMappingIn(**m) for m in (row.path_mappings or [])],
             batch_size=row.batch_size,
         )

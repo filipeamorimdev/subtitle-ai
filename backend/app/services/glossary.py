@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -329,6 +329,42 @@ class GlossaryService:
             self.db.add(child)
         self.db.delete(row)
         self.db.commit()
+
+    def clear_scopes(self, *, kind: str | None = None) -> int:
+        """Delete glossary scopes (and cascaded terms), optionally filtered by kind."""
+        scopes = self.list_scopes(kind=kind)
+        if not scopes:
+            return 0
+
+        scope_ids = [scope.id for scope in scopes]
+        scope_id_set = set(scope_ids)
+
+        # Detach children that would lose their parent, preferring grandparent outside the delete set.
+        for scope in scopes:
+            children = list(
+                self.db.scalars(
+                    select(GlossaryScopeRow).where(GlossaryScopeRow.parent_scope_id == scope.id)
+                ).all()
+            )
+            for child in children:
+                if child.id in scope_id_set:
+                    continue
+                parent_id = scope.parent_scope_id
+                while parent_id is not None and parent_id in scope_id_set:
+                    parent = self.db.get(GlossaryScopeRow, parent_id)
+                    parent_id = parent.parent_scope_id if parent else None
+                child.parent_scope_id = parent_id
+                self.db.add(child)
+
+        self.db.execute(delete(GlossaryTermRow).where(GlossaryTermRow.scope_id.in_(scope_ids)))
+        self.db.execute(
+            update(GlossaryScopeRow)
+            .where(GlossaryScopeRow.id.in_(scope_ids))
+            .values(parent_scope_id=None)
+        )
+        self.db.execute(delete(GlossaryScopeRow).where(GlossaryScopeRow.id.in_(scope_ids)))
+        self.db.commit()
+        return len(scope_ids)
 
     def create_term(
         self,

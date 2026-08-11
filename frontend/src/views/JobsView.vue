@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
+import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import { formatDateTime } from '../utils/datetime'
 
 const store = useAppStore()
+const router = useRouter()
 let timer: number | undefined
 
 type JobStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | 'cancelled'
 
 const statusFilter = ref<JobStatus | null>(null)
+const retryingId = ref<number | null>(null)
+const actionError = ref<string | null>(null)
 
 const statusCards = computed(() => [
   { label: 'Pending', status: 'pending' as const, count: store.stats?.pending ?? 0 },
@@ -20,19 +24,41 @@ const statusCards = computed(() => [
   { label: 'Cancelled', status: 'cancelled' as const, count: store.stats?.cancelled ?? 0 },
 ])
 
-const filteredJobs = computed(() => {
-  if (!statusFilter.value) return store.jobs
-  return store.jobs.filter((job) => job.status === statusFilter.value)
-})
+const filteredJobs = computed(() => store.jobs)
 
-function toggleStatusFilter(status: JobStatus) {
+function canRetry(status: string) {
+  return status === 'failed' || status === 'skipped'
+}
+
+async function reloadJobs() {
+  await store.loadJobs(
+    statusFilter.value ? { status: statusFilter.value, limit: 1000 } : undefined,
+  )
+}
+
+async function toggleStatusFilter(status: JobStatus) {
   statusFilter.value = statusFilter.value === status ? null : status
+  await reloadJobs()
+}
+
+async function retry(jobId: number) {
+  if (retryingId.value != null) return
+  retryingId.value = jobId
+  actionError.value = null
+  try {
+    const next = await api.retryJob(jobId)
+    await router.push(`/jobs/${next.id}`)
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    retryingId.value = null
+  }
 }
 
 onMounted(async () => {
-  await store.loadJobs()
+  await reloadJobs()
   timer = window.setInterval(() => {
-    store.loadJobs().catch(() => undefined)
+    reloadJobs().catch(() => undefined)
   }, 3000)
 })
 
@@ -69,6 +95,13 @@ onUnmounted(() => {
       </button>
     </div>
 
+    <p
+      v-if="actionError"
+      class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"
+    >
+      {{ actionError }}
+    </p>
+
     <!-- Mobile / tablet cards -->
     <div class="space-y-3 lg:hidden">
       <p
@@ -82,9 +115,38 @@ onUnmounted(() => {
         :key="`card-${job.id}`"
         class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
       >
-        <RouterLink class="font-medium leading-snug text-accent hover:underline" :to="`/jobs/${job.id}`">
-          {{ job.media_title || job.media_path }}
-        </RouterLink>
+        <div class="flex items-start justify-between gap-3">
+          <RouterLink
+            class="min-w-0 flex-1 font-medium leading-snug text-accent hover:underline"
+            :to="`/jobs/${job.id}`"
+          >
+            {{ job.media_title || job.media_path }}
+          </RouterLink>
+          <button
+            v-if="canRetry(job.status)"
+            type="button"
+            class="shrink-0 rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800"
+            title="Retry"
+            aria-label="Retry"
+            :disabled="retryingId === job.id"
+            @click="retry(job.id)"
+          >
+            <svg
+              class="h-4 w-4"
+              :class="retryingId === job.id ? 'animate-spin' : ''"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+              <path d="M21 3v6h-6" />
+            </svg>
+          </button>
+        </div>
         <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
           <div>
             <dt class="text-ink-500">Kind</dt>
@@ -124,11 +186,12 @@ onUnmounted(() => {
             <th class="px-4 py-3 font-medium">Model</th>
             <th class="px-4 py-3 font-medium">Status</th>
             <th class="px-4 py-3 font-medium">Created</th>
+            <th class="w-12 px-4 py-3 font-medium"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!filteredJobs.length">
-            <td class="px-4 py-8 text-ink-500" colspan="6">
+            <td class="px-4 py-8 text-ink-500" colspan="7">
               {{ statusFilter ? `No ${statusFilter} jobs.` : 'No jobs yet.' }}
             </td>
           </tr>
@@ -152,6 +215,32 @@ onUnmounted(() => {
               </span>
             </td>
             <td class="px-4 py-3 text-ink-500">{{ formatDateTime(job.created_at) }}</td>
+            <td class="px-4 py-3">
+              <button
+                v-if="canRetry(job.status)"
+                type="button"
+                class="rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800"
+                title="Retry"
+                aria-label="Retry"
+                :disabled="retryingId === job.id"
+                @click="retry(job.id)"
+              >
+                <svg
+                  class="h-4 w-4"
+                  :class="retryingId === job.id ? 'animate-spin' : ''"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <path d="M21 3v6h-6" />
+                </svg>
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>

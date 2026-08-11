@@ -213,28 +213,28 @@ onUnmounted(() => {
         <div class="grid grid-cols-2 gap-2 sm:gap-3">
           <RouterLink
             class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates"
+            to="/candidates?filter=ready"
           >
             <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Ready to translate</div>
             <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.ready }}</div>
           </RouterLink>
           <RouterLink
             class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates"
+            to="/candidates?filter=extract"
           >
             <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Can extract</div>
             <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.extract }}</div>
           </RouterLink>
           <RouterLink
             class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates"
+            to="/candidates?filter=need-source"
           >
             <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Need source</div>
             <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.needSource }}</div>
           </RouterLink>
           <RouterLink
             class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates"
+            to="/candidates?filter=target-exists"
           >
             <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Target exists</div>
             <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.done }}</div>

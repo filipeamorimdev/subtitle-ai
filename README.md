@@ -10,7 +10,7 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 
 ## Workflow
 
-1. Configure Bazarr, OpenRouter, languages, batch size, and path mappings under **Settings**. Mount media via Docker (`SUBTITLE_AI_MEDIA_ROOTS`).
+1. Configure Bazarr, OpenRouter, languages, batch size, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
 2. Open **Home** (logo) for pipeline and job status, or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
 3. For each item, use the action that matches its state:
    - **Request EN** (or your source language) — ask Bazarr to search for a source SRT; if none is found and an embedded text track exists, Subtitle AI falls back to ffmpeg extract.
@@ -92,7 +92,7 @@ ghcr.io/filipeamorimdev/subtitle-ai:latest
 2. Under the repo **Packages**, open the image and set visibility to **Public** (or add `ghcr.io` in Portainer **Registries** with a PAT that has `read:packages`).
 3. In Portainer, create/update a stack using [`docker-compose.portainer.yml`](docker-compose.portainer.yml) (Web editor or Git compose path).
 4. Adjust host volume paths if needed, deploy, open port **6768**.
-5. In the UI set Bazarr to `http://bazarr:6767`. Media roots come from `SUBTITLE_AI_MEDIA_ROOTS` in the compose file (`/data/movies,/data/tv`).
+5. In the UI set Bazarr to `http://bazarr:6767`. Media roots are auto-discovered from the `/data/tv` and `/data/movies` volume mounts.
 
 If Subtitle AI is in a **different stack** than Bazarr, attach it to the media stack network (see comments in the Portainer compose file).
 
@@ -133,7 +133,7 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 
 ### Media
 
-- Media roots via Docker env `SUBTITLE_AI_MEDIA_ROOTS` (comma-separated container paths; must match volume mounts)
+- Media roots auto-discovered from Docker volume mounts under `/data` and `/media` (optional `SUBTITLE_AI_MEDIA_ROOTS` override)
 - Path mappings in Settings (`bazarrPath => localPath`) when Bazarr and Subtitle AI mounts differ
 
 ## Development

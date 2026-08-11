@@ -33,8 +33,8 @@ export const useAppStore = defineStore('app', () => {
     candidates.value = await api.getCandidates()
   }
 
-  async function loadJobs() {
-    jobs.value = await api.getJobs()
+  async function loadJobs(params?: { status?: string; limit?: number }) {
+    jobs.value = await api.getJobs(params)
     stats.value = await api.getStats()
   }
 

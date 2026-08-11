@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import json
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.core.media_roots import discover_media_roots
 
-def _parse_media_roots(value: object) -> list[str]:
+
+def _parse_media_roots_override(value: object) -> list[str] | None:
+    """Parse optional env override; empty/unset means auto-discover."""
     if value is None or value == "":
-        return ["/media"]
+        return None
     if isinstance(value, (list, tuple)):
         roots = [str(item).strip() for item in value if str(item).strip()]
-        return roots or ["/media"]
+        return roots or None
     if isinstance(value, Path):
         return [str(value)]
     text = str(value).strip()
@@ -27,9 +30,9 @@ def _parse_media_roots(value: object) -> list[str]:
             parsed = None
         if isinstance(parsed, list):
             roots = [str(item).strip() for item in parsed if str(item).strip()]
-            return roots or ["/media"]
+            return roots or None
     roots = [part.strip() for part in text.split(",") if part.strip()]
-    return roots or ["/media"]
+    return roots or None
 
 
 class AppConfig(BaseSettings):
@@ -39,7 +42,8 @@ class AppConfig(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 6768
     config_dir: Path = Path("/config")
-    media_roots: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["/media"])
+    # Optional override. When unset, roots are discovered from container mounts.
+    media_roots: Annotated[list[str] | None, NoDecode] = None
     database_filename: str = "subtitle-ai.db"
     secret_key_filename: str = "secret.key"
     frontend_dist: Path | None = None
@@ -47,8 +51,14 @@ class AppConfig(BaseSettings):
 
     @field_validator("media_roots", mode="before")
     @classmethod
-    def parse_media_roots(cls, value: object) -> list[str]:
-        return _parse_media_roots(value)
+    def parse_media_roots(cls, value: object) -> list[str] | None:
+        return _parse_media_roots_override(value)
+
+    @cached_property
+    def resolved_media_roots(self) -> list[str]:
+        if self.media_roots:
+            return list(self.media_roots)
+        return discover_media_roots(config_dir=self.config_dir)
 
     @property
     def database_url(self) -> str:

@@ -19,6 +19,7 @@ const store = useAppStore()
 const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 const saving = ref(false)
+const clearing = ref(false)
 const bazarrTest = ref<string | null>(null)
 const openrouterTest = ref<string | null>(null)
 const openrouterModels = ref<OpenRouterModel[]>([])
@@ -134,6 +135,49 @@ async function testOpenRouter() {
   openrouterTest.value = null
   const result = await api.testOpenRouter()
   openrouterTest.value = result.message
+}
+
+async function runClear(action: () => Promise<{ message: string }>, confirmText: string) {
+  if (!confirm(confirmText)) return
+  clearing.value = true
+  message.value = null
+  error.value = null
+  try {
+    const result = await action()
+    message.value = result.message
+    try {
+      await store.loadJobs()
+    } catch {
+      /* ignore refresh errors after clear */
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    clearing.value = false
+  }
+}
+
+function clearJobs(kind?: 'translate' | 'extract' | 'request') {
+  const label = kind ? `${kind} jobs` : 'ALL jobs'
+  return runClear(
+    () => api.clearJobs(kind),
+    `Delete ${label} from history? This cannot be undone.`,
+  )
+}
+
+function clearGlossaries(kind?: 'universe' | 'series' | 'movie') {
+  const label = kind ? `${kind} glossaries` : 'ALL glossaries'
+  return runClear(
+    () => api.clearGlossaries(kind),
+    `Delete ${label}? Terms in those scopes will be removed. This cannot be undone.`,
+  )
+}
+
+function clearUsageStats() {
+  return runClear(
+    () => api.clearUsageStats(),
+    'Clear usage stats (OpenRouter exchange logs and token totals)? Job history will be kept.',
+  )
 }
 </script>
 
@@ -260,7 +304,7 @@ async function testOpenRouter() {
             {{ (store.settings?.media_roots || []).join(', ') || '—' }}
           </p>
           <span class="mt-1 block text-xs text-ink-500">
-            Set via Docker env <code class="font-mono">SUBTITLE_AI_MEDIA_ROOTS</code> (comma-separated). Not editable here.
+            Auto-discovered from Docker volume mounts under <code class="font-mono">/data</code> and <code class="font-mono">/media</code>. Not editable here.
           </span>
         </div>
         <label class="block text-sm">
@@ -276,5 +320,105 @@ async function testOpenRouter() {
         {{ saving ? 'Saving…' : 'Save settings' }}
       </button>
     </form>
+
+    <fieldset class="min-w-0 space-y-5 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <legend class="px-1 font-display text-lg font-semibold">Clear data</legend>
+      <p class="text-sm text-ink-500">
+        Permanently delete stored history and stats. These actions cannot be undone.
+      </p>
+
+      <div class="space-y-3">
+        <h2 class="text-sm font-semibold text-ink-700 dark:text-ink-200">Jobs history</h2>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs('translate')"
+          >
+            Clear translate
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs('extract')"
+          >
+            Clear extract
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs('request')"
+          >
+            Clear request
+          </button>
+          <button
+            type="button"
+            class="rounded-md bg-red-600/90 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            :disabled="clearing"
+            @click="clearJobs()"
+          >
+            Clear all jobs
+          </button>
+        </div>
+      </div>
+
+      <div class="space-y-3">
+        <h2 class="text-sm font-semibold text-ink-700 dark:text-ink-200">Glossaries</h2>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearGlossaries('universe')"
+          >
+            Clear universes
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearGlossaries('series')"
+          >
+            Clear series
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearGlossaries('movie')"
+          >
+            Clear movies
+          </button>
+          <button
+            type="button"
+            class="rounded-md bg-red-600/90 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            :disabled="clearing"
+            @click="clearGlossaries()"
+          >
+            Clear all glossaries
+          </button>
+        </div>
+      </div>
+
+      <div class="space-y-3">
+        <h2 class="text-sm font-semibold text-ink-700 dark:text-ink-200">Usage stats</h2>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="rounded-md bg-red-600/90 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            :disabled="clearing"
+            @click="clearUsageStats"
+          >
+            Clear usage stats
+          </button>
+        </div>
+        <p class="text-xs text-ink-500">
+          Removes OpenRouter exchange logs and resets token totals. Job history rows are kept.
+        </p>
+      </div>
+    </fieldset>
   </section>
 </template>

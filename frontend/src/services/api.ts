@@ -1,6 +1,7 @@
 import type {
   BatchJobsResult,
   Candidate,
+  ClearDataResult,
   ConnectionTestResult,
   GlossaryScope,
   GlossaryScopeCreate,
@@ -53,6 +54,18 @@ export const api = {
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
   getOpenRouterModels: () => request<OpenRouterModelsResult>('/api/settings/openrouter/models'),
+  clearJobs: (job_kind?: 'translate' | 'extract' | 'request') =>
+    request<ClearDataResult>('/api/settings/clear/jobs', {
+      method: 'POST',
+      body: JSON.stringify(job_kind ? { job_kind } : {}),
+    }),
+  clearGlossaries: (kind?: 'universe' | 'series' | 'movie') =>
+    request<ClearDataResult>('/api/settings/clear/glossaries', {
+      method: 'POST',
+      body: JSON.stringify(kind ? { kind } : {}),
+    }),
+  clearUsageStats: () =>
+    request<ClearDataResult>('/api/settings/clear/usage', { method: 'POST' }),
   getCandidates: () => request<Candidate[]>('/api/candidates'),
   refreshCandidates: () =>
     request<Candidate[]>('/api/candidates/refresh', { method: 'POST' }),
@@ -72,7 +85,13 @@ export const api = {
     request<BatchJobsResult>('/api/candidates/batch/extract', { method: 'POST' }),
   batchTranslate: () =>
     request<BatchJobsResult>('/api/candidates/batch/translate', { method: 'POST' }),
-  getJobs: () => request<Job[]>('/api/jobs'),
+  getJobs: (params?: { status?: string; limit?: number }) => {
+    const query = new URLSearchParams()
+    if (params?.status) query.set('status', params.status)
+    if (params?.limit != null) query.set('limit', String(params.limit))
+    const suffix = query.toString() ? `?${query}` : ''
+    return request<Job[]>(`/api/jobs${suffix}`)
+  },
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
   getJobActions: (id: number) => request<JobAction[]>(`/api/jobs/${id}/actions`),
   getJobLog: (id: number) => request<JobLog>(`/api/jobs/${id}/log`),

@@ -226,6 +226,12 @@ export interface ConnectionTestResult {
   details?: Record<string, unknown> | null
 }
 
+export interface ClearDataResult {
+  deleted: number
+  message: string
+  details?: Record<string, unknown> | null
+}
+
 export interface OpenRouterModel {
   id: string
   name: string

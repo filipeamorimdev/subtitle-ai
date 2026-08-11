@@ -12,4 +12,5 @@ services:
       - TZ=Europe/Lisbon
       - SUBTITLE_AI_CONFIG_DIR=/config
       - SUBTITLE_AI_LOG_LEVEL=INFO
-      - SUBTITLE_AI_MEDIA_ROOTS=/media
+      # Optional; omit to auto-discover mounts under /data and /media:
+      # - SUBTITLE_AI_MEDIA_ROOTS=/media

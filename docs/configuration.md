@@ -7,12 +7,14 @@ Settings are stored in SQLite under `/config/subtitle-ai.db`. Secrets are Fernet
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SUBTITLE_AI_CONFIG_DIR` | `/config` | Persistent config directory |
-| `SUBTITLE_AI_MEDIA_ROOTS` | `/media` | Comma-separated container paths allowed for media/subtitles (must match volume mounts) |
+| `SUBTITLE_AI_MEDIA_ROOTS` | _(auto)_ | Optional override. When unset, roots are discovered from container mounts under `/data` and `/media` |
 | `SUBTITLE_AI_LOG_LEVEL` | `INFO` | Log level |
 | `SUBTITLE_AI_HOST` / `PORT` | `0.0.0.0` / `6768` | Bind address (uvicorn CLI usually sets this) |
 | `SUBTITLE_AI_FRONTEND_DIST` | auto-detected | Built Vue assets directory |
 
 Prefer configuring Bazarr/OpenRouter credentials in the UI rather than env vars.
+
+Media roots are **not** configured in Settings. On deploy, Subtitle AI reads `/proc/self/mountinfo` and uses bind mounts under `/data` and `/media` (e.g. compose volumes `/data/tv` and `/data/movies`). Only set `SUBTITLE_AI_MEDIA_ROOTS` if you need an explicit override.
 
 ## Job OpenRouter logs
 
@@ -48,7 +50,7 @@ Every OpenRouter request/response attempt for that job is appended (including re
 
 ### Media
 
-- Media roots are **read-only** in the UI — set via `SUBTITLE_AI_MEDIA_ROOTS` in Docker
+- Media roots are **read-only** in the UI — auto-discovered from Docker mounts under `/data` and `/media`
 - Path mappings: `bazarr_prefix => local_prefix`
 
 ## Masking

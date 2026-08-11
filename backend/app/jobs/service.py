@@ -9,12 +9,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     BatchJobsOut,
     CandidateOut,
+    ClearDataResult,
     ExtractCreate,
     JobActionOut,
     JobCreate,
@@ -152,10 +153,11 @@ class JobService:
         self.db = db
         self.settings = SettingsService(db)
 
-    def list_jobs(self, limit: int = 100) -> list[JobOut]:
-        rows = self.db.scalars(
-            select(JobRow).order_by(JobRow.created_at.desc()).limit(limit)
-        ).all()
+    def list_jobs(self, *, status: str | None = None, limit: int = 100) -> list[JobOut]:
+        query = select(JobRow).order_by(JobRow.created_at.desc())
+        if status:
+            query = query.where(JobRow.status == status)
+        rows = self.db.scalars(query.limit(limit)).all()
         return [job_to_out(row) for row in rows]
 
     def get_job(self, job_id: int) -> JobOut | None:
@@ -411,6 +413,80 @@ class JobService:
             cancelled=counts.get("cancelled", 0),
             skipped=counts.get("skipped", 0),
             total=sum(counts.values()),
+        )
+
+    def clear_jobs(self, *, job_kind: str | None = None) -> ClearDataResult:
+        """Delete job history rows (optionally filtered by kind) and their exchange logs."""
+        query = select(JobRow.id)
+        if job_kind:
+            query = query.where(JobRow.job_kind == job_kind)
+        job_ids = list(self.db.scalars(query).all())
+        if not job_ids:
+            label = job_kind or "all"
+            return ClearDataResult(
+                deleted=0,
+                message=f"No {label} jobs to clear.",
+                details={"job_kind": job_kind, "logs_deleted": 0, "cache_deleted": 0},
+            )
+
+        config_dir = get_app_config().config_dir
+        logs_deleted = 0
+        for job_id in job_ids:
+            path = job_openrouter_log_path(config_dir, job_id)
+            if path.is_file():
+                try:
+                    path.unlink()
+                    logs_deleted += 1
+                except OSError as exc:
+                    logger.warning("Could not delete job log %s: %s", path, exc)
+
+        cache_result = self.db.execute(
+            delete(TranslationCacheRow).where(TranslationCacheRow.job_id.in_(job_ids))
+        )
+        cache_deleted = cache_result.rowcount or 0
+
+        self.db.execute(delete(JobRow).where(JobRow.id.in_(job_ids)))
+        self.db.commit()
+        deleted = len(job_ids)
+
+        label = f"{job_kind} " if job_kind else ""
+        return ClearDataResult(
+            deleted=deleted,
+            message=f"Cleared {deleted} {label}job(s).",
+            details={
+                "job_kind": job_kind,
+                "logs_deleted": logs_deleted,
+                "cache_deleted": cache_deleted,
+            },
+        )
+
+    def clear_usage_stats(self) -> ClearDataResult:
+        """Remove OpenRouter exchange logs and reset persisted token totals on jobs."""
+        config_dir = get_app_config().config_dir
+        logs_dir = config_dir / "logs" / "jobs"
+        logs_deleted = 0
+        if logs_dir.is_dir():
+            for path in logs_dir.glob("job-*-openrouter.jsonl"):
+                try:
+                    path.unlink()
+                    logs_deleted += 1
+                except OSError as exc:
+                    logger.warning("Could not delete usage log %s: %s", path, exc)
+
+        result = self.db.execute(
+            update(JobRow).values(
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+            )
+        )
+        jobs_reset = result.rowcount or 0
+        self.db.commit()
+
+        return ClearDataResult(
+            deleted=logs_deleted,
+            message=f"Cleared {logs_deleted} usage log(s) and reset token totals on {jobs_reset} job(s).",
+            details={"logs_deleted": logs_deleted, "jobs_reset": jobs_reset},
         )
 
     async def create_job(

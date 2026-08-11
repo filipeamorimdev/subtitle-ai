@@ -53,6 +53,20 @@ class ConnectionTestResult(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class ClearDataResult(BaseModel):
+    deleted: int = 0
+    message: str
+    details: dict[str, Any] | None = None
+
+
+class ClearJobsRequest(BaseModel):
+    job_kind: Literal["translate", "extract", "request"] | None = None
+
+
+class ClearGlossariesRequest(BaseModel):
+    kind: Literal["universe", "series", "movie"] | None = None
+
+
 class OpenRouterModelOut(BaseModel):
     id: str
     name: str
