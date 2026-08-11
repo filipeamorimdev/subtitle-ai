@@ -153,7 +153,7 @@ class CandidateService:
             detail = episodes_by_id.get(int(eid)) if eid is not None else None
             items.append(client.normalize_wanted_episode(client.merge_wanted_with_detail(raw, detail)))
 
-        # Active extract / request jobs keyed by candidate_key
+        # Active extract / request / translate jobs keyed by candidate_key
         active_extract = {
             row.candidate_key: row.id
             for row in self.db.scalars(
@@ -170,6 +170,17 @@ class CandidateService:
             for row in self.db.scalars(
                 select(JobRow).where(
                     JobRow.job_kind == "request",
+                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.candidate_key.is_not(None),
+                )
+            ).all()
+            if row.candidate_key
+        }
+        active_translate = {
+            row.candidate_key: row.id
+            for row in self.db.scalars(
+                select(JobRow).where(
+                    JobRow.job_kind == "translate",
                     JobRow.status.in_(["pending", "processing"]),
                     JobRow.candidate_key.is_not(None),
                 )
@@ -324,6 +335,7 @@ class CandidateService:
                     else None,
                     active_extract_job_id=active_extract.get(key),
                     active_request_job_id=active_request.get(key),
+                    active_translate_job_id=active_translate.get(key),
                     latest_job_id=latest_job_ids.get(key),
                 )
             )

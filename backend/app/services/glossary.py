@@ -13,7 +13,12 @@ from app.core.logging import get_logger
 from app.db.models import GlossaryScopeRow, GlossaryTermRow
 from app.services.glossary_universes import UniverseDef, match_universe, universe_keys
 from app.subtitles.models import SubtitleDocument
-from app.translation.openrouter.client import ChatResult, OpenRouterClient, OpenRouterError
+from app.translation.openrouter.client import (
+    ChatResult,
+    OpenRouterClient,
+    OpenRouterError,
+    batch_base_model,
+)
 
 logger = get_logger("glossary")
 
@@ -722,7 +727,7 @@ class GlossaryService:
             return None, None, 0, 0, 0
         try:
             result = await client.chat_completion(
-                model=model,
+                model=batch_base_model(model),
                 messages=[
                     {"role": "system", "content": UNIVERSE_CLASSIFY_SYSTEM},
                     {"role": "user", "content": build_universe_classify_user_message(media_title)},
@@ -758,7 +763,7 @@ class GlossaryService:
     ) -> tuple[list[dict], ChatResult]:
         sample = sample_document_text(document)
         result = await client.chat_completion(
-            model=model,
+            model=batch_base_model(model),
             messages=[
                 {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
                 {

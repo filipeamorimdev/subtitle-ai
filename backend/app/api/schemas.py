@@ -121,6 +121,7 @@ class CandidateOut(BaseModel):
     extract_language: str | None = None
     active_extract_job_id: int | None = None
     active_request_job_id: int | None = None
+    active_translate_job_id: int | None = None
     latest_job_id: int | None = None
 
 

@@ -947,6 +947,9 @@ class JobService:
             if not match.can_translate:
                 skipped_count += 1
                 continue
+            if match.active_translate_job_id is not None:
+                skipped_count += 1
+                continue
             try:
                 existing = self.db.scalar(
                     select(JobRow).where(

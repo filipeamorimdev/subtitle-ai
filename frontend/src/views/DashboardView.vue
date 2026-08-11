@@ -32,7 +32,7 @@ const openCandidates = computed(() => store.candidates.filter((item) => !isTarge
 const pipeline = computed(() => {
   const open = openCandidates.value
   return {
-    ready: open.filter((item) => item.can_translate).length,
+    ready: open.filter((item) => item.can_translate && !item.active_translate_job_id).length,
     extract: open.filter((item) => item.can_extract && !item.active_extract_job_id).length,
     needSource: open.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
     done: store.candidates.filter(isTargetDone).length,
@@ -40,27 +40,66 @@ const pipeline = computed(() => {
   }
 })
 
+const pipelineCards = computed(() => [
+  {
+    label: 'Ready to translate',
+    blurb: 'Fresh lines, zero excuses',
+    icon: '🪄',
+    count: pipeline.value.ready,
+    to: '/candidates?filter=ready',
+  },
+  {
+    label: 'Can extract',
+    blurb: 'Subtitles hiding in the vault',
+    icon: '⛏️',
+    count: pipeline.value.extract,
+    to: '/candidates?filter=extract',
+  },
+  {
+    label: 'Need source',
+    blurb: 'Still hunting for dialogue',
+    icon: '🕵️',
+    count: pipeline.value.needSource,
+    to: '/candidates?filter=need-source',
+  },
+  {
+    label: 'Target exists',
+    blurb: 'Already captioned — chef\'s kiss',
+    icon: '🏆',
+    count: pipeline.value.done,
+    to: '/candidates?filter=target-exists',
+  },
+])
+
 const jobStatusCards = computed(() => [
   {
     label: 'Pending',
+    blurb: 'Waiting in line… politely',
+    icon: '😴',
     status: 'pending',
     count: store.stats?.pending ?? 0,
     tone: 'neutral' as const,
   },
   {
     label: 'Processing',
+    blurb: 'Translating at warp speed',
+    icon: '🚀',
     status: 'processing',
     count: store.stats?.processing ?? 0,
     tone: 'active' as const,
   },
   {
     label: 'Failed',
+    blurb: 'Oops. Subtitles staged a mutiny',
+    icon: '💥',
     status: 'failed',
     count: store.stats?.failed ?? 0,
     tone: 'danger' as const,
   },
   {
     label: 'Completed',
+    blurb: 'Mission captioned',
+    icon: '🎉',
     status: 'completed',
     count: store.stats?.completed ?? 0,
     tone: 'neutral' as const,
@@ -169,9 +208,11 @@ onUnmounted(() => {
   <section class="space-y-8">
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 class="font-display text-2xl font-bold sm:text-3xl">Home</h1>
+        <h1 class="font-display text-2xl font-bold sm:text-3xl">
+          <span aria-hidden="true">🍿</span> Subtitle HQ
+        </h1>
         <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          Pipeline health and jobs that need attention.
+          Where lonely dialogue finds a second language (and fewer typos).
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
@@ -181,19 +222,19 @@ onUnmounted(() => {
           :disabled="pipelineLoading || store.loading"
           @click="loadPipeline(true)"
         >
-          {{ pipelineLoading || store.loading ? 'Refreshing…' : 'Refresh pipeline' }}
+          {{ pipelineLoading || store.loading ? '🔄 Spinning the reels…' : '🔄 Refresh pipeline' }}
         </button>
         <RouterLink
           class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
           to="/candidates"
         >
-          Candidates
+          🎬 Candidates
         </RouterLink>
         <RouterLink
           class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
           to="/jobs"
         >
-          Jobs
+          📋 Jobs
         </RouterLink>
       </div>
     </div>
@@ -201,9 +242,11 @@ onUnmounted(() => {
     <div class="grid gap-6 lg:grid-cols-2">
       <div class="space-y-3">
         <div class="flex items-baseline justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">Pipeline</h2>
+          <h2 class="font-display text-lg font-semibold">
+            <span aria-hidden="true">🏭</span> Pipeline
+          </h2>
           <span class="text-xs text-ink-500">
-            <template v-if="pipelineLoaded">{{ pipeline.open }} open</template>
+            <template v-if="pipelineLoaded">{{ pipeline.open }} still in the plot</template>
             <template v-else-if="pipelineLoading">Loading…</template>
           </span>
         </div>
@@ -212,51 +255,48 @@ onUnmounted(() => {
         </p>
         <div class="grid grid-cols-2 gap-2 sm:gap-3">
           <RouterLink
-            class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates?filter=ready"
+            v-for="item in pipelineCards"
+            :key="item.to"
+            class="group rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:-translate-y-0.5 hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
+            :to="item.to"
           >
-            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Ready to translate</div>
-            <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.ready }}</div>
-          </RouterLink>
-          <RouterLink
-            class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates?filter=extract"
-          >
-            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Can extract</div>
-            <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.extract }}</div>
-          </RouterLink>
-          <RouterLink
-            class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates?filter=need-source"
-          >
-            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Need source</div>
-            <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.needSource }}</div>
-          </RouterLink>
-          <RouterLink
-            class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 transition hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60 dark:hover:border-accent/50 sm:px-4"
-            to="/candidates?filter=target-exists"
-          >
-            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Target exists</div>
-            <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ pipeline.done }}</div>
+            <div class="flex items-start justify-between gap-2">
+              <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ item.label }}</div>
+              <span
+                class="text-lg transition group-hover:scale-110 sm:text-xl"
+                aria-hidden="true"
+              >{{ item.icon }}</span>
+            </div>
+            <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ item.count }}</div>
+            <p class="mt-1 text-[11px] leading-snug text-ink-500 sm:text-xs">{{ item.blurb }}</p>
           </RouterLink>
         </div>
       </div>
 
       <div class="space-y-3">
         <div class="flex items-baseline justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">Jobs now</h2>
+          <h2 class="font-display text-lg font-semibold">
+            <span aria-hidden="true">⚡</span> Jobs now
+          </h2>
           <RouterLink class="text-xs font-medium text-accent hover:underline" to="/jobs">View all</RouterLink>
         </div>
         <div class="grid grid-cols-2 gap-2 sm:gap-3">
           <RouterLink
             v-for="item in jobStatusCards"
             :key="item.status"
-            class="rounded-xl border px-3 py-3 transition hover:border-accent/50 sm:px-4"
+            class="group rounded-xl border px-3 py-3 transition hover:-translate-y-0.5 hover:border-accent/50 sm:px-4"
             :class="cardClass(item.tone, item.count)"
             to="/jobs"
           >
-            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ item.label }}</div>
+            <div class="flex items-start justify-between gap-2">
+              <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ item.label }}</div>
+              <span
+                class="text-lg transition group-hover:scale-110 sm:text-xl"
+                aria-hidden="true"
+              >{{ item.icon }}</span>
+            </div>
             <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ item.count }}</div>
+            <p class="mt-1 text-[11px] leading-snug text-ink-500 sm:text-xs">{{ item.blurb }}</p>
           </RouterLink>
         </div>
       </div>
@@ -264,55 +304,73 @@ onUnmounted(() => {
 
     <div class="grid gap-6 lg:grid-cols-2">
       <div class="space-y-3">
-        <h2 class="font-display text-lg font-semibold">Needs attention</h2>
+        <h2 class="font-display text-lg font-semibold">
+          <span aria-hidden="true">🧯</span> Needs attention
+        </h2>
         <div class="rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
           <p
             v-if="!failedJobs.length"
-            class="px-4 py-8 text-sm text-ink-500"
+            class="px-4 py-8 text-center text-sm text-ink-500"
           >
-            No failed jobs.
+            <span class="mb-1 block text-2xl" aria-hidden="true">😎</span>
+            No failed jobs. The translators behaved today.
           </p>
           <ul v-else class="divide-y divide-ink-100 dark:divide-ink-800">
             <li v-for="job in failedJobs" :key="`fail-${job.id}`" class="px-4 py-3">
-              <RouterLink class="font-medium text-accent hover:underline" :to="`/jobs/${job.id}`">
-                {{ jobTitle(job) }}
-              </RouterLink>
-              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
-                <span class="capitalize">{{ job.job_kind || 'translate' }}</span>
-                <span>{{ formatDateTime(job.completed_at || job.created_at) }}</span>
+              <div class="flex items-start gap-2">
+                <span class="mt-0.5 shrink-0" aria-hidden="true">😬</span>
+                <div class="min-w-0 flex-1">
+                  <RouterLink class="font-medium text-accent hover:underline" :to="`/jobs/${job.id}`">
+                    {{ jobTitle(job) }}
+                  </RouterLink>
+                  <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
+                    <span class="capitalize">{{ job.job_kind || 'translate' }}</span>
+                    <span>{{ formatDateTime(job.completed_at || job.created_at) }}</span>
+                  </div>
+                  <p v-if="job.error" class="mt-1 line-clamp-2 text-xs text-red-700 dark:text-red-300">
+                    {{ job.error }}
+                  </p>
+                </div>
               </div>
-              <p v-if="job.error" class="mt-1 line-clamp-2 text-xs text-red-700 dark:text-red-300">
-                {{ job.error }}
-              </p>
             </li>
           </ul>
         </div>
       </div>
 
       <div class="space-y-3">
-        <h2 class="font-display text-lg font-semibold">Running</h2>
+        <h2 class="font-display text-lg font-semibold">
+          <span aria-hidden="true">🏃</span> Running
+        </h2>
         <div class="rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
           <p
             v-if="!runningJobs.length"
-            class="px-4 py-8 text-sm text-ink-500"
+            class="px-4 py-8 text-center text-sm text-ink-500"
           >
-            Nothing in the queue.
+            <span class="mb-1 block text-2xl" aria-hidden="true">🛋️</span>
+            Queue's empty. Even the GPUs are on a snack break.
           </p>
           <ul v-else class="divide-y divide-ink-100 dark:divide-ink-800">
             <li v-for="job in runningJobs" :key="`run-${job.id}`" class="px-4 py-3">
-              <RouterLink class="font-medium text-accent hover:underline" :to="`/jobs/${job.id}`">
-                {{ jobTitle(job) }}
-              </RouterLink>
-              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
-                <span class="capitalize">{{ job.job_kind || 'translate' }}</span>
-                <template v-if="job.status === 'processing'">
-                  <span>{{ job.progress }}%</span>
-                  <span v-if="job.progress_detail" class="truncate">{{ job.progress_detail }}</span>
-                </template>
-                <template v-else>
-                  <span>Pending</span>
-                  <span>{{ formatDateTime(job.created_at) }}</span>
-                </template>
+              <div class="flex items-start gap-2">
+                <span class="mt-0.5 shrink-0" aria-hidden="true">
+                  {{ job.status === 'processing' ? '🔥' : '⏳' }}
+                </span>
+                <div class="min-w-0 flex-1">
+                  <RouterLink class="font-medium text-accent hover:underline" :to="`/jobs/${job.id}`">
+                    {{ jobTitle(job) }}
+                  </RouterLink>
+                  <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
+                    <span class="capitalize">{{ job.job_kind || 'translate' }}</span>
+                    <template v-if="job.status === 'processing'">
+                      <span>{{ job.progress }}%</span>
+                      <span v-if="job.progress_detail" class="truncate">{{ job.progress_detail }}</span>
+                    </template>
+                    <template v-else>
+                      <span>Pending</span>
+                      <span>{{ formatDateTime(job.created_at) }}</span>
+                    </template>
+                  </div>
+                </div>
               </div>
             </li>
           </ul>
@@ -322,34 +380,44 @@ onUnmounted(() => {
 
     <div class="rounded-xl border border-ink-200 bg-white/80 px-4 py-4 dark:border-ink-800 dark:bg-ink-900/60">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="font-display text-lg font-semibold">System</h2>
+        <h2 class="font-display text-lg font-semibold">
+          <span aria-hidden="true">🛰️</span> System
+        </h2>
         <span v-if="health?.version" class="text-xs text-ink-500">v{{ health.version }}</span>
       </div>
       <dl class="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <div>
-          <dt class="text-xs uppercase tracking-wide text-ink-500">Bazarr</dt>
+          <dt class="text-xs uppercase tracking-wide text-ink-500">
+            <span aria-hidden="true">📦</span> Bazarr
+          </dt>
           <dd class="mt-0.5 font-medium" :class="bazarrOk ? 'text-ink-900 dark:text-ink-50' : 'text-red-700 dark:text-red-300'">
-            {{ bazarrOk ? 'Configured' : 'Not configured' }}
+            {{ bazarrOk ? 'Configured ✅' : 'Missing in action ❌' }}
           </dd>
         </div>
         <div>
-          <dt class="text-xs uppercase tracking-wide text-ink-500">OpenRouter</dt>
+          <dt class="text-xs uppercase tracking-wide text-ink-500">
+            <span aria-hidden="true">🧠</span> OpenRouter
+          </dt>
           <dd class="mt-0.5 font-medium" :class="openRouterOk ? 'text-ink-900 dark:text-ink-50' : 'text-red-700 dark:text-red-300'">
-            {{ openRouterOk ? 'Configured' : 'Not configured' }}
+            {{ openRouterOk ? 'Configured ✅' : 'Brain offline ❌' }}
           </dd>
         </div>
         <div class="min-w-0">
-          <dt class="text-xs uppercase tracking-wide text-ink-500">Target</dt>
+          <dt class="text-xs uppercase tracking-wide text-ink-500">
+            <span aria-hidden="true">🎯</span> Target
+          </dt>
           <dd class="mt-0.5 truncate font-medium" :title="targetLabel">{{ targetLabel }}</dd>
         </div>
         <div class="min-w-0">
-          <dt class="text-xs uppercase tracking-wide text-ink-500">Model</dt>
+          <dt class="text-xs uppercase tracking-wide text-ink-500">
+            <span aria-hidden="true">🤖</span> Model
+          </dt>
           <dd class="mt-0.5 truncate font-medium" :title="modelLabel">{{ modelLabel }}</dd>
         </div>
       </dl>
       <p v-if="!bazarrOk || !openRouterOk" class="mt-3 text-sm text-ink-600 dark:text-ink-300">
         <RouterLink class="font-medium text-accent hover:underline" to="/settings">Open settings</RouterLink>
-        to finish setup.
+        before the plot thickens without captions.
       </p>
     </div>
   </section>

@@ -9,7 +9,12 @@ import httpx
 import pytest
 
 from app.subtitles.parsers.srt import parse_srt
-from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
+from app.translation.openrouter.client import (
+    OpenRouterClient,
+    OpenRouterError,
+    batch_base_model,
+    is_batch_model,
+)
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.openrouter.prompts import format_batch, parse_batch_response
 from app.translation.openrouter.service import OpenRouterTranslationService
@@ -25,6 +30,25 @@ World
 """
 
 
+def test_is_batch_model_and_base_slug():
+    assert is_batch_model("openai/gpt-4o-mini:batch")
+    assert not is_batch_model("openai/gpt-4o-mini")
+    assert not is_batch_model("openai/gpt-4o-mini:batching")
+    assert batch_base_model("openai/gpt-4o-mini:batch") == "openai/gpt-4o-mini"
+    assert batch_base_model("openai/gpt-4o-mini") == "openai/gpt-4o-mini"
+
+
+def _patch_httpx(monkeypatch, handler):
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+
+
 @pytest.mark.asyncio
 async def test_openrouter_success(monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -38,14 +62,7 @@ async def test_openrouter_success(monkeypatch):
             },
         )
 
-    transport = httpx.MockTransport(handler)
-
-    class PatchedClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = transport
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    _patch_httpx(monkeypatch, handler)
     client = OpenRouterClient("test-key")
     result = await client.chat_completion(
         model="openai/gpt-4o-mini",
@@ -56,18 +73,34 @@ async def test_openrouter_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_strips_batch_suffix(monkeypatch):
+    seen = {"model": None}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        seen["model"] = payload["model"]
+        assert "/chat/completions" in str(request.url)
+        assert "/api/beta/" not in str(request.url)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}], "usage": {}},
+        )
+
+    _patch_httpx(monkeypatch, handler)
+    client = OpenRouterClient("key")
+    await client.chat_completion(
+        model="openai/gpt-4o-mini:batch",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert seen["model"] == "openai/gpt-4o-mini"
+
+
+@pytest.mark.asyncio
 async def test_openrouter_auth_failure(monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, text="nope")
 
-    transport = httpx.MockTransport(handler)
-
-    class PatchedClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = transport
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    _patch_httpx(monkeypatch, handler)
     client = OpenRouterClient("bad")
     with pytest.raises(OpenRouterError, match="authentication"):
         await client.chat_completion(model="x", messages=[{"role": "user", "content": "hi"}])
@@ -86,14 +119,7 @@ async def test_openrouter_rate_limit_then_success(monkeypatch):
             json={"choices": [{"message": {"content": "done"}}], "usage": {}},
         )
 
-    transport = httpx.MockTransport(handler)
-
-    class PatchedClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = transport
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    _patch_httpx(monkeypatch, handler)
 
     async def _sleep(_delay=0):
         return None
@@ -138,19 +164,267 @@ async def test_openrouter_list_models_sorted_by_price(monkeypatch):
             },
         )
 
-    transport = httpx.MockTransport(handler)
-
-    class PatchedClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = transport
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    _patch_httpx(monkeypatch, handler)
     models = await OpenRouterClient.list_models(api_key="test-key")
     assert [m.id for m in models] == ["free/model", "cheap/model", "expensive/model"]
     assert models[0].prompt_price_per_million == 0.0
     assert models[1].prompt_price_per_million == pytest.approx(0.1)
     assert models[2].completion_price_per_million == pytest.approx(4.0)
+
+
+@pytest.mark.asyncio
+async def test_run_chat_batch_submit_and_poll(monkeypatch):
+    polls = {"n": 0}
+    urls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if request.method == "POST" and request.url.path.endswith("/batches"):
+            # Stream-parse order: endpoint and model before requests.
+            raw = request.content.decode("utf-8")
+            assert raw.index('"endpoint"') < raw.index('"requests"')
+            assert raw.index('"model"') < raw.index('"requests"')
+            payload = json.loads(raw)
+            assert payload["endpoint"] == "/v1/chat/completions"
+            assert payload["model"] == "openai/gpt-4o-mini"
+            assert payload["requests"][0]["custom_id"] == "chunk-1"
+            assert payload["requests"][0]["body"]["model"] == "openai/gpt-4o-mini"
+            return httpx.Response(
+                202,
+                json={
+                    "id": "batch_123",
+                    "status": "validating",
+                    "request_counts": {"total": 1, "completed": 0, "failed": 0},
+                    "results": None,
+                },
+            )
+        if request.method == "GET" and "/batches/batch_123" in request.url.path:
+            polls["n"] += 1
+            if polls["n"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "batch_123",
+                        "status": "in_progress",
+                        "request_counts": {"total": 1, "completed": 0, "failed": 0},
+                        "results": None,
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "batch_123",
+                    "status": "completed",
+                    "request_counts": {"total": 1, "completed": 1, "failed": 0},
+                    "results": [
+                        {
+                            "id": "batch_req_1",
+                            "custom_id": "chunk-1",
+                            "response": {
+                                "status_code": 200,
+                                "body": {
+                                    "model": "openai/gpt-4o-mini",
+                                    "choices": [
+                                        {"message": {"content": "[001]\nOlá\n\n[002]\nMundo\n"}}
+                                    ],
+                                    "usage": {
+                                        "prompt_tokens": 10,
+                                        "completion_tokens": 5,
+                                        "total_tokens": 15,
+                                    },
+                                },
+                            },
+                            "error": None,
+                        }
+                    ],
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    _patch_httpx(monkeypatch, handler)
+
+    async def _sleep(_delay=0):
+        return None
+
+    monkeypatch.setattr("app.translation.openrouter.client.asyncio.sleep", _sleep)
+
+    from app.translation.openrouter.client import BatchChatRequest
+
+    client = OpenRouterClient("key")
+    results = await client.run_chat_batch(
+        model="openai/gpt-4o-mini:batch",
+        requests=[
+            BatchChatRequest(
+                custom_id="chunk-1",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        ],
+        poll_interval_s=0,
+    )
+    assert results["chunk-1"].content.startswith("[001]")
+    assert results["chunk-1"].total_tokens == 15
+    assert any("/api/beta/batches" in url for url in urls)
+    assert polls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_translation_service_uses_openrouter_batch_for_batch_model(monkeypatch):
+    urls: list[str] = []
+    sync_calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if request.method == "POST" and request.url.path.endswith("/batches"):
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["model"] == "openai/gpt-4o-mini"
+            assert len(payload["requests"]) == 1
+            return httpx.Response(
+                202,
+                json={
+                    "id": "batch_abc",
+                    "status": "completed",
+                    "request_counts": {"total": 1, "completed": 1, "failed": 0},
+                    "results": [
+                        {
+                            "custom_id": "chunk-1",
+                            "response": {
+                                "status_code": 200,
+                                "body": {
+                                    "choices": [
+                                        {
+                                            "message": {
+                                                "content": "[001]\nOlá\n\n[002]\nMundo\n"
+                                            }
+                                        }
+                                    ],
+                                    "usage": {"total_tokens": 9},
+                                },
+                            },
+                            "error": None,
+                        }
+                    ],
+                },
+            )
+        if "/chat/completions" in request.url.path:
+            sync_calls["n"] += 1
+            raise AssertionError("sync chat should not run when batch results are valid")
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    _patch_httpx(monkeypatch, handler)
+
+    async def _sleep(_delay=0):
+        return None
+
+    monkeypatch.setattr("app.translation.openrouter.client.asyncio.sleep", _sleep)
+
+    client = OpenRouterClient("key")
+    service = OpenRouterTranslationService(client)
+    outcome = await service.translate_document(
+        parse_srt(SAMPLE),
+        model="openai/gpt-4o-mini:batch",
+        target_language_code="pt-PT",
+        target_language_name="Portuguese (Portugal)",
+        batch_size=50,
+    )
+    assert [b.text for b in outcome.document.blocks] == ["Olá", "Mundo"]
+    assert outcome.model == "openai/gpt-4o-mini:batch"
+    assert outcome.usage.total_tokens == 9
+    assert any("/api/beta/batches" in url for url in urls)
+    assert sync_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_translation_batch_model_repairs_via_sync(monkeypatch):
+    urls: list[str] = []
+    sync_models: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if request.method == "POST" and request.url.path.endswith("/batches"):
+            return httpx.Response(
+                202,
+                json={
+                    "id": "batch_fix",
+                    "status": "completed",
+                    "request_counts": {"total": 1, "completed": 1, "failed": 0},
+                    "results": [
+                        {
+                            "custom_id": "chunk-1",
+                            "response": {
+                                "status_code": 200,
+                                "body": {
+                                    "choices": [{"message": {"content": "[001]\nOlá\n"}}],
+                                    "usage": {"total_tokens": 1},
+                                },
+                            },
+                            "error": None,
+                        }
+                    ],
+                },
+            )
+        if "/chat/completions" in request.url.path:
+            payload = json.loads(request.content.decode("utf-8"))
+            sync_models.append(payload["model"])
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "[002]\nMundo\n"}}],
+                    "usage": {"total_tokens": 2},
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    _patch_httpx(monkeypatch, handler)
+
+    async def _sleep(_delay=0):
+        return None
+
+    monkeypatch.setattr("app.translation.openrouter.client.asyncio.sleep", _sleep)
+
+    client = OpenRouterClient("key")
+    service = OpenRouterTranslationService(client)
+    outcome = await service.translate_document(
+        parse_srt(SAMPLE),
+        model="openai/gpt-4o-mini:batch",
+        target_language_code="pt-PT",
+        target_language_name="Portuguese (Portugal)",
+        batch_size=50,
+    )
+    assert [b.text for b in outcome.document.blocks] == ["Olá", "Mundo"]
+    assert any("/api/beta/batches" in url for url in urls)
+    assert any("/chat/completions" in url for url in urls)
+    assert sync_models
+    assert all(model == "openai/gpt-4o-mini" for model in sync_models)
+
+
+@pytest.mark.asyncio
+async def test_translation_non_batch_model_never_hits_batches_api(monkeypatch):
+    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+        from app.translation.openrouter.client import ChatResult
+
+        return ChatResult(
+            content="[001]\nOlá\n\n[002]\nMundo\n",
+            model=model,
+            total_tokens=3,
+        )
+
+    client = OpenRouterClient("key")
+    monkeypatch.setattr(client, "chat_completion", fake_chat)
+
+    async def boom(*_args, **_kwargs):
+        raise AssertionError("run_chat_batch should not be called for sync models")
+
+    monkeypatch.setattr(client, "run_chat_batch", boom)
+
+    service = OpenRouterTranslationService(client)
+    outcome = await service.translate_document(
+        parse_srt(SAMPLE),
+        model="openai/gpt-4o-mini",
+        target_language_code="pt-PT",
+        target_language_name="Portuguese (Portugal)",
+        batch_size=50,
+    )
+    assert outcome.document.blocks[0].text == "Olá"
 
 
 @pytest.mark.asyncio
@@ -165,14 +439,7 @@ async def test_openrouter_logs_request_and_response(tmp_path: Path, monkeypatch)
             },
         )
 
-    transport = httpx.MockTransport(handler)
-
-    class PatchedClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = transport
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    _patch_httpx(monkeypatch, handler)
 
     log_path = job_openrouter_log_path(tmp_path, 42)
     exchange_log = JobOpenRouterExchangeLog(log_path, job_id=42)
@@ -199,14 +466,7 @@ async def test_openrouter_logs_malformed_response(tmp_path: Path, monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"unexpected": True})
 
-    transport = httpx.MockTransport(handler)
-
-    class PatchedClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = transport
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    _patch_httpx(monkeypatch, handler)
 
     log_path = job_openrouter_log_path(tmp_path, 7)
     exchange_log = JobOpenRouterExchangeLog(log_path, job_id=7)

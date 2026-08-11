@@ -77,6 +77,7 @@ export interface Candidate {
   extract_language: string | null
   active_extract_job_id: number | null
   active_request_job_id: number | null
+  active_translate_job_id: number | null
   latest_job_id: number | null
 }
 

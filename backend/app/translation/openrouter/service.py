@@ -8,7 +8,14 @@ from app.core.logging import get_logger
 from app.subtitles.markup import protect_markup, restore_markup
 from app.subtitles.models import SubtitleBlock, SubtitleDocument
 from app.subtitles.validation import validate_batch_mapping, validate_translation
-from app.translation.openrouter.client import ChatResult, OpenRouterClient, OpenRouterError
+from app.translation.openrouter.client import (
+    BatchChatRequest,
+    ChatResult,
+    OpenRouterClient,
+    OpenRouterError,
+    batch_base_model,
+    is_batch_model,
+)
 from app.translation.openrouter.prompts import (
     MISSING_BLOCKS_PROMPT_EXTRA,
     build_missing_repair_user_message,
@@ -75,33 +82,36 @@ class OpenRouterTranslationService:
         ]
         total_batches = len(batches)
         warnings: list[str] = []
+        # Repairs and sync completions always use the non-:batch slug.
+        sync_model = batch_base_model(model)
 
-        for batch_index, batch in enumerate(batches, start=1):
-            protected_payload: list[tuple[int, str, list[str]]] = []
-            for block in batch:
-                protection = protect_markup(block.text)
-                protected_payload.append((block.index, protection.protected_text, protection.tags))
-
-            mapping = await self._translate_batch(
+        if is_batch_model(model) and batches:
+            await self._translate_document_via_openrouter_batch(
+                batches=batches,
                 model=model,
+                sync_model=sync_model,
                 system_prompt=system_prompt,
-                protected_payload=protected_payload,
                 usage=usage,
+                translated_by_id=translated_by_id,
+                progress_callback=progress_callback,
             )
+        else:
+            for batch_index, batch in enumerate(batches, start=1):
+                protected_payload: list[tuple[int, str, list[str]]] = []
+                for block in batch:
+                    protection = protect_markup(block.text)
+                    protected_payload.append((block.index, protection.protected_text, protection.tags))
 
-            for block, (block_id, _protected, tags) in zip(batch, protected_payload, strict=True):
-                raw = mapping[block_id]
-                restored = restore_markup(raw, tags)
-                translated_by_id[block.index] = SubtitleBlock(
-                    index=block.index,
-                    start=block.start,
-                    end=block.end,
-                    text=restored,
-                    original_text=block.original_text or block.text,
+                mapping = await self._translate_batch(
+                    model=sync_model,
+                    system_prompt=system_prompt,
+                    protected_payload=protected_payload,
+                    usage=usage,
                 )
+                self._apply_mapping(batch, protected_payload, mapping, translated_by_id)
 
-            if progress_callback:
-                await progress_callback(batch_index, total_batches)
+                if progress_callback:
+                    await progress_callback(batch_index, total_batches)
 
         # Final validation: markup mismatches are warnings; hard issues re-translate
         # the offending blocks one-by-one (split + retry).
@@ -135,7 +145,7 @@ class OpenRouterTranslationService:
                 source_block = source_by_id[block_id]
                 protection = protect_markup(source_block.text)
                 mapping = await self._translate_batch(
-                    model=model,
+                    model=sync_model,
                     system_prompt=system_prompt,
                     protected_payload=[
                         (source_block.index, protection.protected_text, protection.tags)
@@ -191,6 +201,88 @@ class OpenRouterTranslationService:
             warnings=warnings,
         )
 
+    async def _translate_document_via_openrouter_batch(
+        self,
+        *,
+        batches: list[list[SubtitleBlock]],
+        model: str,
+        sync_model: str,
+        system_prompt: str,
+        usage: TranslationUsage,
+        translated_by_id: dict[int, SubtitleBlock],
+        progress_callback,
+    ) -> None:
+        total_batches = len(batches)
+        chunk_payloads: list[list[tuple[int, str, list[str]]]] = []
+        requests: list[BatchChatRequest] = []
+
+        for batch_index, batch in enumerate(batches, start=1):
+            protected_payload: list[tuple[int, str, list[str]]] = []
+            for block in batch:
+                protection = protect_markup(block.text)
+                protected_payload.append((block.index, protection.protected_text, protection.tags))
+            chunk_payloads.append(protected_payload)
+            source_blocks = [(block_id, text) for block_id, text, _tags in protected_payload]
+            requests.append(
+                BatchChatRequest(
+                    custom_id=f"chunk-{batch_index}",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": build_translate_user_message(source_blocks),
+                        },
+                    ],
+                )
+            )
+
+        async def on_batch_progress(completed: int, total: int) -> None:
+            if progress_callback:
+                # Map OpenRouter request progress onto subtitle-chunk progress.
+                await progress_callback(min(completed, total_batches), total_batches)
+
+        results = await self.client.run_chat_batch(
+            model=model,
+            requests=requests,
+            progress_callback=on_batch_progress,
+        )
+
+        for batch_index, (batch, protected_payload) in enumerate(
+            zip(batches, chunk_payloads, strict=True),
+            start=1,
+        ):
+            custom_id = f"chunk-{batch_index}"
+            initial = results[custom_id]
+            mapping = await self._translate_batch(
+                model=sync_model,
+                system_prompt=system_prompt,
+                protected_payload=protected_payload,
+                usage=usage,
+                initial_result=initial,
+            )
+            self._apply_mapping(batch, protected_payload, mapping, translated_by_id)
+
+        if progress_callback:
+            await progress_callback(total_batches, total_batches)
+
+    @staticmethod
+    def _apply_mapping(
+        batch: list[SubtitleBlock],
+        protected_payload: list[tuple[int, str, list[str]]],
+        mapping: dict[int, str],
+        translated_by_id: dict[int, SubtitleBlock],
+    ) -> None:
+        for block, (block_id, _protected, tags) in zip(batch, protected_payload, strict=True):
+            raw = mapping[block_id]
+            restored = restore_markup(raw, tags)
+            translated_by_id[block.index] = SubtitleBlock(
+                index=block.index,
+                start=block.start,
+                end=block.end,
+                text=restored,
+                original_text=block.original_text or block.text,
+            )
+
     async def _translate_batch(
         self,
         *,
@@ -198,21 +290,25 @@ class OpenRouterTranslationService:
         system_prompt: str,
         protected_payload: list[tuple[int, str, list[str]]],
         usage: TranslationUsage,
+        initial_result: ChatResult | None = None,
     ) -> dict[int, str]:
         expected_ids = [item[0] for item in protected_payload]
         expected_set = set(expected_ids)
         by_id = {item[0]: (item[1], item[2]) for item in protected_payload}
         source_blocks = [(block_id, by_id[block_id][0]) for block_id in expected_ids]
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": build_translate_user_message(source_blocks),
-            },
-        ]
+        if initial_result is not None:
+            result = initial_result
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": build_translate_user_message(source_blocks),
+                },
+            ]
+            result = await self.client.chat_completion(model=model, messages=messages)
 
-        result = await self.client.chat_completion(model=model, messages=messages)
         usage.add(result)
         mapping = self._filter_mapping(parse_batch_response(result.content), expected_set)
         validation = validate_batch_mapping(expected_ids, mapping)

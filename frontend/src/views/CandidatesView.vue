@@ -55,7 +55,7 @@ function canRequestSource(item: Candidate) {
 }
 
 function matchesOpenFilter(item: Candidate, filter: CandidateFilter) {
-  if (filter === 'ready') return item.can_translate
+  if (filter === 'ready') return item.can_translate && !item.active_translate_job_id
   if (filter === 'extract') return item.can_extract && !item.active_extract_job_id
   if (filter === 'need-source') return canRequestSource(item) && !item.active_request_job_id
   return false
@@ -68,7 +68,7 @@ const doneCandidates = computed(() => store.candidates.filter((item) => isTarget
 const pipelineCounts = computed(() => {
   const open = openCandidates.value
   return {
-    ready: open.filter((item) => item.can_translate).length,
+    ready: open.filter((item) => item.can_translate && !item.active_translate_job_id).length,
     extract: open.filter((item) => item.can_extract && !item.active_extract_job_id).length,
     needSource: open.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
     done: doneCandidates.value.length,
@@ -121,7 +121,10 @@ const extractableCount = computed(
 )
 
 const translatableCount = computed(
-  () => filteredOpenCandidates.value.filter((item) => item.can_translate).length,
+  () =>
+    filteredOpenCandidates.value.filter(
+      (item) => item.can_translate && !item.active_translate_job_id,
+    ).length,
 )
 
 const selectedCandidates = computed(() =>
@@ -145,7 +148,7 @@ const selectedExtractable = computed(() =>
 )
 
 const selectedTranslatable = computed(() =>
-  selectedCandidates.value.filter((item) => item.can_translate),
+  selectedCandidates.value.filter((item) => item.can_translate && !item.active_translate_job_id),
 )
 
 const emptyOpenMessage = computed(() => {
@@ -371,7 +374,9 @@ async function translateAll() {
   if (categoryFilter.value) {
     await runSelected(
       'translate',
-      filteredOpenCandidates.value.filter((item) => item.can_translate),
+      filteredOpenCandidates.value.filter(
+        (item) => item.can_translate && !item.active_translate_job_id,
+      ),
       'Translate',
       (item) => store.translateCandidate(item.key),
     )
@@ -461,7 +466,14 @@ function requestLabel(item: Candidate) {
   return 'Request source'
 }
 
+function translateLabel(item: Candidate) {
+  if (item.active_translate_job_id) return 'Translating…'
+  if (translatingKey.value === item.key) return 'Starting…'
+  return 'Translate'
+}
+
 function statusText(item: Candidate) {
+  if (item.active_translate_job_id) return 'Translating…'
   if (item.can_translate) return 'Ready'
   if (isTargetDone(item)) return 'Target already exists'
   return item.reason || item.reason_code || 'Unavailable'
@@ -608,7 +620,13 @@ function statusText(item: Candidate) {
             <dt class="text-ink-500">Status</dt>
             <dd
               class="break-words"
-              :class="item.can_translate ? 'text-emerald-700 dark:text-emerald-300' : 'text-ink-500'"
+              :class="
+                item.active_translate_job_id
+                  ? 'text-accent'
+                  : item.can_translate
+                    ? 'text-emerald-700 dark:text-emerald-300'
+                    : 'text-ink-500'
+              "
             >
               {{ statusText(item) }}
             </dd>
@@ -662,10 +680,10 @@ function statusText(item: Candidate) {
           <button
             class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
             type="button"
-            :disabled="!item.can_translate || translatingKey === item.key || batchBusy != null"
+            :disabled="!item.can_translate || translatingKey === item.key || item.active_translate_job_id != null || batchBusy != null"
             @click="translate(item.key)"
           >
-            {{ translatingKey === item.key ? 'Starting…' : 'Translate' }}
+            {{ translateLabel(item) }}
           </button>
         </div>
       </article>
@@ -746,7 +764,11 @@ function statusText(item: Candidate) {
               </div>
             </td>
             <td class="px-4 py-3 align-top">
-              <span v-if="item.can_translate" class="text-emerald-700 dark:text-emerald-300">Ready</span>
+              <span
+                v-if="item.active_translate_job_id"
+                class="text-accent"
+              >Translating…</span>
+              <span v-else-if="item.can_translate" class="text-emerald-700 dark:text-emerald-300">Ready</span>
               <span v-else class="text-ink-500">{{ statusText(item) }}</span>
             </td>
             <td
@@ -782,10 +804,10 @@ function statusText(item: Candidate) {
                 <button
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
                   type="button"
-                  :disabled="!item.can_translate || translatingKey === item.key || batchBusy != null"
+                  :disabled="!item.can_translate || translatingKey === item.key || item.active_translate_job_id != null || batchBusy != null"
                   @click="translate(item.key)"
                 >
-                  {{ translatingKey === item.key ? 'Starting…' : 'Translate' }}
+                  {{ translateLabel(item) }}
                 </button>
               </div>
             </td>
