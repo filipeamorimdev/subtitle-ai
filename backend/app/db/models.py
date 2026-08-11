@@ -26,6 +26,9 @@ class SettingsRow(Base):
     media_roots: Mapped[list[Any]] = mapped_column(JSON, default=lambda: ["/media"])
     path_mappings: Mapped[list[Any]] = mapped_column(JSON, default=lambda: [])
     batch_size: Mapped[int] = mapped_column(Integer, default=25)
+    max_concurrent_translate: Mapped[int] = mapped_column(Integer, default=1)
+    max_concurrent_extract: Mapped[int] = mapped_column(Integer, default=1)
+    max_concurrent_request: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -62,11 +62,21 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # Lightweight SQLite column ensure for existing deployments without alembic upgrade.
     with engine.begin() as conn:
-        rows = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
-        columns = {row[1] for row in rows}
-        if "job_kind" not in columns:
+        job_rows = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
+        job_columns = {row[1] for row in job_rows}
+        if "job_kind" not in job_columns:
             conn.execute(
                 text("ALTER TABLE jobs ADD COLUMN job_kind VARCHAR(32) NOT NULL DEFAULT 'translate'")
             )
-        if "extract_stream_index" not in columns:
+        if "extract_stream_index" not in job_columns:
             conn.execute(text("ALTER TABLE jobs ADD COLUMN extract_stream_index INTEGER"))
+
+        settings_rows = conn.execute(text("PRAGMA table_info(settings)")).fetchall()
+        settings_columns = {row[1] for row in settings_rows}
+        for column, ddl in (
+            ("max_concurrent_translate", "ALTER TABLE settings ADD COLUMN max_concurrent_translate INTEGER NOT NULL DEFAULT 1"),
+            ("max_concurrent_extract", "ALTER TABLE settings ADD COLUMN max_concurrent_extract INTEGER NOT NULL DEFAULT 1"),
+            ("max_concurrent_request", "ALTER TABLE settings ADD COLUMN max_concurrent_request INTEGER NOT NULL DEFAULT 1"),
+        ):
+            if column not in settings_columns:
+                conn.execute(text(ddl))

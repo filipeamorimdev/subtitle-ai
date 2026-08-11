@@ -20,6 +20,9 @@ export interface Settings {
   media_roots: string[]
   path_mappings: PathMapping[]
   batch_size: number
+  max_concurrent_translate: number
+  max_concurrent_extract: number
+  max_concurrent_request: number
 }
 
 export interface SettingsUpdate {
@@ -34,6 +37,9 @@ export interface SettingsUpdate {
   source_languages?: string[]
   path_mappings?: PathMapping[]
   batch_size?: number
+  max_concurrent_translate?: number
+  max_concurrent_extract?: number
+  max_concurrent_request?: number
 }
 
 export interface EmbeddedSubtitle {

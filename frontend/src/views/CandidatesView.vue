@@ -75,12 +75,27 @@ const pipelineCounts = computed(() => {
   }
 })
 
-const filterCards = computed(() => [
+const allFilterCards = computed(() => [
   { label: 'Ready to translate', filter: 'ready' as const, count: pipelineCounts.value.ready },
   { label: 'Can extract', filter: 'extract' as const, count: pipelineCounts.value.extract },
   { label: 'Need source', filter: 'need-source' as const, count: pipelineCounts.value.needSource },
   { label: 'Target exists', filter: 'target-exists' as const, count: pipelineCounts.value.done },
 ])
+
+const filterCards = computed(() => allFilterCards.value.filter((item) => item.count > 0))
+
+const showRequestAll = computed(
+  () => pipelineCounts.value.needSource > 0 || batchBusy.value === 'request',
+)
+const showExtractAll = computed(
+  () => pipelineCounts.value.extract > 0 || batchBusy.value === 'extract',
+)
+const showTranslateAll = computed(
+  () => pipelineCounts.value.ready > 0 || batchBusy.value === 'translate',
+)
+const showBulkActions = computed(
+  () => showRequestAll.value || showExtractAll.value || showTranslateAll.value,
+)
 
 const filteredOpenCandidates = computed(() => {
   const filter = categoryFilter.value
@@ -135,7 +150,7 @@ const selectedTranslatable = computed(() =>
 
 const emptyOpenMessage = computed(() => {
   if (categoryFilter.value && categoryFilter.value !== 'target-exists') {
-    const card = filterCards.value.find((item) => item.filter === categoryFilter.value)
+    const card = allFilterCards.value.find((item) => item.filter === categoryFilter.value)
     return card ? `No candidates in “${card.label}”.` : 'No candidates match this filter.'
   }
   if (doneCandidates.value.length) {
@@ -157,6 +172,15 @@ watch(
     pruneSelectedKeys()
   },
 )
+
+watch(allFilterCards, (cards) => {
+  const active = categoryFilter.value
+  if (!active) return
+  const card = cards.find((item) => item.filter === active)
+  if (!card || card.count === 0) {
+    setCategoryFilter(null)
+  }
+})
 
 function summarizeBatch(result: BatchJobsResult, action: string) {
   const parts = [`${action}: queued ${result.created_count}`]
@@ -463,27 +487,30 @@ function statusText(item: Candidate) {
           >
             {{ store.loading ? 'Refreshing…' : 'Refresh' }}
           </button>
-          <div class="flex flex-wrap justify-end gap-2">
+          <div v-if="showBulkActions" class="flex flex-wrap justify-end gap-2">
             <button
+              v-if="showRequestAll"
               class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
               type="button"
-              :disabled="store.loading || batchBusy != null || requestableCount === 0"
+              :disabled="store.loading || batchBusy != null"
               @click="requestAllMissing"
             >
               {{ batchBusy === 'request' ? 'Requesting source…' : 'Request all sources' }}
             </button>
             <button
+              v-if="showExtractAll"
               class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
               type="button"
-              :disabled="store.loading || batchBusy != null || extractableCount === 0"
+              :disabled="store.loading || batchBusy != null"
               @click="extractAll"
             >
               {{ batchBusy === 'extract' ? 'Queuing…' : 'Extract all' }}
             </button>
             <button
+              v-if="showTranslateAll"
               class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
               type="button"
-              :disabled="store.loading || batchBusy != null || translatableCount === 0"
+              :disabled="store.loading || batchBusy != null"
               @click="translateAll"
             >
               {{ batchBusy === 'translate' ? 'Queuing…' : 'Translate all' }}
@@ -493,9 +520,10 @@ function statusText(item: Candidate) {
       </div>
       <div v-if="selectedCount" class="flex flex-wrap gap-2">
         <button
+          v-if="selectedRequestable.length"
           class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="store.loading || batchBusy != null || selectedRequestable.length === 0"
+          :disabled="store.loading || batchBusy != null"
           @click="requestMultiple"
         >
           {{
@@ -505,17 +533,19 @@ function statusText(item: Candidate) {
           }}
         </button>
         <button
+          v-if="selectedExtractable.length"
           class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="store.loading || batchBusy != null || selectedExtractable.length === 0"
+          :disabled="store.loading || batchBusy != null"
           @click="extractMultiple"
         >
           {{ batchBusy === 'extract' ? 'Queuing…' : `Extract multiple (${selectedExtractable.length})` }}
         </button>
         <button
+          v-if="selectedTranslatable.length"
           class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="store.loading || batchBusy != null || selectedTranslatable.length === 0"
+          :disabled="store.loading || batchBusy != null"
           @click="translateMultiple"
         >
           {{ batchBusy === 'translate' ? 'Queuing…' : `Translate multiple (${selectedTranslatable.length})` }}
@@ -523,7 +553,7 @@ function statusText(item: Candidate) {
       </div>
     </div>
 
-    <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
+    <div v-if="filterCards.length" class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
       <button
         v-for="item in filterCards"
         :key="item.filter"

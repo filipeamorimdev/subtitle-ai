@@ -415,18 +415,30 @@ class JobService:
             total=sum(counts.values()),
         )
 
-    def clear_jobs(self, *, job_kind: str | None = None) -> ClearDataResult:
-        """Delete job history rows (optionally filtered by kind) and their exchange logs."""
+    def clear_jobs(
+        self,
+        *,
+        job_kind: str | None = None,
+        status: str | None = None,
+    ) -> ClearDataResult:
+        """Delete job history rows (optionally filtered by kind/status) and their exchange logs."""
         query = select(JobRow.id)
         if job_kind:
             query = query.where(JobRow.job_kind == job_kind)
+        if status:
+            query = query.where(JobRow.status == status)
         job_ids = list(self.db.scalars(query).all())
         if not job_ids:
-            label = job_kind or "all"
+            label = status or job_kind or "all"
             return ClearDataResult(
                 deleted=0,
                 message=f"No {label} jobs to clear.",
-                details={"job_kind": job_kind, "logs_deleted": 0, "cache_deleted": 0},
+                details={
+                    "job_kind": job_kind,
+                    "status": status,
+                    "logs_deleted": 0,
+                    "cache_deleted": 0,
+                },
             )
 
         config_dir = get_app_config().config_dir
@@ -449,12 +461,20 @@ class JobService:
         self.db.commit()
         deleted = len(job_ids)
 
-        label = f"{job_kind} " if job_kind else ""
+        if status and job_kind:
+            label = f"{status} {job_kind} "
+        elif status:
+            label = f"{status} "
+        elif job_kind:
+            label = f"{job_kind} "
+        else:
+            label = ""
         return ClearDataResult(
             deleted=deleted,
             message=f"Cleared {deleted} {label}job(s).",
             details={
                 "job_kind": job_kind,
+                "status": status,
                 "logs_deleted": logs_deleted,
                 "cache_deleted": cache_deleted,
             },
@@ -957,20 +977,32 @@ class JobService:
             errors=errors,
         )
 
-    def claim_next_job(self) -> JobRow | None:
-        row = self.db.scalar(
+    def claim_next_job(self, job_kind: str | None = None) -> JobRow | None:
+        query = (
             select(JobRow)
             .where(JobRow.status == "pending")
             .order_by(JobRow.created_at.asc())
             .limit(1)
         )
+        if job_kind:
+            query = query.where(JobRow.job_kind == job_kind)
+        row = self.db.scalar(query)
         if not row:
             return None
-        row.status = "processing"
-        row.started_at = utcnow()
-        row.progress = 0
-        row.progress_detail = "Starting"
-        self.db.add(row)
+        # Optimistic claim so parallel workers cannot steal the same row.
+        result = self.db.execute(
+            update(JobRow)
+            .where(JobRow.id == row.id, JobRow.status == "pending")
+            .values(
+                status="processing",
+                started_at=utcnow(),
+                progress=0,
+                progress_detail="Starting",
+            )
+        )
+        if not result.rowcount:
+            self.db.rollback()
+            return None
         self.db.commit()
         self.db.refresh(row)
         return row

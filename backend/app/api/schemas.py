@@ -31,6 +31,9 @@ class SettingsUpdate(BaseModel):
     source_languages: list[str] | None = None
     path_mappings: list[PathMappingIn] | None = None
     batch_size: int | None = Field(default=None, ge=1, le=200)
+    max_concurrent_translate: int | None = Field(default=None, ge=1, le=20)
+    max_concurrent_extract: int | None = Field(default=None, ge=1, le=20)
+    max_concurrent_request: int | None = Field(default=None, ge=1, le=20)
 
 
 class SettingsOut(BaseModel):
@@ -45,6 +48,9 @@ class SettingsOut(BaseModel):
     media_roots: list[str]
     path_mappings: list[PathMappingIn]
     batch_size: int
+    max_concurrent_translate: int
+    max_concurrent_extract: int
+    max_concurrent_request: int
 
 
 class ConnectionTestResult(BaseModel):
@@ -61,6 +67,7 @@ class ClearDataResult(BaseModel):
 
 class ClearJobsRequest(BaseModel):
     job_kind: Literal["translate", "extract", "request"] | None = None
+    status: Literal["failed", "skipped"] | None = None
 
 
 class ClearGlossariesRequest(BaseModel):

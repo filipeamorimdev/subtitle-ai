@@ -135,7 +135,7 @@ def clear_jobs(
     payload: ClearJobsRequest = ClearJobsRequest(),
     db: Session = Depends(get_db),
 ) -> ClearDataResult:
-    return JobService(db).clear_jobs(job_kind=payload.job_kind)
+    return JobService(db).clear_jobs(job_kind=payload.job_kind, status=payload.status)
 
 
 @router.post("/settings/clear/glossaries", response_model=ClearDataResult)

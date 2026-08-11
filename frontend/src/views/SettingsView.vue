@@ -37,6 +37,9 @@ const form = reactive({
   target_language_name: 'Portuguese (Portugal)',
   source_language_code: 'en',
   batch_size: 25,
+  max_concurrent_translate: 1,
+  max_concurrent_extract: 1,
+  max_concurrent_request: 1,
   path_mappings: '' as string,
 })
 
@@ -79,6 +82,9 @@ onMounted(async () => {
   form.target_language_name = s.target_language.name
   form.source_language_code = s.source_languages?.[0] || 'en'
   form.batch_size = s.batch_size
+  form.max_concurrent_translate = s.max_concurrent_translate
+  form.max_concurrent_extract = s.max_concurrent_extract
+  form.max_concurrent_request = s.max_concurrent_request
   form.path_mappings = mappingsToText(s.path_mappings)
   await loadOpenRouterModels()
 })
@@ -110,6 +116,9 @@ async function save() {
       target_language_name: form.target_language_name,
       source_languages: [form.source_language_code || 'en'],
       batch_size: Number(form.batch_size) || 25,
+      max_concurrent_translate: Number(form.max_concurrent_translate) || 1,
+      max_concurrent_extract: Number(form.max_concurrent_extract) || 1,
+      max_concurrent_request: Number(form.max_concurrent_request) || 1,
       path_mappings: textToMappings(form.path_mappings),
     })
     form.bazarr_api_key = ''
@@ -157,10 +166,13 @@ async function runClear(action: () => Promise<{ message: string }>, confirmText:
   }
 }
 
-function clearJobs(kind?: 'translate' | 'extract' | 'request') {
-  const label = kind ? `${kind} jobs` : 'ALL jobs'
+function clearJobs(opts?: { job_kind?: 'translate' | 'extract' | 'request'; status?: 'failed' | 'skipped' }) {
+  let label = 'ALL jobs'
+  if (opts?.status && opts?.job_kind) label = `${opts.status} ${opts.job_kind} jobs`
+  else if (opts?.status) label = `${opts.status} jobs`
+  else if (opts?.job_kind) label = `${opts.job_kind} jobs`
   return runClear(
-    () => api.clearJobs(kind),
+    () => api.clearJobs(opts),
     `Delete ${label} from history? This cannot be undone.`,
   )
 }
@@ -220,7 +232,7 @@ function clearUsageStats() {
         </div>
       </fieldset>
 
-      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <fieldset class="min-w-0 space-y-4 overflow-visible rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">OpenRouter</legend>
         <label class="block text-sm">
           <span class="text-ink-500">API key</span>
@@ -297,6 +309,46 @@ function clearUsageStats() {
       </fieldset>
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <legend class="px-1 font-display text-lg font-semibold">Job concurrency</legend>
+        <p class="text-sm text-ink-500">
+          How many jobs of each type can run at the same time. Defaults are 1 per type (one translate, one extract, and one request in parallel).
+        </p>
+        <div class="grid gap-4 sm:grid-cols-3">
+          <label class="block text-sm">
+            <span class="text-ink-500">Translate</span>
+            <input
+              v-model.number="form.max_concurrent_translate"
+              type="number"
+              min="1"
+              max="20"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+            />
+          </label>
+          <label class="block text-sm">
+            <span class="text-ink-500">Extract</span>
+            <input
+              v-model.number="form.max_concurrent_extract"
+              type="number"
+              min="1"
+              max="20"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+            />
+          </label>
+          <label class="block text-sm">
+            <span class="text-ink-500">Request</span>
+            <input
+              v-model.number="form.max_concurrent_request"
+              type="number"
+              min="1"
+              max="20"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+            />
+          </label>
+        </div>
+        <span class="block text-xs text-ink-500">Each limit accepts 1–20. Changes apply on the next worker poll.</span>
+      </fieldset>
+
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Media</legend>
         <div class="text-sm">
           <span class="text-ink-500">Container media roots</span>
@@ -334,7 +386,7 @@ function clearUsageStats() {
             type="button"
             class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
             :disabled="clearing"
-            @click="clearJobs('translate')"
+            @click="clearJobs({ job_kind: 'translate' })"
           >
             Clear translate
           </button>
@@ -342,7 +394,7 @@ function clearUsageStats() {
             type="button"
             class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
             :disabled="clearing"
-            @click="clearJobs('extract')"
+            @click="clearJobs({ job_kind: 'extract' })"
           >
             Clear extract
           </button>
@@ -350,9 +402,25 @@ function clearUsageStats() {
             type="button"
             class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
             :disabled="clearing"
-            @click="clearJobs('request')"
+            @click="clearJobs({ job_kind: 'request' })"
           >
             Clear request
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs({ status: 'failed' })"
+          >
+            Clear failed
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs({ status: 'skipped' })"
+          >
+            Clear skipped
           </button>
           <button
             type="button"

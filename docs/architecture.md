@@ -4,7 +4,7 @@ Subtitle AI is a single Docker service that combines:
 
 - **FastAPI** REST API and static Vue UI
 - **SQLite** persistence under `/config`
-- An **asyncio worker** that processes one translation job at a time
+- An **asyncio worker** that processes jobs with configurable per-kind concurrency (default: one translate, one extract, and one request at a time)
 - Integrations for **Bazarr** (wanted detection + rescan) and **OpenRouter** (chat completions)
 
 ## Boundaries

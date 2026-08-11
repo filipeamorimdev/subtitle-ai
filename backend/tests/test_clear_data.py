@@ -21,7 +21,13 @@ def _session() -> Session:
     return sessionmaker(bind=engine, future=True)()
 
 
-def _add_job(db: Session, *, job_kind: str = "translate", tokens: int | None = 10) -> JobRow:
+def _add_job(
+    db: Session,
+    *,
+    job_kind: str = "translate",
+    status: str = "completed",
+    tokens: int | None = 10,
+) -> JobRow:
     row = JobRow(
         job_kind=job_kind,
         media_type="movie",
@@ -31,7 +37,7 @@ def _add_job(db: Session, *, job_kind: str = "translate", tokens: int | None = 1
         source_language="en",
         target_language="pt-PT",
         model="openai/gpt-4o-mini",
-        status="completed",
+        status=status,
         input_tokens=tokens,
         output_tokens=tokens,
         total_tokens=(tokens * 2) if tokens is not None else None,
@@ -79,6 +85,30 @@ def test_clear_jobs_by_kind_and_all(tmp_path: Path, monkeypatch):
     result_all = service.clear_jobs()
     assert result_all.deleted == 2
     assert db.scalar(select(JobRow.id)) is None
+
+    get_app_config.cache_clear()
+
+
+def test_clear_jobs_by_status(tmp_path: Path, monkeypatch):
+    config_dir = tmp_path / "config"
+    (config_dir / "logs" / "jobs").mkdir(parents=True)
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    get_app_config.cache_clear()
+
+    db = _session()
+    failed = _add_job(db, status="failed")
+    skipped = _add_job(db, status="skipped")
+    completed = _add_job(db, status="completed")
+    failed_id, skipped_id, completed_id = failed.id, skipped.id, completed.id
+
+    service = JobService(db)
+    assert service.clear_jobs(status="failed").deleted == 1
+    assert db.get(JobRow, failed_id) is None
+    assert db.get(JobRow, skipped_id) is not None
+
+    assert service.clear_jobs(status="skipped").deleted == 1
+    assert db.get(JobRow, skipped_id) is None
+    assert db.get(JobRow, completed_id) is not None
 
     get_app_config.cache_clear()
 

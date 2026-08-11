@@ -29,6 +29,9 @@ class SettingsService:
                 media_roots=list(config.resolved_media_roots),
                 path_mappings=[],
                 batch_size=25,
+                max_concurrent_translate=1,
+                max_concurrent_extract=1,
+                max_concurrent_request=1,
             )
             self.db.add(row)
             self.db.commit()
@@ -55,7 +58,18 @@ class SettingsService:
             media_roots=list(config.resolved_media_roots),
             path_mappings=[PathMappingIn(**m) for m in (row.path_mappings or [])],
             batch_size=row.batch_size,
+            max_concurrent_translate=row.max_concurrent_translate,
+            max_concurrent_extract=row.max_concurrent_extract,
+            max_concurrent_request=row.max_concurrent_request,
         )
+
+    def concurrency_limits(self) -> dict[str, int]:
+        row = self.get_or_create_row()
+        return {
+            "translate": max(1, int(row.max_concurrent_translate or 1)),
+            "extract": max(1, int(row.max_concurrent_extract or 1)),
+            "request": max(1, int(row.max_concurrent_request or 1)),
+        }
 
     def update(self, payload: SettingsUpdate) -> SettingsOut:
         row = self.get_or_create_row()
@@ -83,6 +97,12 @@ class SettingsService:
             row.path_mappings = [m.model_dump() for m in payload.path_mappings]
         if payload.batch_size is not None:
             row.batch_size = payload.batch_size
+        if payload.max_concurrent_translate is not None:
+            row.max_concurrent_translate = payload.max_concurrent_translate
+        if payload.max_concurrent_extract is not None:
+            row.max_concurrent_extract = payload.max_concurrent_extract
+        if payload.max_concurrent_request is not None:
+            row.max_concurrent_request = payload.max_concurrent_request
         self.db.add(row)
         self.db.commit()
         return self.get_public()

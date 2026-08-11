@@ -54,10 +54,10 @@ export const api = {
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
   getOpenRouterModels: () => request<OpenRouterModelsResult>('/api/settings/openrouter/models'),
-  clearJobs: (job_kind?: 'translate' | 'extract' | 'request') =>
+  clearJobs: (opts?: { job_kind?: 'translate' | 'extract' | 'request'; status?: 'failed' | 'skipped' }) =>
     request<ClearDataResult>('/api/settings/clear/jobs', {
       method: 'POST',
-      body: JSON.stringify(job_kind ? { job_kind } : {}),
+      body: JSON.stringify(opts ?? {}),
     }),
   clearGlossaries: (kind?: 'universe' | 'series' | 'movie') =>
     request<ClearDataResult>('/api/settings/clear/glossaries', {
