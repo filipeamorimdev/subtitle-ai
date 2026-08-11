@@ -38,6 +38,7 @@ from app.api.schemas import (
 from app.db import get_db
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.jobs.service import JobService
+from app.jobs.worker import worker
 from app.services.candidates import CandidateService
 from app.services.glossary import GlossaryService
 from app.services.glossary_universes import UNIVERSES
@@ -287,7 +288,9 @@ async def retry_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
 @router.post("/jobs/{job_id}/cancel", response_model=JobOut)
 def cancel_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
     try:
-        return JobService(db).cancel_job(job_id)
+        result = JobService(db).cancel_job(job_id)
+        worker.cancel_job(job_id)
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

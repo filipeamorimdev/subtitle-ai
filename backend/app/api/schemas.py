@@ -67,7 +67,7 @@ class ClearDataResult(BaseModel):
 
 class ClearJobsRequest(BaseModel):
     job_kind: Literal["translate", "extract", "request"] | None = None
-    status: Literal["failed", "skipped"] | None = None
+    status: Literal["failed", "skipped", "cancelled"] | None = None
 
 
 class ClearGlossariesRequest(BaseModel):

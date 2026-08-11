@@ -54,7 +54,10 @@ export const api = {
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
   getOpenRouterModels: () => request<OpenRouterModelsResult>('/api/settings/openrouter/models'),
-  clearJobs: (opts?: { job_kind?: 'translate' | 'extract' | 'request'; status?: 'failed' | 'skipped' }) =>
+  clearJobs: (opts?: {
+    job_kind?: 'translate' | 'extract' | 'request'
+    status?: 'failed' | 'skipped' | 'cancelled'
+  }) =>
     request<ClearDataResult>('/api/settings/clear/jobs', {
       method: 'POST',
       body: JSON.stringify(opts ?? {}),

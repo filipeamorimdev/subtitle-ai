@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import OpenRouterModelSelect from '../components/OpenRouterModelSelect.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
-import type { OpenRouterModel, PathMapping } from '../types'
+import type { OpenRouterModel } from '../types'
 
 const LANGUAGES = [
   { code: 'en', name: 'English' },
@@ -40,24 +40,7 @@ const form = reactive({
   max_concurrent_translate: 1,
   max_concurrent_extract: 1,
   max_concurrent_request: 1,
-  path_mappings: '' as string,
 })
-
-function mappingsToText(mappings: PathMapping[]) {
-  return mappings.map((m) => `${m.bazarr_prefix} => ${m.local_prefix}`).join('\n')
-}
-
-function textToMappings(text: string): PathMapping[] {
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [bazarr_prefix, local_prefix] = line.split('=>').map((part) => part.trim())
-      return { bazarr_prefix, local_prefix }
-    })
-    .filter((m) => m.bazarr_prefix && m.local_prefix)
-}
 
 async function loadOpenRouterModels() {
   modelsLoading.value = true
@@ -85,7 +68,6 @@ onMounted(async () => {
   form.max_concurrent_translate = s.max_concurrent_translate
   form.max_concurrent_extract = s.max_concurrent_extract
   form.max_concurrent_request = s.max_concurrent_request
-  form.path_mappings = mappingsToText(s.path_mappings)
   await loadOpenRouterModels()
 })
 
@@ -119,7 +101,6 @@ async function save() {
       max_concurrent_translate: Number(form.max_concurrent_translate) || 1,
       max_concurrent_extract: Number(form.max_concurrent_extract) || 1,
       max_concurrent_request: Number(form.max_concurrent_request) || 1,
-      path_mappings: textToMappings(form.path_mappings),
     })
     form.bazarr_api_key = ''
     form.openrouter_api_key = ''
@@ -166,7 +147,10 @@ async function runClear(action: () => Promise<{ message: string }>, confirmText:
   }
 }
 
-function clearJobs(opts?: { job_kind?: 'translate' | 'extract' | 'request'; status?: 'failed' | 'skipped' }) {
+function clearJobs(opts?: {
+  job_kind?: 'translate' | 'extract' | 'request'
+  status?: 'failed' | 'skipped' | 'cancelled'
+}) {
   let label = 'ALL jobs'
   if (opts?.status && opts?.job_kind) label = `${opts.status} ${opts.job_kind} jobs`
   else if (opts?.status) label = `${opts.status} jobs`
@@ -348,26 +332,6 @@ function clearUsageStats() {
         <span class="block text-xs text-ink-500">Each limit accepts 1–20. Changes apply on the next worker poll.</span>
       </fieldset>
 
-      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <legend class="px-1 font-display text-lg font-semibold">Media</legend>
-        <div class="text-sm">
-          <span class="text-ink-500">Container media roots</span>
-          <p class="mt-1 font-mono text-xs text-ink-700 dark:text-ink-300">
-            {{ (store.settings?.media_roots || []).join(', ') || '—' }}
-          </p>
-          <span class="mt-1 block text-xs text-ink-500">
-            Auto-discovered from Docker volume mounts under <code class="font-mono">/data</code> and <code class="font-mono">/media</code>. Not editable here.
-          </span>
-        </div>
-        <label class="block text-sm">
-          <span class="text-ink-500">Path mappings (one per line: Bazarr path => local path)</span>
-          <textarea v-model="form.path_mappings" rows="4" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 font-mono text-xs dark:border-ink-600" placeholder="/movies => /data/movies" />
-          <span class="mt-1 block text-xs text-ink-500">
-            Bazarr and Subtitle AI must see compatible media paths. Map prefixes when they differ.
-          </span>
-        </label>
-      </fieldset>
-
       <button class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60" type="submit" :disabled="saving">
         {{ saving ? 'Saving…' : 'Save settings' }}
       </button>
@@ -421,6 +385,14 @@ function clearUsageStats() {
             @click="clearJobs({ status: 'skipped' })"
           >
             Clear skipped
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs({ status: 'cancelled' })"
+          >
+            Clear cancelled
           </button>
           <button
             type="button"

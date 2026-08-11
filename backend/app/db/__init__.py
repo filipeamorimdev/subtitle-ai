@@ -33,6 +33,8 @@ def get_engine():
         def _set_sqlite_pragma(dbapi_connection, connection_record):  # noqa: ARG001
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
 
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)

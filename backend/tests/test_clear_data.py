@@ -98,8 +98,14 @@ def test_clear_jobs_by_status(tmp_path: Path, monkeypatch):
     db = _session()
     failed = _add_job(db, status="failed")
     skipped = _add_job(db, status="skipped")
+    cancelled = _add_job(db, status="cancelled")
     completed = _add_job(db, status="completed")
-    failed_id, skipped_id, completed_id = failed.id, skipped.id, completed.id
+    failed_id, skipped_id, cancelled_id, completed_id = (
+        failed.id,
+        skipped.id,
+        cancelled.id,
+        completed.id,
+    )
 
     service = JobService(db)
     assert service.clear_jobs(status="failed").deleted == 1
@@ -108,6 +114,10 @@ def test_clear_jobs_by_status(tmp_path: Path, monkeypatch):
 
     assert service.clear_jobs(status="skipped").deleted == 1
     assert db.get(JobRow, skipped_id) is None
+    assert db.get(JobRow, cancelled_id) is not None
+
+    assert service.clear_jobs(status="cancelled").deleted == 1
+    assert db.get(JobRow, cancelled_id) is None
     assert db.get(JobRow, completed_id) is not None
 
     get_app_config.cache_clear()
