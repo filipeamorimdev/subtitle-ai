@@ -24,7 +24,7 @@ Each translation job writes a JSONL exchange log under:
 /config/logs/jobs/job-{id}-openrouter.jsonl
 ```
 
-Every OpenRouter request/response attempt for that job is appended (including retries and malformed bodies). API keys are never written.
+By default only metadata is stored (model, attempt, status, token usage, errors). Enable **Log full OpenRouter exchanges** in Settings to persist full request/response bodies for debugging. API keys are never written.
 
 ## Settings UI sections
 
@@ -39,8 +39,24 @@ Every OpenRouter request/response attempt for that job is appended (including re
 - API key
 - Searchable model picker (fetched from OpenRouter `GET /api/v1/models`, sorted by price)
 - Test Connection
+- Optional full exchange logging (off by default)
 
 `GET /api/settings/openrouter/models` proxies the OpenRouter models catalog (text models), converts token prices to USD per million tokens, and returns them cheapest-first.
+
+### Automatic Subtitle Fallback
+
+- Enable automatic fallback (default **off**)
+- Scan interval (1–1440 minutes, default 5)
+- Bazarr grace period (0–1440 minutes, default 10)
+- Automatic retries (0–20, default 3)
+- Run automatic scan now
+
+When disabled, Candidates stay click-only. When enabled, newly missing wanted items are processed automatically after the grace period and **can incur OpenRouter costs**.
+
+API:
+
+- `GET /api/automation/status`
+- `POST /api/automation/run`
 
 ### Translation
 

@@ -191,7 +191,7 @@ async function toggleLog() {
           {{ job.media_title || 'Job' }} #{{ job.id }}
         </h1>
         <p class="mt-1 capitalize text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          {{ job.job_kind || 'translate' }} · {{ job.status }} · {{ job.progress }}%
+          {{ job.job_kind || 'translate' }} · {{ job.trigger_type === 'automatic' ? 'automatic' : 'manual' }} · {{ job.status }} · {{ job.progress }}%
         </p>
       </div>
       <div class="flex w-full flex-wrap gap-2 sm:w-auto">
@@ -275,7 +275,10 @@ async function toggleLog() {
       </div>
       <div>
         <dt class="text-ink-500">Kind</dt>
-        <dd class="mt-1 capitalize">{{ job.job_kind || 'translate' }}</dd>
+        <dd class="mt-1 capitalize">
+          {{ job.job_kind || 'translate' }}
+          <span class="text-ink-500">({{ job.trigger_type === 'automatic' ? 'automatic' : 'manual' }})</span>
+        </dd>
       </div>
       <div>
         <dt class="text-ink-500">Type</dt>

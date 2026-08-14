@@ -150,7 +150,10 @@ onUnmounted(() => {
         <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
           <div>
             <dt class="text-ink-500">Kind</dt>
-            <dd class="capitalize">{{ job.job_kind || 'translate' }}</dd>
+            <dd class="capitalize">
+              {{ job.job_kind || 'translate' }}
+              <span class="text-ink-500">({{ job.trigger_type === 'automatic' ? 'automatic' : 'manual' }})</span>
+            </dd>
           </div>
           <div>
             <dt class="text-ink-500">Target</dt>
@@ -205,7 +208,10 @@ onUnmounted(() => {
                 {{ job.media_title || job.media_path }}
               </RouterLink>
             </td>
-            <td class="px-4 py-3 capitalize">{{ job.job_kind || 'translate' }}</td>
+            <td class="px-4 py-3 capitalize">
+              {{ job.job_kind || 'translate' }}
+              <span class="ml-1 text-xs text-ink-500">({{ job.trigger_type === 'automatic' ? 'automatic' : 'manual' }})</span>
+            </td>
             <td class="px-4 py-3">{{ job.target_language }}</td>
             <td class="px-4 py-3">{{ job.model }}</td>
             <td class="px-4 py-3 capitalize">

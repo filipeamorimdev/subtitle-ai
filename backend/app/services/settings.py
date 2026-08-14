@@ -11,6 +11,20 @@ from app.core.secrets import decrypt_secret, encrypt_secret, load_or_create_fern
 from app.db.models import SettingsRow
 
 
+def _bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _int(value: object, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
 class SettingsService:
     def __init__(self, db: Session, fernet: Fernet | None = None) -> None:
         self.db = db
@@ -32,6 +46,12 @@ class SettingsService:
                 max_concurrent_translate=1,
                 max_concurrent_extract=1,
                 max_concurrent_request=1,
+                automatic_fallback_enabled=False,
+                automatic_scan_interval_minutes=5,
+                bazarr_grace_period_minutes=10,
+                automatic_retry_enabled=True,
+                maximum_automatic_retries=3,
+                openrouter_log_full_exchanges=False,
             )
             self.db.add(row)
             self.db.commit()
@@ -61,6 +81,33 @@ class SettingsService:
             max_concurrent_translate=row.max_concurrent_translate,
             max_concurrent_extract=row.max_concurrent_extract,
             max_concurrent_request=row.max_concurrent_request,
+            automatic_fallback_enabled=_bool(
+                getattr(row, "automatic_fallback_enabled", False), False
+            ),
+            automatic_scan_interval_minutes=_int(
+                getattr(row, "automatic_scan_interval_minutes", 5),
+                5,
+                minimum=1,
+                maximum=1440,
+            ),
+            bazarr_grace_period_minutes=_int(
+                getattr(row, "bazarr_grace_period_minutes", 10),
+                10,
+                minimum=0,
+                maximum=1440,
+            ),
+            automatic_retry_enabled=_bool(
+                getattr(row, "automatic_retry_enabled", True), True
+            ),
+            maximum_automatic_retries=_int(
+                getattr(row, "maximum_automatic_retries", 3),
+                3,
+                minimum=0,
+                maximum=20,
+            ),
+            openrouter_log_full_exchanges=_bool(
+                getattr(row, "openrouter_log_full_exchanges", False), False
+            ),
         )
 
     def concurrency_limits(self) -> dict[str, int]:
@@ -70,6 +117,9 @@ class SettingsService:
             "extract": max(1, int(row.max_concurrent_extract or 1)),
             "request": max(1, int(row.max_concurrent_request or 1)),
         }
+
+    def is_automatic_fallback_enabled(self) -> bool:
+        return self.get_public().automatic_fallback_enabled
 
     def update(self, payload: SettingsUpdate) -> SettingsOut:
         row = self.get_or_create_row()
@@ -103,6 +153,33 @@ class SettingsService:
             row.max_concurrent_extract = payload.max_concurrent_extract
         if payload.max_concurrent_request is not None:
             row.max_concurrent_request = payload.max_concurrent_request
+        if payload.automatic_fallback_enabled is not None:
+            row.automatic_fallback_enabled = payload.automatic_fallback_enabled
+        if payload.automatic_scan_interval_minutes is not None:
+            row.automatic_scan_interval_minutes = _int(
+                payload.automatic_scan_interval_minutes,
+                5,
+                minimum=1,
+                maximum=1440,
+            )
+        if payload.bazarr_grace_period_minutes is not None:
+            row.bazarr_grace_period_minutes = _int(
+                payload.bazarr_grace_period_minutes,
+                10,
+                minimum=0,
+                maximum=1440,
+            )
+        if payload.automatic_retry_enabled is not None:
+            row.automatic_retry_enabled = payload.automatic_retry_enabled
+        if payload.maximum_automatic_retries is not None:
+            row.maximum_automatic_retries = _int(
+                payload.maximum_automatic_retries,
+                3,
+                minimum=0,
+                maximum=20,
+            )
+        if payload.openrouter_log_full_exchanges is not None:
+            row.openrouter_log_full_exchanges = payload.openrouter_log_full_exchanges
         self.db.add(row)
         self.db.commit()
         return self.get_public()

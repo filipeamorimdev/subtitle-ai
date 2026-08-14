@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app import __version__
 from app.api.schemas import (
+    AutomationScanResult,
+    AutomationStatusOut,
     BatchJobsOut,
     CandidateOut,
     ClearDataResult,
@@ -37,6 +39,7 @@ from app.api.schemas import (
 )
 from app.db import get_db
 from app.integrations.bazarr.client import BazarrClient, BazarrError
+from app.jobs.scanner import scanner
 from app.jobs.service import JobService
 from app.jobs.worker import worker
 from app.services.candidates import CandidateService
@@ -306,6 +309,16 @@ async def retry_bazarr_sync(job_id: int, db: Session = Depends(get_db)) -> JobOu
 @router.get("/stats", response_model=StatsOut)
 def stats(db: Session = Depends(get_db)) -> StatsOut:
     return JobService(db).stats()
+
+
+@router.get("/automation/status", response_model=AutomationStatusOut)
+def automation_status() -> AutomationStatusOut:
+    return scanner.status()
+
+
+@router.post("/automation/run", response_model=AutomationScanResult)
+async def automation_run() -> AutomationScanResult:
+    return await scanner.scan_once()
 
 
 def _scope_out(scope) -> GlossaryScopeOut:

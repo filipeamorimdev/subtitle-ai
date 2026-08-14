@@ -1,0 +1,415 @@
+"""Automatic subtitle fallback planner and observation store."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Literal
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.schemas import (
+    AutomationScanResult,
+    CandidateOut,
+    ExtractCreate,
+    JobCreate,
+    JobOut,
+)
+from app.core.logging import get_logger
+from app.db.models import JobRow, ObservedCandidateRow
+from app.integrations.bazarr.client import BazarrError
+from app.services.candidates import CandidateService
+from app.services.settings import SettingsService
+from app.subtitles.embedded import EmbeddedError
+from app.translation.openrouter.client import OpenRouterError
+
+logger = get_logger("fallback")
+
+RETRYABLE_REASON_CODES = {
+    "bazarr_error",
+    "openrouter_error",
+    "failed",
+    "bazarr_rescan_failed",
+    "bazarr_verify_failed",
+}
+
+NON_RETRYABLE_REASON_CODES = {
+    "target_exists",
+    "cache_hit",
+    "openrouter_auth",
+    "validation_failed",
+    "not_found",
+    "extract_failed",
+    "cancelled",
+}
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+class FallbackPlanner:
+    """Decide the next automatic job for Bazarr wanted candidates."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+        self.settings = SettingsService(db)
+
+    def observe_candidate(self, candidate: CandidateOut, *, now: datetime | None = None) -> ObservedCandidateRow:
+        now = now or utcnow()
+        row = self.db.get(ObservedCandidateRow, candidate.key)
+        if row is None:
+            row = ObservedCandidateRow(
+                candidate_key=candidate.key,
+                media_type=candidate.media_type,
+                media_path=candidate.media_path,
+                media_title=candidate.title,
+                target_language=candidate.target_language,
+                bazarr_movie_id=candidate.bazarr_movie_id,
+                bazarr_episode_id=candidate.bazarr_episode_id,
+                bazarr_series_id=candidate.bazarr_series_id,
+                first_seen_at=now,
+                last_seen_at=now,
+                automatic_attempts=0,
+                currently_wanted=True,
+            )
+            self.db.add(row)
+        else:
+            # Reappeared after leaving wanted → restart grace period.
+            if not row.currently_wanted:
+                row.first_seen_at = now
+                row.automatic_attempts = 0
+                row.last_outcome = None
+                row.last_reason_code = None
+                row.last_automatic_attempt_at = None
+            row.currently_wanted = True
+            row.last_seen_at = now
+            row.media_type = candidate.media_type
+            row.media_path = candidate.media_path
+            row.media_title = candidate.title
+            row.target_language = candidate.target_language
+            row.bazarr_movie_id = candidate.bazarr_movie_id
+            row.bazarr_episode_id = candidate.bazarr_episode_id
+            row.bazarr_series_id = candidate.bazarr_series_id
+            self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def mark_not_wanted(self, present_keys: set[str], *, now: datetime | None = None) -> None:
+        now = now or utcnow()
+        rows = self.db.scalars(
+            select(ObservedCandidateRow).where(ObservedCandidateRow.currently_wanted.is_(True))
+        ).all()
+        changed = False
+        for row in rows:
+            if row.candidate_key not in present_keys:
+                row.currently_wanted = False
+                row.last_seen_at = now
+                self.db.add(row)
+                changed = True
+        if changed:
+            self.db.commit()
+
+    def grace_expired(self, observed: ObservedCandidateRow, grace_minutes: int, *, now: datetime | None = None) -> bool:
+        now = now or utcnow()
+        first_seen = _as_utc(observed.first_seen_at) or now
+        return now >= first_seen + timedelta(minutes=max(0, grace_minutes))
+
+    def _active_job(self, candidate_key: str, job_kind: str | None = None) -> JobRow | None:
+        query = select(JobRow).where(
+            JobRow.candidate_key == candidate_key,
+            JobRow.status.in_(["pending", "processing"]),
+        )
+        if job_kind:
+            query = query.where(JobRow.job_kind == job_kind)
+        return self.db.scalar(query.order_by(JobRow.created_at.desc()).limit(1))
+
+    def _latest_job(self, candidate_key: str, job_kind: str) -> JobRow | None:
+        return self.db.scalar(
+            select(JobRow)
+            .where(JobRow.candidate_key == candidate_key, JobRow.job_kind == job_kind)
+            .order_by(JobRow.created_at.desc(), JobRow.id.desc())
+            .limit(1)
+        )
+
+    def _can_retry_failed(self, observed: ObservedCandidateRow, candidate: CandidateOut) -> bool:
+        public = self.settings.get_public()
+        if not public.automatic_retry_enabled:
+            return False
+        if observed.automatic_attempts >= public.maximum_automatic_retries:
+            return False
+        latest = self._latest_job(candidate.key, "translate")
+        if latest is None:
+            return True
+        if latest.status in {"pending", "processing"}:
+            return False
+        if latest.status == "completed":
+            # Completed with verify warning may get a verify-only retry from scanner.
+            if latest.reason_code == "bazarr_verify_failed":
+                target = Path(latest.target_subtitle_path)
+                if target.is_file() and target.stat().st_size > 0:
+                    return False  # do not re-translate; verify handled separately
+            return False
+        if latest.status in {"skipped", "cancelled"}:
+            reason = latest.reason_code or ""
+            if reason in NON_RETRYABLE_REASON_CODES:
+                return False
+            return True
+        if latest.status == "failed":
+            reason = latest.reason_code or "failed"
+            if reason in NON_RETRYABLE_REASON_CODES:
+                return False
+            if reason == "openrouter_auth":
+                return False
+            return reason in RETRYABLE_REASON_CODES or reason == "failed"
+        return False
+
+    def next_action(
+        self,
+        candidate: CandidateOut,
+        observed: ObservedCandidateRow,
+        *,
+        now: datetime | None = None,
+    ) -> Literal["none", "translate", "extract", "request", "wait_grace"]:
+        now = now or utcnow()
+        public = self.settings.get_public()
+
+        if candidate.reason_code == "target_exists":
+            return "none"
+
+        if self._active_job(candidate.key) is not None:
+            return "none"
+
+        if not self.grace_expired(observed, public.bazarr_grace_period_minutes, now=now):
+            return "wait_grace"
+
+        # Avoid immediately redoing successful automatic translate.
+        latest_translate = self._latest_job(candidate.key, "translate")
+        if latest_translate and latest_translate.status == "completed":
+            target = Path(latest_translate.target_subtitle_path)
+            if target.is_file() and target.stat().st_size > 0:
+                if latest_translate.reason_code != "bazarr_verify_failed":
+                    return "none"
+
+        if candidate.can_translate:
+            if latest_translate and latest_translate.status == "failed":
+                if not self._can_retry_failed(observed, candidate):
+                    return "none"
+            return "translate"
+
+        if candidate.can_extract:
+            if candidate.active_extract_job_id is not None:
+                return "none"
+            return "extract"
+
+        # Request source via Bazarr when IDs exist.
+        from app.jobs.service import JobService
+
+        if JobService._can_request_source(candidate):
+            if candidate.active_request_job_id is not None:
+                return "none"
+            cooldown = JobService(self.db)._recent_not_found_cooldown(candidate.key)
+            if cooldown is not None:
+                return "none"
+            return "request"
+
+        return "none"
+
+    async def enqueue_for_candidate(
+        self,
+        candidate: CandidateOut,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[JobOut | None, str]:
+        """Enqueue at most one automatic job. Returns (job_or_none, outcome)."""
+        from app.jobs.service import JobService
+
+        now = now or utcnow()
+        if not self.settings.is_automatic_fallback_enabled():
+            return None, "disabled"
+
+        observed = self.observe_candidate(candidate, now=now)
+        action = self.next_action(candidate, observed, now=now)
+
+        if action == "wait_grace":
+            observed.last_outcome = "wait_grace"
+            self.db.add(observed)
+            self.db.commit()
+            return None, "wait_grace"
+        if action == "none":
+            observed.last_outcome = "none"
+            if candidate.reason_code:
+                observed.last_reason_code = candidate.reason_code
+            self.db.add(observed)
+            self.db.commit()
+            return None, "none"
+
+        jobs = JobService(self.db)
+        try:
+            if action == "translate":
+                existing = self._active_job(candidate.key, "translate")
+                job = await jobs.create_job(
+                    JobCreate(candidate_key=candidate.key),
+                    candidate=candidate,
+                    trigger_type="automatic",
+                )
+                reused = existing is not None and existing.id == job.id
+            elif action == "extract":
+                existing = self._active_job(candidate.key, "extract")
+                job = await jobs.create_extract_job(
+                    ExtractCreate(candidate_key=candidate.key),
+                    candidate=candidate,
+                    trigger_type="automatic",
+                )
+                reused = existing is not None and existing.id == job.id
+            else:
+                existing = self._active_job(candidate.key, "request")
+                job = await jobs.create_request_subtitle_job(
+                    candidate.key,
+                    candidate=candidate,
+                    trigger_type="automatic",
+                )
+                reused = existing is not None and existing.id == job.id
+        except (ValueError, OpenRouterError, BazarrError, EmbeddedError) as exc:
+            observed.last_outcome = "error"
+            observed.last_reason_code = "enqueue_failed"
+            self.db.add(observed)
+            self.db.commit()
+            raise ValueError(str(exc)) from exc
+
+        if job.status in {"pending", "processing"} and not reused:
+            observed.automatic_attempts = int(observed.automatic_attempts or 0) + 1
+            observed.last_automatic_attempt_at = now
+        observed.last_outcome = action
+        observed.last_reason_code = job.reason_code
+        self.db.add(observed)
+        self.db.commit()
+        return job, ("reused" if reused else "created")
+
+    async def maybe_chain_translate(self, *, candidate_key: str, source_path: str) -> JobOut | None:
+        """After automatic extract/request success, enqueue translate if still enabled."""
+        from app.jobs.service import JobService
+
+        if not self.settings.is_automatic_fallback_enabled():
+            return None
+        if self._active_job(candidate_key, "translate") is not None:
+            return None
+
+        match = await CandidateService(self.db).get_candidate(candidate_key)
+        if match is None:
+            # Candidate may have left wanted after request/extract; still try path-based create.
+            observed = self.db.get(ObservedCandidateRow, candidate_key)
+            if observed is None:
+                return None
+            if Path(source_path).exists():
+                return await JobService(self.db).create_job(
+                    JobCreate(
+                        candidate_key=candidate_key,
+                        source_subtitle_path=source_path,
+                        target_language=observed.target_language,
+                        media_type=observed.media_type,  # type: ignore[arg-type]
+                        media_path=observed.media_path,
+                        media_title=observed.media_title,
+                        bazarr_movie_id=observed.bazarr_movie_id,
+                        bazarr_episode_id=observed.bazarr_episode_id,
+                        bazarr_series_id=observed.bazarr_series_id,
+                    ),
+                    trigger_type="automatic",
+                )
+            return None
+
+        if match.reason_code == "target_exists":
+            return None
+        if not match.can_translate and not Path(source_path).exists():
+            return None
+
+        payload = JobCreate(candidate_key=match.key)
+        if match.source_subtitle_path:
+            return await JobService(self.db).create_job(
+                payload,
+                candidate=match,
+                trigger_type="automatic",
+            )
+        if Path(source_path).exists():
+            return await JobService(self.db).create_job(
+                JobCreate(
+                    candidate_key=match.key,
+                    source_subtitle_path=source_path,
+                    target_language=match.target_language,
+                    media_type=match.media_type,
+                    media_path=match.media_path,
+                    media_title=match.title,
+                    bazarr_movie_id=match.bazarr_movie_id,
+                    bazarr_episode_id=match.bazarr_episode_id,
+                    bazarr_series_id=match.bazarr_series_id,
+                    source_language=match.source_language,
+                ),
+                trigger_type="automatic",
+            )
+        return None
+
+    async def scan_once(self) -> AutomationScanResult:
+        now = utcnow()
+        public = self.settings.get_public()
+        if not public.automatic_fallback_enabled:
+            return AutomationScanResult(
+                ok=False,
+                message="Automatic fallback is disabled",
+                scanned_at=now,
+                enabled=False,
+            )
+
+        created_count = 0
+        reused_count = 0
+        skipped_count = 0
+        errors: list[str] = []
+
+        try:
+            candidates = await CandidateService(self.db).list_candidates()
+        except BazarrError as exc:
+            return AutomationScanResult(
+                ok=False,
+                message=str(exc),
+                scanned_at=now,
+                enabled=True,
+                errors=[str(exc)],
+            )
+
+        present_keys = {c.key for c in candidates}
+        self.mark_not_wanted(present_keys, now=now)
+
+        for candidate in candidates:
+            try:
+                job, outcome = await self.enqueue_for_candidate(candidate, now=now)
+                if outcome == "created":
+                    created_count += 1
+                elif outcome == "reused":
+                    reused_count += 1
+                else:
+                    skipped_count += 1
+                if job is None:
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{candidate.title}: {exc}")
+                logger.warning("Automatic enqueue failed title=%s error=%s", candidate.title, exc)
+
+        return AutomationScanResult(
+            ok=True,
+            message=None,
+            created_count=created_count,
+            reused_count=reused_count,
+            skipped_count=skipped_count,
+            errors=errors,
+            scanned_at=now,
+            enabled=True,
+        )

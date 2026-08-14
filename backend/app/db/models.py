@@ -29,6 +29,12 @@ class SettingsRow(Base):
     max_concurrent_translate: Mapped[int] = mapped_column(Integer, default=1)
     max_concurrent_extract: Mapped[int] = mapped_column(Integer, default=1)
     max_concurrent_request: Mapped[int] = mapped_column(Integer, default=1)
+    automatic_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    automatic_scan_interval_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    bazarr_grace_period_minutes: Mapped[int] = mapped_column(Integer, default=10)
+    automatic_retry_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    maximum_automatic_retries: Mapped[int] = mapped_column(Integer, default=3)
+    openrouter_log_full_exchanges: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -58,6 +64,7 @@ class JobRow(Base):
     warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     extract_stream_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trigger_type: Mapped[str] = mapped_column(String(16), default="manual", index=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -66,6 +73,30 @@ class JobRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ObservedCandidateRow(Base):
+    """Persistent observation of Bazarr wanted items for grace period / automation."""
+
+    __tablename__ = "observed_candidates"
+
+    candidate_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    media_type: Mapped[str] = mapped_column(String(32), default="movie")
+    media_path: Mapped[str] = mapped_column(String(1024))
+    media_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    target_language: Mapped[str] = mapped_column(String(32), default="pt-PT")
+    bazarr_movie_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bazarr_episode_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bazarr_series_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_automatic_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    automatic_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_outcome: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    currently_wanted: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class TranslationCacheRow(Base):

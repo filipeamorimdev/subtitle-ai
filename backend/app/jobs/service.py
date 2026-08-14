@@ -94,6 +94,7 @@ def job_to_out(row: JobRow) -> JobOut:
         id=row.id,
         candidate_key=row.candidate_key,
         job_kind=getattr(row, "job_kind", None) or "translate",
+        trigger_type=getattr(row, "trigger_type", None) or "manual",
         media_type=row.media_type,
         media_path=row.media_path,
         media_title=row.media_title,
@@ -514,6 +515,7 @@ class JobService:
         payload: JobCreate,
         *,
         candidate: CandidateOut | None = None,
+        trigger_type: str = "manual",
     ) -> JobOut:
         public = self.settings.get_public()
         _, model = self.settings.get_openrouter_credentials()
@@ -521,6 +523,7 @@ class JobService:
         if not openrouter_key:
             raise OpenRouterError("OpenRouter API key is not configured")
 
+        trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
         candidate_key = payload.candidate_key
         source_path: str | None = payload.source_subtitle_path
         media_path = payload.media_path
@@ -539,8 +542,13 @@ class JobService:
             if not match:
                 raise ValueError("Candidate not found. Refresh the list and try again.")
             if not match.can_translate or not match.source_subtitle_path:
-                raise ValueError(match.reason or "Candidate cannot be translated.")
-            source_path = match.source_subtitle_path
+                # Allow path-based automatic chain when candidate list lags.
+                if not (source_path and Path(source_path).exists()):
+                    raise ValueError(match.reason or "Candidate cannot be translated.")
+                if not source_path:
+                    source_path = match.source_subtitle_path
+            else:
+                source_path = match.source_subtitle_path
             media_path = match.media_path
             media_type = match.media_type
             media_title = match.title
@@ -566,6 +574,7 @@ class JobService:
             row = JobRow(
                 candidate_key=candidate_key,
                 job_kind="translate",
+                trigger_type=trigger,
                 media_type=media_type,
                 media_path=media_path,
                 media_title=media_title,
@@ -588,14 +597,24 @@ class JobService:
             self.db.refresh(row)
             return job_to_out(row)
 
-        # Prevent duplicate active jobs for same target
-        existing = self.db.scalar(
-            select(JobRow).where(
-                JobRow.job_kind == "translate",
-                JobRow.target_subtitle_path == str(target),
-                JobRow.status.in_(["pending", "processing"]),
+        # Prevent duplicate active jobs for same candidate/target
+        existing = None
+        if candidate_key:
+            existing = self.db.scalar(
+                select(JobRow).where(
+                    JobRow.job_kind == "translate",
+                    JobRow.candidate_key == candidate_key,
+                    JobRow.status.in_(["pending", "processing"]),
+                )
             )
-        )
+        if existing is None:
+            existing = self.db.scalar(
+                select(JobRow).where(
+                    JobRow.job_kind == "translate",
+                    JobRow.target_subtitle_path == str(target),
+                    JobRow.status.in_(["pending", "processing"]),
+                )
+            )
         if existing:
             return job_to_out(existing)
 
@@ -612,6 +631,7 @@ class JobService:
             row = JobRow(
                 candidate_key=candidate_key,
                 job_kind="translate",
+                trigger_type=trigger,
                 media_type=media_type,
                 media_path=media_path,
                 media_title=media_title,
@@ -639,6 +659,7 @@ class JobService:
         row = JobRow(
             candidate_key=candidate_key,
             job_kind="translate",
+            trigger_type=trigger,
             media_type=media_type,
             media_path=media_path,
             media_title=media_title,
@@ -665,8 +686,10 @@ class JobService:
         payload: ExtractCreate,
         *,
         candidate: CandidateOut | None = None,
+        trigger_type: str = "manual",
     ) -> JobOut:
         public = self.settings.get_public()
+        trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
         match = candidate
         if match is None or match.key != payload.candidate_key:
             match = await CandidateService(self.db).get_candidate(payload.candidate_key)
@@ -688,6 +711,7 @@ class JobService:
             row = JobRow(
                 candidate_key=match.key,
                 job_kind="extract",
+                trigger_type=trigger,
                 media_type=match.media_type,
                 media_path=match.media_path,
                 media_title=match.title,
@@ -714,10 +738,18 @@ class JobService:
         existing = self.db.scalar(
             select(JobRow).where(
                 JobRow.job_kind == "extract",
-                JobRow.target_subtitle_path == str(output),
+                JobRow.candidate_key == match.key,
                 JobRow.status.in_(["pending", "processing"]),
             )
         )
+        if existing is None:
+            existing = self.db.scalar(
+                select(JobRow).where(
+                    JobRow.job_kind == "extract",
+                    JobRow.target_subtitle_path == str(output),
+                    JobRow.status.in_(["pending", "processing"]),
+                )
+            )
         if existing:
             return job_to_out(existing)
 
@@ -727,6 +759,7 @@ class JobService:
         row = JobRow(
             candidate_key=match.key,
             job_kind="extract",
+            trigger_type=trigger,
             media_type=match.media_type,
             media_path=match.media_path,
             media_title=match.title,
@@ -755,8 +788,10 @@ class JobService:
         language: str | None = None,
         *,
         candidate: CandidateOut | None = None,
+        trigger_type: str = "manual",
     ) -> JobOut:
         public = self.settings.get_public()
+        trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
         match = candidate
         if match is None or match.key != candidate_key:
             match = await CandidateService(self.db).get_candidate(candidate_key)
@@ -790,6 +825,7 @@ class JobService:
         row = JobRow(
             candidate_key=match.key,
             job_kind="request",
+            trigger_type=trigger,
             media_type=match.media_type,
             media_path=match.media_path,
             media_title=match.title,
@@ -984,7 +1020,11 @@ class JobService:
         query = (
             select(JobRow)
             .where(JobRow.status == "pending")
-            .order_by(JobRow.created_at.asc())
+            .order_by(
+                # Manual jobs before automatic ("manual" > "automatic"); then oldest first.
+                JobRow.trigger_type.desc(),
+                JobRow.created_at.asc(),
+            )
             .limit(1)
         )
         if job_kind:
@@ -1009,6 +1049,22 @@ class JobService:
         self.db.commit()
         self.db.refresh(row)
         return row
+
+    @staticmethod
+    def recover_interrupted_jobs(db: Session) -> int:
+        """Reset orphaned processing jobs to pending after restart."""
+        result = db.execute(
+            update(JobRow)
+            .where(JobRow.status == "processing")
+            .values(
+                status="pending",
+                started_at=None,
+                progress=0,
+                progress_detail="Recovered after restart",
+            )
+        )
+        db.commit()
+        return int(result.rowcount or 0)
 
     def cancel_job(self, job_id: int) -> JobOut:
         row = self.db.get(JobRow, job_id)
@@ -1061,8 +1117,16 @@ class JobService:
             raise ValueError("Bazarr sync retry is only available for completed jobs")
         try:
             await self._rescan(row)
-            row.warning = None
-            row.reason_code = None
+            verified = await self._verify_target_with_backoff(row)
+            if verified:
+                row.warning = None
+                row.reason_code = None
+            else:
+                row.warning = (
+                    "Bazarr rescan succeeded but the target subtitle was still "
+                    "reported missing after verification retries."
+                )
+                row.reason_code = "bazarr_verify_failed"
         except Exception as exc:  # noqa: BLE001
             row.warning = str(exc)
             row.reason_code = "bazarr_rescan_failed"
@@ -1103,6 +1167,7 @@ class JobService:
             found_path = await self._lookup_requested_subtitle(client, row, code2, mappings)
             if found_path:
                 await self._complete_request_job(job_id, found_path, label)
+                await self._maybe_chain_automatic_translate(job_id, found_path)
                 return
 
             row.progress = 5
@@ -1168,6 +1233,7 @@ class JobService:
 
             if found_path:
                 await self._complete_request_job(job_id, found_path, label)
+                await self._maybe_chain_automatic_translate(job_id, found_path)
                 return
 
             # Fallback: extract an embedded text track when Bazarr finds nothing.
@@ -1191,6 +1257,7 @@ class JobService:
                 self.db.add(row)
                 self.db.commit()
                 log.info("Request job completed via extract fallback job_id=%s path=%s", job_id, extracted)
+                await self._maybe_chain_automatic_translate(job_id, extracted)
                 return
 
             # Nothing available — skip (not fail) so retries/batch don't thrash.
@@ -1373,6 +1440,7 @@ class JobService:
             self.db.add(current)
             self.db.commit()
             log.info("Extract job completed job_id=%s path=%s", job_id, current.target_subtitle_path)
+            await self._maybe_chain_automatic_translate(job_id, current.target_subtitle_path)
         except Exception as exc:  # noqa: BLE001
             log.error("Extract job failed job_id=%s error=%s", job_id, exc)
             current = self.db.get(JobRow, job_id)
@@ -1383,6 +1451,34 @@ class JobService:
                 current.completed_at = utcnow()
                 self.db.add(current)
                 self.db.commit()
+
+    async def _maybe_chain_automatic_translate(self, job_id: int, source_path: str) -> None:
+        row = self.db.get(JobRow, job_id)
+        if not row or (getattr(row, "trigger_type", None) or "manual") != "automatic":
+            return
+        if not row.candidate_key:
+            return
+        if not self.settings.is_automatic_fallback_enabled():
+            return
+        from app.services.fallback import FallbackPlanner
+
+        try:
+            chained = await FallbackPlanner(self.db).maybe_chain_translate(
+                candidate_key=row.candidate_key,
+                source_path=source_path,
+            )
+            if chained:
+                get_logger("jobs").info(
+                    "Chained automatic translate job_id=%s from=%s",
+                    chained.id,
+                    job_id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            get_logger("jobs").warning(
+                "Automatic translate chain failed from_job=%s error=%s",
+                job_id,
+                exc,
+            )
 
     async def _process_translate_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
@@ -1427,7 +1523,11 @@ class JobService:
             )
             log.info("OpenRouter exchange log job_id=%s path=%s", job_id, exchange_log.path)
 
-            client = OpenRouterClient(openrouter_key, exchange_log=exchange_log)
+            client = OpenRouterClient(
+                openrouter_key,
+                exchange_log=exchange_log,
+                log_full_exchanges=bool(public.openrouter_log_full_exchanges),
+            )
             service = OpenRouterTranslationService(client)
 
             current = self.db.get(JobRow, job_id)
@@ -1529,6 +1629,17 @@ class JobService:
 
             try:
                 await self._rescan(current)
+                verified = await self._verify_target_with_backoff(current)
+                if not verified:
+                    verify_warning = (
+                        "Bazarr rescan succeeded but the target subtitle was still "
+                        "reported missing after verification retries."
+                    )
+                    if current.warning:
+                        current.warning = f"{current.warning}; {verify_warning}"
+                    else:
+                        current.warning = verify_warning
+                    current.reason_code = "bazarr_verify_failed"
             except Exception as exc:  # noqa: BLE001
                 log.warning("Bazarr rescan failed job_id=%s error=%s", job_id, exc)
                 rescan_warning = str(exc)
@@ -1583,6 +1694,38 @@ class JobService:
             await client.rescan_episode(row.bazarr_episode_id)
         else:
             raise BazarrError("Missing Bazarr media identifiers for rescan")
+
+    async def _verify_target_present(self, row: JobRow) -> bool:
+        """Check disk + Bazarr metadata for the target subtitle."""
+        target = Path(row.target_subtitle_path)
+        if not target.is_file() or target.stat().st_size <= 0:
+            return False
+
+        bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
+        if not bazarr_url:
+            return False
+        client = BazarrClient(bazarr_url, bazarr_key)
+        detail = None
+        if row.media_type == "movie" and row.bazarr_movie_id is not None:
+            detail = await client.get_movie(row.bazarr_movie_id)
+        elif row.media_type == "episode" and row.bazarr_episode_id is not None:
+            detail = await client.get_episode(row.bazarr_episode_id)
+        return BazarrClient.target_subtitle_present(detail, row.target_language)
+
+    async def _verify_target_with_backoff(self, row: JobRow) -> bool:
+        delays = (2.0, 5.0, 10.0)
+        for delay in delays:
+            await asyncio.sleep(delay)
+            try:
+                if await self._verify_target_present(row):
+                    return True
+            except Exception as exc:  # noqa: BLE001
+                get_logger("jobs").warning(
+                    "Bazarr verify attempt failed job_id=%s error=%s",
+                    row.id,
+                    exc,
+                )
+        return False
 
 
 def _public_error(exc: Exception) -> str:

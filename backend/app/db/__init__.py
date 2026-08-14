@@ -72,6 +72,10 @@ def init_db() -> None:
             )
         if "extract_stream_index" not in job_columns:
             conn.execute(text("ALTER TABLE jobs ADD COLUMN extract_stream_index INTEGER"))
+        if "trigger_type" not in job_columns:
+            conn.execute(
+                text("ALTER TABLE jobs ADD COLUMN trigger_type VARCHAR(16) NOT NULL DEFAULT 'manual'")
+            )
 
         settings_rows = conn.execute(text("PRAGMA table_info(settings)")).fetchall()
         settings_columns = {row[1] for row in settings_rows}
@@ -79,6 +83,12 @@ def init_db() -> None:
             ("max_concurrent_translate", "ALTER TABLE settings ADD COLUMN max_concurrent_translate INTEGER NOT NULL DEFAULT 1"),
             ("max_concurrent_extract", "ALTER TABLE settings ADD COLUMN max_concurrent_extract INTEGER NOT NULL DEFAULT 1"),
             ("max_concurrent_request", "ALTER TABLE settings ADD COLUMN max_concurrent_request INTEGER NOT NULL DEFAULT 1"),
+            ("automatic_fallback_enabled", "ALTER TABLE settings ADD COLUMN automatic_fallback_enabled BOOLEAN NOT NULL DEFAULT 0"),
+            ("automatic_scan_interval_minutes", "ALTER TABLE settings ADD COLUMN automatic_scan_interval_minutes INTEGER NOT NULL DEFAULT 5"),
+            ("bazarr_grace_period_minutes", "ALTER TABLE settings ADD COLUMN bazarr_grace_period_minutes INTEGER NOT NULL DEFAULT 10"),
+            ("automatic_retry_enabled", "ALTER TABLE settings ADD COLUMN automatic_retry_enabled BOOLEAN NOT NULL DEFAULT 1"),
+            ("maximum_automatic_retries", "ALTER TABLE settings ADD COLUMN maximum_automatic_retries INTEGER NOT NULL DEFAULT 3"),
+            ("openrouter_log_full_exchanges", "ALTER TABLE settings ADD COLUMN openrouter_log_full_exchanges BOOLEAN NOT NULL DEFAULT 0"),
         ):
             if column not in settings_columns:
                 conn.execute(text(ddl))

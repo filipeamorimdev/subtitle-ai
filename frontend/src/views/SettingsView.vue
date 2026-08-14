@@ -3,7 +3,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import OpenRouterModelSelect from '../components/OpenRouterModelSelect.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
-import type { OpenRouterModel } from '../types'
+import type { AutomationStatus, OpenRouterModel } from '../types'
+import { formatDateTime } from '../utils/datetime'
 
 const LANGUAGES = [
   { code: 'en', name: 'English' },
@@ -20,11 +21,13 @@ const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 const saving = ref(false)
 const clearing = ref(false)
+const scanning = ref(false)
 const bazarrTest = ref<string | null>(null)
 const openrouterTest = ref<string | null>(null)
 const openrouterModels = ref<OpenRouterModel[]>([])
 const modelsLoading = ref(false)
 const modelsError = ref<string | null>(null)
+const automationStatus = ref<AutomationStatus | null>(null)
 
 const form = reactive({
   bazarr_url: '',
@@ -33,6 +36,7 @@ const form = reactive({
   openrouter_api_key: '',
   clear_openrouter_api_key: false,
   openrouter_model: 'openai/gpt-4o-mini',
+  openrouter_log_full_exchanges: false,
   target_language_code: 'pt-PT',
   target_language_name: 'Portuguese (Portugal)',
   source_language_code: 'en',
@@ -40,6 +44,11 @@ const form = reactive({
   max_concurrent_translate: 1,
   max_concurrent_extract: 1,
   max_concurrent_request: 1,
+  automatic_fallback_enabled: false,
+  automatic_scan_interval_minutes: 5,
+  bazarr_grace_period_minutes: 10,
+  automatic_retry_enabled: true,
+  maximum_automatic_retries: 3,
 })
 
 async function loadOpenRouterModels() {
@@ -55,12 +64,21 @@ async function loadOpenRouterModels() {
   }
 }
 
+async function loadAutomationStatus() {
+  try {
+    automationStatus.value = await api.getAutomationStatus()
+  } catch {
+    automationStatus.value = null
+  }
+}
+
 onMounted(async () => {
   await store.loadSettings()
   const s = store.settings
   if (!s) return
   form.bazarr_url = s.bazarr_url || ''
   form.openrouter_model = s.openrouter_model
+  form.openrouter_log_full_exchanges = s.openrouter_log_full_exchanges ?? false
   form.target_language_code = s.target_language.code
   form.target_language_name = s.target_language.name
   form.source_language_code = s.source_languages?.[0] || 'en'
@@ -68,7 +86,12 @@ onMounted(async () => {
   form.max_concurrent_translate = s.max_concurrent_translate
   form.max_concurrent_extract = s.max_concurrent_extract
   form.max_concurrent_request = s.max_concurrent_request
-  await loadOpenRouterModels()
+  form.automatic_fallback_enabled = s.automatic_fallback_enabled ?? false
+  form.automatic_scan_interval_minutes = s.automatic_scan_interval_minutes ?? 5
+  form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
+  form.automatic_retry_enabled = s.automatic_retry_enabled ?? true
+  form.maximum_automatic_retries = s.maximum_automatic_retries ?? 3
+  await Promise.all([loadOpenRouterModels(), loadAutomationStatus()])
 })
 
 const sourceLanguageOptions = computed(() => {
@@ -94,6 +117,7 @@ async function save() {
       openrouter_api_key: form.openrouter_api_key || undefined,
       clear_openrouter_api_key: form.clear_openrouter_api_key,
       openrouter_model: form.openrouter_model,
+      openrouter_log_full_exchanges: form.openrouter_log_full_exchanges,
       target_language_code: form.target_language_code,
       target_language_name: form.target_language_name,
       source_languages: [form.source_language_code || 'en'],
@@ -101,17 +125,42 @@ async function save() {
       max_concurrent_translate: Number(form.max_concurrent_translate) || 1,
       max_concurrent_extract: Number(form.max_concurrent_extract) || 1,
       max_concurrent_request: Number(form.max_concurrent_request) || 1,
+      automatic_fallback_enabled: form.automatic_fallback_enabled,
+      automatic_scan_interval_minutes: Number(form.automatic_scan_interval_minutes) || 5,
+      bazarr_grace_period_minutes: Number(form.bazarr_grace_period_minutes) || 0,
+      automatic_retry_enabled: form.automatic_retry_enabled,
+      maximum_automatic_retries: Number(form.maximum_automatic_retries) || 0,
     })
     form.bazarr_api_key = ''
     form.openrouter_api_key = ''
     form.clear_bazarr_api_key = false
     form.clear_openrouter_api_key = false
     await store.loadSettings()
+    await loadAutomationStatus()
     message.value = 'Settings saved.'
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     saving.value = false
+  }
+}
+
+async function runAutomaticScan() {
+  scanning.value = true
+  message.value = null
+  error.value = null
+  try {
+    const result = await api.runAutomationScan()
+    await loadAutomationStatus()
+    if (!result.ok) {
+      error.value = result.message || 'Automatic scan did not run.'
+      return
+    }
+    message.value = `Scan finished: ${result.created_count} created, ${result.reused_count} reused, ${result.skipped_count} skipped.`
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    scanning.value = false
   }
 }
 
@@ -257,6 +306,83 @@ function clearUsageStats() {
             Test Connection
           </button>
           <span v-if="openrouterTest" class="min-w-0 break-words text-sm text-ink-600 dark:text-ink-300">{{ openrouterTest }}</span>
+        </div>
+        <label class="flex items-start gap-2 text-sm">
+          <input v-model="form.openrouter_log_full_exchanges" type="checkbox" class="mt-1" />
+          <span>
+            <span class="font-medium">Log full OpenRouter exchanges</span>
+            <span class="mt-1 block text-xs text-ink-500">
+              Off by default. When enabled, job logs include full request/response subtitle content for debugging.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <legend class="px-1 font-display text-lg font-semibold">Automatic Subtitle Fallback</legend>
+        <label class="flex items-start gap-2 text-sm">
+          <input v-model="form.automatic_fallback_enabled" type="checkbox" class="mt-1" />
+          <span>
+            <span class="font-medium">Enable automatic fallback</span>
+            <span class="mt-1 block text-xs text-ink-500">
+              Off by default. When off, Request / Extract / Translate stay click-only. When on, new missing items are processed automatically after the grace period and can incur OpenRouter costs.
+            </span>
+          </span>
+        </label>
+        <div class="grid gap-4 sm:grid-cols-3">
+          <label class="block text-sm">
+            <span class="text-ink-500">Scan interval (minutes)</span>
+            <input
+              v-model.number="form.automatic_scan_interval_minutes"
+              type="number"
+              min="1"
+              max="1440"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              :disabled="!form.automatic_fallback_enabled"
+            />
+          </label>
+          <label class="block text-sm">
+            <span class="text-ink-500">Bazarr grace period (minutes)</span>
+            <input
+              v-model.number="form.bazarr_grace_period_minutes"
+              type="number"
+              min="0"
+              max="1440"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              :disabled="!form.automatic_fallback_enabled"
+            />
+          </label>
+          <label class="block text-sm">
+            <span class="text-ink-500">Automatic retries</span>
+            <input
+              v-model.number="form.maximum_automatic_retries"
+              type="number"
+              min="0"
+              max="20"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              :disabled="!form.automatic_fallback_enabled || !form.automatic_retry_enabled"
+            />
+          </label>
+        </div>
+        <label class="flex items-center gap-2 text-sm">
+          <input v-model="form.automatic_retry_enabled" type="checkbox" :disabled="!form.automatic_fallback_enabled" />
+          Retry temporary automatic failures
+        </label>
+        <div class="flex flex-wrap items-center gap-3">
+          <button
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            type="button"
+            :disabled="!form.automatic_fallback_enabled || scanning"
+            @click="runAutomaticScan"
+          >
+            {{ scanning ? 'Scanning…' : 'Run automatic scan now' }}
+          </button>
+          <span v-if="automationStatus" class="min-w-0 break-words text-xs text-ink-500">
+            Last scan: {{ formatDateTime(automationStatus.last_scan_at) || 'never' }}
+            <template v-if="automationStatus.next_scan_at">
+              · Next: {{ formatDateTime(automationStatus.next_scan_at) }}
+            </template>
+          </span>
         </div>
       </fieldset>
 

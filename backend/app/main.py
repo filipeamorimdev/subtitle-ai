@@ -13,6 +13,7 @@ from app.api.routes import router
 from app.core.config import get_app_config
 from app.core.logging import setup_logging
 from app.db import init_db
+from app.jobs.scanner import scanner
 from app.jobs.worker import worker
 
 
@@ -37,7 +38,9 @@ async def lifespan(app: FastAPI):
     config.ensure_directories()
     init_db()
     await worker.start()
+    await scanner.start()
     yield
+    await scanner.stop()
     await worker.stop()
 
 

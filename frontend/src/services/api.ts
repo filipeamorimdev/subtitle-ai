@@ -1,4 +1,6 @@
 import type {
+  AutomationScanResult,
+  AutomationStatus,
   BatchJobsResult,
   Candidate,
   ClearDataResult,
@@ -106,6 +108,9 @@ export const api = {
   retryBazarrSync: (id: number) =>
     request<Job>(`/api/jobs/${id}/retry-bazarr-sync`, { method: 'POST' }),
   getStats: () => request<Stats>('/api/stats'),
+  getAutomationStatus: () => request<AutomationStatus>('/api/automation/status'),
+  runAutomationScan: () =>
+    request<AutomationScanResult>('/api/automation/run', { method: 'POST' }),
   getGlossaryUniverses: () => request<GlossaryUniverse[]>('/api/glossary/universes'),
   getGlossaryScopes: (params?: { target_language?: string; kind?: string }) => {
     const query = new URLSearchParams()

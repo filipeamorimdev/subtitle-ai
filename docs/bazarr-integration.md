@@ -48,6 +48,17 @@ When no external source exists, candidates may still list **embedded** tracks:
 - `source_missing_on_disk` — metadata path not readable
 - `target_exists` — target file already present
 
+## Automatic fallback
+
+When **Enable automatic fallback** is on in Settings, Subtitle AI periodically loads the same wanted candidates and, after the configured Bazarr grace period, enqueues `request` / `extract` / `translate` jobs automatically. Manual clicks still work and are prioritized.
+
+After a successful translate write, Subtitle AI:
+
+1. Calls movie/episode rescan (same endpoints as above).
+2. Waits briefly and re-queries Bazarr.
+3. Treats the job as verified when the target language is no longer missing (or appears in subtitle metadata).
+4. If the file is valid but Bazarr still reports missing, completes with `bazarr_verify_failed` and does **not** translate again.
+
 ## Path mapping
 
 Bazarr paths are rewritten through configured mappings before disk checks.
@@ -55,6 +66,6 @@ Bazarr paths are rewritten through configured mappings before disk checks.
 ## Limitations
 
 - Rescan endpoint names differ across Bazarr versions; failures after a successful write mark the job completed with a warning.
-- Embedded/image subtitles are ignored in v0.1.
-- Detection does **not** create translation jobs automatically.
+- Embedded/image subtitles (PGS/VobSub) are not extractable/translated in v0.1.
 - Source-language download is best-effort: Bazarr may find nothing if providers have no match, and English need not be in the item's profile for the specific-language download API.
+- Automatic fallback is off by default and incurs OpenRouter costs when enabled.

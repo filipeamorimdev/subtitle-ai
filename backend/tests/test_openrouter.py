@@ -455,10 +455,41 @@ async def test_openrouter_logs_request_and_response(tmp_path: Path, monkeypatch)
     assert lines[0]["event"] == "job_start"
     assert lines[1]["event"] == "exchange"
     assert lines[1]["job_id"] == 42
-    assert lines[1]["request"]["messages"][0]["content"] == "Hello subtitle"
+    assert lines[1]["request"]["message_count"] == 1
     assert lines[1]["response"]["status_code"] == 200
-    assert lines[1]["response"]["body"]["choices"][0]["message"]["content"] == "translated"
+    assert lines[1]["response"]["body_omitted"] is True
+    assert "Hello subtitle" not in log_path.read_text(encoding="utf-8")
     assert "secret-key" not in log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_openrouter_logs_full_bodies_when_enabled(tmp_path: Path, monkeypatch):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "test-model",
+                "choices": [{"message": {"content": "translated"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+            },
+        )
+
+    _patch_httpx(monkeypatch, handler)
+
+    log_path = job_openrouter_log_path(tmp_path, 43)
+    exchange_log = JobOpenRouterExchangeLog(log_path, job_id=43)
+    client = OpenRouterClient(
+        "secret-key",
+        exchange_log=exchange_log,
+        log_full_exchanges=True,
+    )
+    await client.chat_completion(
+        model="test-model",
+        messages=[{"role": "user", "content": "Hello subtitle"}],
+    )
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["request"]["messages"][0]["content"] == "Hello subtitle"
+    assert lines[0]["response"]["body"]["choices"][0]["message"]["content"] == "translated"
 
 
 @pytest.mark.asyncio
@@ -470,7 +501,7 @@ async def test_openrouter_logs_malformed_response(tmp_path: Path, monkeypatch):
 
     log_path = job_openrouter_log_path(tmp_path, 7)
     exchange_log = JobOpenRouterExchangeLog(log_path, job_id=7)
-    client = OpenRouterClient("key", exchange_log=exchange_log)
+    client = OpenRouterClient("key", exchange_log=exchange_log, log_full_exchanges=True)
     with pytest.raises(OpenRouterError, match="Malformed"):
         await client.chat_completion(model="x", messages=[{"role": "user", "content": "hi"}])
 

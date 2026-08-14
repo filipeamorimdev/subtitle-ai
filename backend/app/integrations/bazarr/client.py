@@ -303,6 +303,23 @@ class BazarrClient:
                     codes.append(str(item[0]))
         return codes
 
+    @classmethod
+    def target_subtitle_present(cls, detail: dict[str, Any] | None, target_language: str) -> bool:
+        """Return True when Bazarr no longer treats the target language as missing."""
+        if not detail:
+            return False
+        from app.subtitles.filenames import languages_compatible, normalize_language_code
+
+        for sub in cls.parse_subtitles(detail):
+            code = normalize_language_code(sub.language_code)
+            if code and languages_compatible(code, target_language) and sub.path:
+                return True
+
+        missing = cls.parse_missing_languages(detail)
+        if not missing:
+            return True
+        return not any(languages_compatible(m, target_language) for m in missing)
+
     def normalize_wanted_movie(self, item: dict[str, Any]) -> BazarrWantedItem:
         path = str(item.get("path") or item.get("movie_path") or "")
         title = str(item.get("title") or item.get("name") or path)

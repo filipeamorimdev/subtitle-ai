@@ -27,6 +27,13 @@ class JobWorker:
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
+        session = get_session_factory()()
+        try:
+            recovered = JobService.recover_interrupted_jobs(session)
+            if recovered:
+                logger.info("Recovered %s interrupted job(s) after restart", recovered)
+        finally:
+            session.close()
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="job-worker")
         logger.info("Job worker started")

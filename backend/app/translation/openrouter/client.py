@@ -98,6 +98,7 @@ class OpenRouterClient:
         timeout: float = 120.0,
         app_name: str = "Subtitle AI",
         exchange_log: ExchangeRecorder | None = None,
+        log_full_exchanges: bool = False,
     ) -> None:
         if not api_key:
             raise OpenRouterError("OpenRouter API key is not configured")
@@ -106,6 +107,7 @@ class OpenRouterClient:
         self.timeout = timeout
         self.app_name = app_name
         self.exchange_log = exchange_log
+        self.log_full_exchanges = log_full_exchanges
 
     @property
     def beta_base_url(self) -> str:
@@ -119,11 +121,48 @@ class OpenRouterClient:
             "X-Title": self.app_name,
         }
 
+    def _redact_exchange(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Store metadata only unless full exchange logging is enabled."""
+        if self.log_full_exchanges:
+            return record
+        redacted = dict(record)
+        request = redacted.get("request")
+        if isinstance(request, dict):
+            summary: dict[str, Any] = {}
+            if "model" in request:
+                summary["model"] = request["model"]
+            if "endpoint" in request:
+                summary["endpoint"] = request["endpoint"]
+            if "request_count" in request:
+                summary["request_count"] = request["request_count"]
+            if "custom_ids" in request:
+                summary["custom_ids"] = request["custom_ids"]
+            if "batch_id" in request:
+                summary["batch_id"] = request["batch_id"]
+            if "messages" in request:
+                summary["message_count"] = len(request["messages"])
+            redacted["request"] = summary
+        response = redacted.get("response")
+        if isinstance(response, dict):
+            body = response.get("body")
+            usage = None
+            model = None
+            if isinstance(body, dict):
+                usage = body.get("usage")
+                model = body.get("model")
+            redacted["response"] = {
+                "status_code": response.get("status_code"),
+                "model": model,
+                "usage": usage,
+                "body_omitted": True,
+            }
+        return redacted
+
     def _record(self, record: dict[str, Any]) -> None:
         if self.exchange_log is None:
             return
         try:
-            self.exchange_log.record(record)
+            self.exchange_log.record(self._redact_exchange(record))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to write OpenRouter exchange log: %s", exc)
 

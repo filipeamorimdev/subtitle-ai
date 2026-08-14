@@ -34,6 +34,12 @@ class SettingsUpdate(BaseModel):
     max_concurrent_translate: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_extract: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_request: int | None = Field(default=None, ge=1, le=20)
+    automatic_fallback_enabled: bool | None = None
+    automatic_scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
+    bazarr_grace_period_minutes: int | None = Field(default=None, ge=0, le=1440)
+    automatic_retry_enabled: bool | None = None
+    maximum_automatic_retries: int | None = Field(default=None, ge=0, le=20)
+    openrouter_log_full_exchanges: bool | None = None
 
 
 class SettingsOut(BaseModel):
@@ -51,6 +57,12 @@ class SettingsOut(BaseModel):
     max_concurrent_translate: int
     max_concurrent_extract: int
     max_concurrent_request: int
+    automatic_fallback_enabled: bool = False
+    automatic_scan_interval_minutes: int = 5
+    bazarr_grace_period_minutes: int = 10
+    automatic_retry_enabled: bool = True
+    maximum_automatic_retries: int = 3
+    openrouter_log_full_exchanges: bool = False
 
 
 class ConnectionTestResult(BaseModel):
@@ -162,6 +174,7 @@ class JobOut(BaseModel):
     id: int
     candidate_key: str | None
     job_kind: str = "translate"
+    trigger_type: str = "manual"
     media_type: str
     media_path: str
     media_title: str | None
@@ -194,6 +207,25 @@ class BatchJobsOut(BaseModel):
     reused_count: int = 0
     skipped_count: int = 0
     errors: list[str] = Field(default_factory=list)
+
+
+class AutomationScanResult(BaseModel):
+    ok: bool
+    message: str | None = None
+    created_count: int = 0
+    reused_count: int = 0
+    skipped_count: int = 0
+    errors: list[str] = Field(default_factory=list)
+    scanned_at: DateTimeOut = None
+    enabled: bool = False
+
+
+class AutomationStatusOut(BaseModel):
+    enabled: bool
+    scanner_running: bool
+    last_scan_at: DateTimeOut = None
+    next_scan_at: DateTimeOut = None
+    last_result: AutomationScanResult | None = None
 
 
 class JobActionOut(BaseModel):

@@ -11,16 +11,17 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 ## Workflow
 
 1. Configure Bazarr, OpenRouter, languages, batch size, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
-2. Open **Home** (logo) for pipeline and job status, or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
-3. For each item, use the action that matches its state:
+2. Optionally enable **Automatic Subtitle Fallback** under Settings (off by default). When enabled, Subtitle AI periodically scans Bazarr wanted items, waits a configurable grace period, then automatically request/extract/translate missing target subtitles. This can incur OpenRouter API costs.
+3. Open **Home** (logo) for pipeline and job status, or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
+4. For each item, use the action that matches its state (manual workflow still works even when automatic fallback is enabled):
    - **Request EN** (or your source language) — ask Bazarr to search for a source SRT; if none is found and an embedded text track exists, Subtitle AI falls back to ffmpeg extract.
    - **Extract** — pull an embedded text subtitle track to a sidecar SRT via ffmpeg, then rescan Bazarr.
    - **Translate** — enqueue a translation job from the source SRT to your target language.
-4. Use the batch toolbar (**Request all** / **Extract all** / **Translate all**) when you want to process the list in bulk. Nothing is scheduled automatically.
-5. The worker runs jobs in the background: glossary prep → batched OpenRouter translation → structure validation → atomic write → Bazarr rescan.
-6. Track progress under **Jobs** (detail, OpenRouter log, retry / cancel, usage & cost). Review suggested terms under **Glossaries**.
+5. Use the batch toolbar (**Request all** / **Extract all** / **Translate all**) when you want to process the list in bulk.
+6. The worker runs jobs in the background: glossary prep → batched OpenRouter translation → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
+7. Track progress under **Jobs** (detail, OpenRouter log, retry / cancel, usage & cost). Review suggested terms under **Glossaries**.
 
-Automatic enqueue / scan intervals are intentionally deferred.
+When automatic fallback is **off**, nothing is scheduled — only clicks create jobs.
 
 ## Pages
 
@@ -32,17 +33,18 @@ Automatic enqueue / scan intervals are intentionally deferred.
 | **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
 | **Usage stats** | Token and cost breakdown by model and action |
 | **Glossaries** | Universe / series / movie term scopes; lock terms; review suggested terms |
-| **Settings** | Bazarr, OpenRouter (searchable model picker with pricing), languages, batch size, path mappings |
+| **Settings** | Bazarr, OpenRouter (searchable model picker with pricing), languages, batch size, automatic fallback, path mappings |
 
 ## Architecture
 
 ```text
 Vue UI  →  FastAPI
         →  CandidateService (Bazarr wanted + disk SRT + embedded probe)
+        →  AutomaticScanner (opt-in) → FallbackPlanner → JobService
         →  JobService / Worker
              · request  → Bazarr search (+ optional ffmpeg extract fallback)
              · extract  → ffmpeg → sidecar SRT → Bazarr rescan
-             · translate → glossary prep → OpenRouter batches → validate → atomic write → rescan
+             · translate → glossary prep → OpenRouter batches → validate → atomic write → rescan → verify
         →  GlossaryService (scopes, terms, suggested review)
         →  Usage / cost aggregation + OpenRouter JSONL logs
 SQLite under /config
@@ -50,6 +52,28 @@ ffmpeg / ffprobe in the Docker image
 ```
 
 The application owns subtitle structure (IDs, timing, markup). The model only translates dialogue text. Glossaries keep character names and recurring terms consistent across a series or universe.
+
+## Automatic Subtitle Fallback
+
+Disabled by default. When enabled in Settings:
+
+```text
+Bazarr Wanted
+      |
+      v
+Automatic Scanner
+      |
+      v
+Grace Period
+      |
+      v
+Source Resolver (external SRT / extract / Bazarr request)
+      |
+      v
+Translate → Validate → Write → Bazarr Rescan → Verify
+```
+
+Automatic translation uses the same OpenRouter pipeline as manual jobs and **can incur API costs**. Use **Run automatic scan now** to trigger one scan immediately for testing.
 
 ## Filename convention
 
@@ -136,6 +160,14 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 - Media roots auto-discovered from Docker volume mounts under `/data` and `/media` (optional `SUBTITLE_AI_MEDIA_ROOTS` override)
 - Path mappings in Settings (`bazarrPath => localPath`) when Bazarr and Subtitle AI mounts differ
 
+### Automatic fallback
+
+- Enable / disable (default off)
+- Scan interval (minutes)
+- Bazarr grace period (minutes) before acting on a newly missing item
+- Automatic retry count for temporary failures
+- Run automatic scan now
+
 ## Development
 
 See [docs/development.md](docs/development.md).
@@ -169,12 +201,10 @@ cd backend && pytest
 - SRT only (no ASS/VTT/PGS/OCR for image-based subs)
 - OpenRouter only
 - No Whisper / speech-to-text
-- No automatic / scheduled translation (user-triggered and batch only)
-- Bazarr rescan is best-effort across versions
+- Bazarr rescan/verification is best-effort across versions
 
 ## Roadmap
 
-- Optional automatic processing / scan interval
 - Stronger Bazarr subtitle registration via upload API
 - ASS/SSA support
 - UI authentication

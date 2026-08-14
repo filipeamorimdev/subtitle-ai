@@ -23,6 +23,12 @@ export interface Settings {
   max_concurrent_translate: number
   max_concurrent_extract: number
   max_concurrent_request: number
+  automatic_fallback_enabled: boolean
+  automatic_scan_interval_minutes: number
+  bazarr_grace_period_minutes: number
+  automatic_retry_enabled: boolean
+  maximum_automatic_retries: number
+  openrouter_log_full_exchanges: boolean
 }
 
 export interface SettingsUpdate {
@@ -40,6 +46,12 @@ export interface SettingsUpdate {
   max_concurrent_translate?: number
   max_concurrent_extract?: number
   max_concurrent_request?: number
+  automatic_fallback_enabled?: boolean
+  automatic_scan_interval_minutes?: number
+  bazarr_grace_period_minutes?: number
+  automatic_retry_enabled?: boolean
+  maximum_automatic_retries?: number
+  openrouter_log_full_exchanges?: boolean
 }
 
 export interface EmbeddedSubtitle {
@@ -85,6 +97,7 @@ export interface Job {
   id: number
   candidate_key: string | null
   job_kind: 'translate' | 'extract' | string
+  trigger_type?: 'manual' | 'automatic' | string
   media_type: string
   media_path: string
   media_title: string | null
@@ -217,6 +230,25 @@ export interface Stats {
   cancelled: number
   skipped: number
   total: number
+}
+
+export interface AutomationScanResult {
+  ok: boolean
+  message: string | null
+  created_count: number
+  reused_count: number
+  skipped_count: number
+  errors: string[]
+  scanned_at: string | null
+  enabled: boolean
+}
+
+export interface AutomationStatus {
+  enabled: boolean
+  scanner_running: boolean
+  last_scan_at: string | null
+  next_scan_at: string | null
+  last_result: AutomationScanResult | null
 }
 
 export interface Health {
