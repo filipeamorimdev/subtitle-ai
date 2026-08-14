@@ -12,14 +12,15 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 
 1. Configure Bazarr, OpenRouter, languages, batch size, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
 2. Optionally enable **Automatic Subtitle Fallback** under Settings (off by default). When enabled, Subtitle AI periodically scans Bazarr wanted items, waits a configurable grace period, then automatically request/extract/translate missing target subtitles. This can incur OpenRouter API costs.
-3. Open **Home** (logo) for pipeline and job status, or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
-4. For each item, use the action that matches its state (manual workflow still works even when automatic fallback is enabled):
+3. Open **AI → Models** to configure free/paid OpenRouter pools, routing strategy, per-job cost caps, and a monthly budget. Paid fallback stays off unless you enable it.
+4. Open **Home** (logo) for pipeline and job status, or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
+5. For each item, use the action that matches its state (manual workflow still works even when automatic fallback is enabled):
    - **Request EN** (or your source language) — ask Bazarr to search for a source SRT; if none is found and an embedded text track exists, Subtitle AI falls back to ffmpeg extract.
    - **Extract** — pull an embedded text subtitle track to a sidecar SRT via ffmpeg, then rescan Bazarr.
    - **Translate** — enqueue a translation job from the source SRT to your target language.
-5. Use the batch toolbar (**Request all** / **Extract all** / **Translate all**) when you want to process the list in bulk.
-6. The worker runs jobs in the background: glossary prep → batched OpenRouter translation → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
-7. Track progress under **Jobs** (detail, OpenRouter log, retry / cancel, usage & cost). Review suggested terms under **Glossaries**.
+6. Use the batch toolbar (**Request all** / **Extract all** / **Translate all**) when you want to process the list in bulk.
+7. The worker runs jobs in the background: glossary prep → routed OpenRouter translation (with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
+8. Track progress under **Jobs** and **AI** (overview, models, usage). Review suggested terms under **Glossaries**.
 
 When automatic fallback is **off**, nothing is scheduled — only clicks create jobs.
 
@@ -32,8 +33,9 @@ When automatic fallback is **off**, nothing is scheduled — only clicks create 
 | **Jobs** | Job history for `translate`, `extract`, and `request`; status filters |
 | **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
 | **Usage stats** | Token and cost breakdown by model and action |
+| **AI** | Overview (cost, budget, ranking), Models (pools + routing + caps), Usage (paginated history) |
 | **Glossaries** | Universe / series / movie term scopes; lock terms; review suggested terms |
-| **Settings** | Bazarr, OpenRouter (searchable model picker with pricing), languages, batch size, automatic fallback, path mappings |
+| **Settings** | Bazarr, OpenRouter API key, languages, batch size, automatic fallback, path mappings |
 
 ## Architecture
 
@@ -44,9 +46,9 @@ Vue UI  →  FastAPI
         →  JobService / Worker
              · request  → Bazarr search (+ optional ffmpeg extract fallback)
              · extract  → ffmpeg → sidecar SRT → Bazarr rescan
-             · translate → glossary prep → OpenRouter batches → validate → atomic write → rescan → verify
+             · translate → ModelRouter → glossary prep → OpenRouter batches → validate → atomic write → rescan → verify
         →  GlossaryService (scopes, terms, suggested review)
-        →  Usage / cost aggregation + OpenRouter JSONL logs
+        →  AI usage / budget / catalog cache
 SQLite under /config
 ffmpeg / ffprobe in the Docker image
 ```
@@ -146,8 +148,8 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 ### OpenRouter
 
 - API key (stored encrypted; UI shows a masked value after save)
-- Model via searchable picker (ids and $/M pricing from OpenRouter), e.g. `openai/gpt-4o-mini`
-- Use **Test Connection**
+- Models, routing, and cost controls under **AI → Models** (free/paid pools; `openrouter_model` is kept as a compatibility field)
+- Use **Test Connection** on Settings or per-model Test on the AI page
 
 ### Translation
 
@@ -213,6 +215,7 @@ cd backend && pytest
 
 - [Architecture](docs/architecture.md)
 - [Configuration](docs/configuration.md)
+- [AI model routing](docs/ai-model-routing.md)
 - [Bazarr integration](docs/bazarr-integration.md)
 - [Translation pipeline](docs/translation-pipeline.md)
 - [Development](docs/development.md)

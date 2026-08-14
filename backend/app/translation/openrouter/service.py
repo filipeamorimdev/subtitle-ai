@@ -49,6 +49,24 @@ class TranslationOutcome:
     usage: TranslationUsage
     model: str
     warnings: list[str] = field(default_factory=list)
+    repair_used: bool = False
+
+
+@dataclass
+class TranslationCheckpoint:
+    translated_by_id: dict[int, SubtitleBlock] = field(default_factory=dict)
+    usage: TranslationUsage = field(default_factory=TranslationUsage)
+    completed_batches: int = 0
+    warnings: list[str] = field(default_factory=list)
+    repair_used: bool = False
+
+
+class RetryableTranslationError(OpenRouterError):
+    """Technical failure after some batches succeeded — caller should try the next model."""
+
+    def __init__(self, message: str, *, checkpoint: TranslationCheckpoint, status_code: int | None = None):
+        super().__init__(message, status_code=status_code, retryable=True)
+        self.checkpoint = checkpoint
 
 
 class OpenRouterTranslationService:
@@ -65,6 +83,7 @@ class OpenRouterTranslationService:
         batch_size: int = DEFAULT_BATCH_SIZE,
         progress_callback=None,
         glossary_terms=None,
+        checkpoint: TranslationCheckpoint | None = None,
     ) -> TranslationOutcome:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -74,47 +93,77 @@ class OpenRouterTranslationService:
             target_language_name,
             glossary_terms=glossary_terms,
         )
-        usage = TranslationUsage()
-        translated_by_id: dict[int, SubtitleBlock] = {}
+        state = checkpoint or TranslationCheckpoint()
+        usage = state.usage
+        translated_by_id: dict[int, SubtitleBlock] = dict(state.translated_by_id)
         batches = [
             document.blocks[i : i + batch_size]
             for i in range(0, len(document.blocks), batch_size)
         ]
         total_batches = len(batches)
-        warnings: list[str] = []
-        # Repairs and sync completions always use the non-:batch slug.
+        warnings: list[str] = list(state.warnings)
+        repair_used = state.repair_used
+        start_index = state.completed_batches
+        completed_batches = start_index
         sync_model = batch_base_model(model)
 
-        if is_batch_model(model) and batches:
-            await self._translate_document_via_openrouter_batch(
-                batches=batches,
-                model=model,
-                sync_model=sync_model,
-                system_prompt=system_prompt,
+        def _checkpoint(completed: int) -> TranslationCheckpoint:
+            return TranslationCheckpoint(
+                translated_by_id=dict(translated_by_id),
                 usage=usage,
-                translated_by_id=translated_by_id,
-                progress_callback=progress_callback,
+                completed_batches=completed,
+                warnings=list(warnings),
+                repair_used=repair_used,
             )
-        else:
-            for batch_index, batch in enumerate(batches, start=1):
-                protected_payload: list[tuple[int, str, list[str]]] = []
-                for block in batch:
-                    protection = protect_markup(block.text)
-                    protected_payload.append((block.index, protection.protected_text, protection.tags))
 
-                mapping = await self._translate_batch(
-                    model=sync_model,
+        try:
+            remaining = batches[start_index:]
+            if is_batch_model(model) and remaining:
+                await self._translate_document_via_openrouter_batch(
+                    batches=remaining,
+                    model=model,
+                    sync_model=sync_model,
                     system_prompt=system_prompt,
-                    protected_payload=protected_payload,
                     usage=usage,
+                    translated_by_id=translated_by_id,
+                    progress_callback=progress_callback,
+                    batch_offset=start_index,
+                    total_batches=total_batches,
                 )
-                self._apply_mapping(batch, protected_payload, mapping, translated_by_id)
+                completed_batches = total_batches
+            else:
+                for local_index, batch in enumerate(remaining, start=1):
+                    batch_index = start_index + local_index
+                    protected_payload: list[tuple[int, str, list[str]]] = []
+                    for block in batch:
+                        protection = protect_markup(block.text)
+                        protected_payload.append(
+                            (block.index, protection.protected_text, protection.tags)
+                        )
 
-                if progress_callback:
-                    await progress_callback(batch_index, total_batches)
+                    mapping, repaired = await self._translate_batch(
+                        model=sync_model,
+                        system_prompt=system_prompt,
+                        protected_payload=protected_payload,
+                        usage=usage,
+                    )
+                    if repaired:
+                        repair_used = True
+                    self._apply_mapping(batch, protected_payload, mapping, translated_by_id)
+                    completed_batches = batch_index
 
-        # Final validation: markup mismatches are warnings; hard issues re-translate
-        # the offending blocks one-by-one (split + retry).
+                    if progress_callback:
+                        await progress_callback(batch_index, total_batches)
+        except OpenRouterError as exc:
+            if getattr(exc, "retryable", False) and not isinstance(exc, RetryableTranslationError):
+                raise RetryableTranslationError(
+                    str(exc),
+                    checkpoint=_checkpoint(completed_batches),
+                    status_code=getattr(exc, "status_code", None),
+                ) from exc
+            raise
+
+        # Final validation stays on this model (repair path, not pool fallback).
         for _round in range(3):
             result_doc = SubtitleDocument(
                 format=document.format,
@@ -140,11 +189,12 @@ class OpenRouterTranslationService:
                 "Hard validation failed for blocks %s; splitting and retrying individually",
                 hard_ids,
             )
+            repair_used = True
             source_by_id = {block.index: block for block in document.blocks}
             for block_id in hard_ids:
                 source_block = source_by_id[block_id]
                 protection = protect_markup(source_block.text)
-                mapping = await self._translate_batch(
+                mapping, _repaired = await self._translate_batch(
                     model=sync_model,
                     system_prompt=system_prompt,
                     protected_payload=[
@@ -182,7 +232,6 @@ class OpenRouterTranslationService:
             encoding=document.encoding,
             blocks=[translated_by_id[b.index] for b in document.blocks],
         )
-        # Re-collect soft markup warnings from the final document.
         final_validation = validate_translation(document, result_doc, check_markup=True)
         for issue in final_validation.soft_issues:
             message = f"{issue.code}: {issue.message}"
@@ -199,6 +248,7 @@ class OpenRouterTranslationService:
             usage=usage,
             model=model,
             warnings=warnings,
+            repair_used=repair_used,
         )
 
     async def _translate_document_via_openrouter_batch(
@@ -211,8 +261,10 @@ class OpenRouterTranslationService:
         usage: TranslationUsage,
         translated_by_id: dict[int, SubtitleBlock],
         progress_callback,
+        batch_offset: int = 0,
+        total_batches: int | None = None,
     ) -> None:
-        total_batches = len(batches)
+        total = total_batches if total_batches is not None else len(batches)
         chunk_payloads: list[list[tuple[int, str, list[str]]]] = []
         requests: list[BatchChatRequest] = []
 
@@ -225,7 +277,7 @@ class OpenRouterTranslationService:
             source_blocks = [(block_id, text) for block_id, text, _tags in protected_payload]
             requests.append(
                 BatchChatRequest(
-                    custom_id=f"chunk-{batch_index}",
+                    custom_id=f"chunk-{batch_offset + batch_index}",
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {
@@ -236,10 +288,9 @@ class OpenRouterTranslationService:
                 )
             )
 
-        async def on_batch_progress(completed: int, total: int) -> None:
+        async def on_batch_progress(completed: int, _total: int) -> None:
             if progress_callback:
-                # Map OpenRouter request progress onto subtitle-chunk progress.
-                await progress_callback(min(completed, total_batches), total_batches)
+                await progress_callback(min(batch_offset + completed, total), total)
 
         results = await self.client.run_chat_batch(
             model=model,
@@ -251,9 +302,9 @@ class OpenRouterTranslationService:
             zip(batches, chunk_payloads, strict=True),
             start=1,
         ):
-            custom_id = f"chunk-{batch_index}"
+            custom_id = f"chunk-{batch_offset + batch_index}"
             initial = results[custom_id]
-            mapping = await self._translate_batch(
+            mapping, _repaired = await self._translate_batch(
                 model=sync_model,
                 system_prompt=system_prompt,
                 protected_payload=protected_payload,
@@ -263,7 +314,7 @@ class OpenRouterTranslationService:
             self._apply_mapping(batch, protected_payload, mapping, translated_by_id)
 
         if progress_callback:
-            await progress_callback(total_batches, total_batches)
+            await progress_callback(total, total)
 
     @staticmethod
     def _apply_mapping(
@@ -291,11 +342,12 @@ class OpenRouterTranslationService:
         protected_payload: list[tuple[int, str, list[str]]],
         usage: TranslationUsage,
         initial_result: ChatResult | None = None,
-    ) -> dict[int, str]:
+    ) -> tuple[dict[int, str], bool]:
         expected_ids = [item[0] for item in protected_payload]
         expected_set = set(expected_ids)
         by_id = {item[0]: (item[1], item[2]) for item in protected_payload}
         source_blocks = [(block_id, by_id[block_id][0]) for block_id in expected_ids]
+        repaired = False
 
         if initial_result is not None:
             result = initial_result
@@ -313,7 +365,7 @@ class OpenRouterTranslationService:
         mapping = self._filter_mapping(parse_batch_response(result.content), expected_set)
         validation = validate_batch_mapping(expected_ids, mapping)
         if validation.ok:
-            return mapping
+            return mapping, repaired
 
         for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
             incomplete_ids = self._incomplete_ids(expected_ids, mapping)
@@ -326,6 +378,7 @@ class OpenRouterTranslationService:
                 MAX_CORRECTION_ATTEMPTS,
                 incomplete_ids,
             )
+            repaired = True
             repair_blocks = [(block_id, by_id[block_id][0]) for block_id in incomplete_ids]
             correction_messages = [
                 {
@@ -345,11 +398,11 @@ class OpenRouterTranslationService:
                 messages=correction_messages,
             )
             usage.add(retry)
-            repaired = self._filter_mapping(parse_batch_response(retry.content), set(incomplete_ids))
-            mapping = self._merge_mapping(mapping, repaired, expected_set)
+            repaired_map = self._filter_mapping(parse_batch_response(retry.content), set(incomplete_ids))
+            mapping = self._merge_mapping(mapping, repaired_map, expected_set)
             validation = validate_batch_mapping(expected_ids, mapping)
             if validation.ok:
-                return mapping
+                return mapping, repaired
 
         if len(protected_payload) > 1:
             mid = len(protected_payload) // 2
@@ -359,19 +412,20 @@ class OpenRouterTranslationService:
                 mid,
                 len(protected_payload) - mid,
             )
-            left = await self._translate_batch(
+            repaired = True
+            left, left_repaired = await self._translate_batch(
                 model=model,
                 system_prompt=system_prompt,
                 protected_payload=protected_payload[:mid],
                 usage=usage,
             )
-            right = await self._translate_batch(
+            right, right_repaired = await self._translate_batch(
                 model=model,
                 system_prompt=system_prompt,
                 protected_payload=protected_payload[mid:],
                 usage=usage,
             )
-            return {**left, **right}
+            return {**left, **right}, repaired or left_repaired or right_repaired
 
         raise OpenRouterError(
             "Translation response failed validation. " + validation.error_message

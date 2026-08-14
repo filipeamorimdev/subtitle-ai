@@ -36,15 +36,73 @@ class ChatResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    cost_usd: float | None = None
+    latency_ms: int | None = None
 
 
 @dataclass
 class OpenRouterModelInfo:
     id: str
     name: str
-    prompt_price_per_million: float
-    completion_price_per_million: float
+    prompt_price_per_million: float | None
+    completion_price_per_million: float | None
     context_length: int | None = None
+    description: str | None = None
+    input_modalities: list[str] | None = None
+    output_modalities: list[str] | None = None
+    architecture: dict[str, Any] | None = None
+    pricing_raw: dict[str, Any] | None = None
+
+    @property
+    def pricing_tier(self) -> str:
+        """free | paid | unknown from current pricing metadata."""
+        if self.prompt_price_per_million is None or self.completion_price_per_million is None:
+            return "unknown"
+        if self.prompt_price_per_million <= 0 and self.completion_price_per_million <= 0:
+            return "free"
+        return "paid"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "prompt_price_per_million": self.prompt_price_per_million,
+            "completion_price_per_million": self.completion_price_per_million,
+            "context_length": self.context_length,
+            "description": self.description,
+            "input_modalities": self.input_modalities,
+            "output_modalities": self.output_modalities,
+            "architecture": self.architecture,
+            "pricing_raw": self.pricing_raw,
+            "pricing_tier": self.pricing_tier,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OpenRouterModelInfo:
+        return cls(
+            id=str(data["id"]),
+            name=str(data.get("name") or data["id"]),
+            prompt_price_per_million=_as_optional_float(data.get("prompt_price_per_million")),
+            completion_price_per_million=_as_optional_float(
+                data.get("completion_price_per_million")
+            ),
+            context_length=data.get("context_length")
+            if isinstance(data.get("context_length"), int)
+            else None,
+            description=data.get("description") if isinstance(data.get("description"), str) else None,
+            input_modalities=list(data["input_modalities"])
+            if isinstance(data.get("input_modalities"), list)
+            else None,
+            output_modalities=list(data["output_modalities"])
+            if isinstance(data.get("output_modalities"), list)
+            else None,
+            architecture=data.get("architecture")
+            if isinstance(data.get("architecture"), dict)
+            else None,
+            pricing_raw=data.get("pricing_raw")
+            if isinstance(data.get("pricing_raw"), dict)
+            else None,
+        )
 
 
 @dataclass
@@ -65,11 +123,25 @@ def batch_base_model(model: str) -> str:
     return model
 
 
-def _parse_token_price(value: Any) -> float:
+def _as_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
     try:
-        return float(value or 0) * 1_000_000
+        return float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return None
+
+
+def _parse_token_price(value: Any) -> float | None:
+    """Parse OpenRouter per-token price to USD per million. Missing → None (unknown)."""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(value) * 1_000_000
+    except (TypeError, ValueError):
+        return None
 
 
 def _response_body(response: httpx.Response) -> Any:
@@ -232,6 +304,14 @@ class OpenRouterClient:
             if not isinstance(pricing, dict):
                 pricing = {}
             name = item.get("name")
+            architecture = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
+            input_modalities = architecture.get("input_modalities") or item.get("input_modalities")
+            output_modalities = architecture.get("output_modalities") or item.get("output_modalities")
+            if not isinstance(input_modalities, list):
+                input_modalities = None
+            if not isinstance(output_modalities, list):
+                output_modalities = None
+            description = item.get("description")
             models.append(
                 OpenRouterModelInfo(
                     id=model_id,
@@ -241,13 +321,19 @@ class OpenRouterClient:
                     context_length=item.get("context_length")
                     if isinstance(item.get("context_length"), int)
                     else None,
+                    description=description if isinstance(description, str) else None,
+                    input_modalities=[str(x) for x in input_modalities] if input_modalities else None,
+                    output_modalities=[str(x) for x in output_modalities] if output_modalities else None,
+                    architecture=architecture or None,
+                    pricing_raw=pricing or None,
                 )
             )
 
         models.sort(
             key=lambda m: (
-                m.prompt_price_per_million,
-                m.completion_price_per_million,
+                m.prompt_price_per_million is None,
+                m.prompt_price_per_million if m.prompt_price_per_million is not None else 0.0,
+                m.completion_price_per_million if m.completion_price_per_million is not None else 0.0,
                 m.name.lower(),
             )
         )
@@ -274,6 +360,7 @@ class OpenRouterClient:
         delays = [0, 2, 5]
         last_error: Exception | None = None
         url = f"{self.base_url}/chat/completions"
+        started = time.monotonic()
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for attempt, delay in enumerate(delays, start=1):
@@ -334,22 +421,26 @@ class OpenRouterClient:
                     raise OpenRouterError("OpenRouter authentication failed.", status_code=401)
                 if response.status_code == 404:
                     raise OpenRouterError("OpenRouter model not found.", status_code=404)
-                if response.status_code == 429:
+                if response.status_code in (408, 429) or response.status_code >= 500:
                     retry_after = response.headers.get("Retry-After")
-                    wait_s = float(retry_after) if retry_after and retry_after.isdigit() else delays[min(attempt, len(delays) - 1)]
-                    last_error = OpenRouterError(
-                        "OpenRouter rate limited.",
-                        status_code=429,
-                        retryable=True,
+                    wait_s = (
+                        float(retry_after)
+                        if retry_after and retry_after.isdigit()
+                        else delays[min(attempt, len(delays) - 1)]
                     )
-                    await asyncio.sleep(wait_s)
-                    continue
-                if response.status_code >= 500:
+                    label = (
+                        "rate limited"
+                        if response.status_code == 429
+                        else "timed out"
+                        if response.status_code == 408
+                        else f"server error ({response.status_code})"
+                    )
                     last_error = OpenRouterError(
-                        f"OpenRouter server error ({response.status_code}).",
+                        f"OpenRouter {label}.",
                         status_code=response.status_code,
                         retryable=True,
                     )
+                    await asyncio.sleep(wait_s)
                     continue
                 if response.status_code >= 400:
                     detail = response.text[:300]
@@ -378,12 +469,22 @@ class OpenRouterClient:
                     continue
 
                 usage = data.get("usage") or {}
+                cost_raw = usage.get("cost") if isinstance(usage, dict) else None
+                cost_usd: float | None = None
+                if cost_raw is not None:
+                    try:
+                        cost_usd = float(cost_raw)
+                    except (TypeError, ValueError):
+                        cost_usd = None
+                latency_ms = int((time.monotonic() - started) * 1000)
                 return ChatResult(
                     content=content or "",
                     model=data.get("model") or sync_model,
                     input_tokens=usage.get("prompt_tokens"),
                     output_tokens=usage.get("completion_tokens"),
                     total_tokens=usage.get("total_tokens"),
+                    cost_usd=cost_usd,
+                    latency_ms=latency_ms,
                 )
 
         assert last_error is not None

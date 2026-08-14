@@ -29,6 +29,14 @@ export interface Settings {
   automatic_retry_enabled: boolean
   maximum_automatic_retries: number
   openrouter_log_full_exchanges: boolean
+  routing_strategy: string
+  allow_paid_fallback: boolean
+  allow_free_fallback: boolean
+  allow_unknown_pricing: boolean
+  maximum_cost_per_job_usd: number | null
+  monthly_budget_enabled: boolean
+  monthly_budget_amount_usd: number | null
+  allow_manual_budget_override: boolean
 }
 
 export interface SettingsUpdate {
@@ -52,6 +60,16 @@ export interface SettingsUpdate {
   automatic_retry_enabled?: boolean
   maximum_automatic_retries?: number
   openrouter_log_full_exchanges?: boolean
+  routing_strategy?: string
+  allow_paid_fallback?: boolean
+  allow_free_fallback?: boolean
+  allow_unknown_pricing?: boolean
+  maximum_cost_per_job_usd?: number | null
+  clear_maximum_cost_per_job?: boolean
+  monthly_budget_enabled?: boolean
+  monthly_budget_amount_usd?: number | null
+  clear_monthly_budget_amount?: boolean
+  allow_manual_budget_override?: boolean
 }
 
 export interface EmbeddedSubtitle {
@@ -274,9 +292,17 @@ export interface ClearDataResult {
 export interface OpenRouterModel {
   id: string
   name: string
-  prompt_price_per_million: number
-  completion_price_per_million: number
+  prompt_price_per_million: number | null
+  completion_price_per_million: number | null
   context_length: number | null
+  pricing_tier?: string | null
+  description?: string | null
+  compatible?: boolean | null
+  compatibility_reason?: string | null
+  stale?: boolean | null
+  unavailable?: boolean | null
+  input_modalities?: string[] | null
+  output_modalities?: string[] | null
 }
 
 export interface OpenRouterModelsResult {
@@ -346,4 +372,158 @@ export interface GlossaryTermUpdate {
   status?: string
   locked?: boolean
   notes?: string | null
+}
+
+export interface AiRouting {
+  routing_strategy: string
+  allow_paid_fallback: boolean
+  allow_free_fallback: boolean
+  allow_unknown_pricing: boolean
+  maximum_cost_per_job_usd: number | null
+  monthly_budget_enabled: boolean
+  monthly_budget_amount_usd: number | null
+  allow_manual_budget_override: boolean
+}
+
+export interface AiPreference {
+  id: number
+  model_id: string
+  tier: string
+  priority: number
+  enabled: boolean
+  name?: string
+  pricing_tier?: string
+  prompt_price_per_million?: number | null
+  completion_price_per_million?: number | null
+  context_length?: number | null
+  compatible?: boolean
+  compatibility_reason?: string
+  available?: boolean
+  unavailable?: boolean
+  stale?: boolean
+  configured_priority?: number
+  adaptive_rank?: number | null
+  adaptive_score?: number | null
+  confidence?: string
+  sample_count?: number
+  clean_success_rate?: number | null
+  repair_rate?: number | null
+  average_latency_ms?: number | null
+  last_used_at?: string | null
+}
+
+export interface AiModelsPayload {
+  openrouter_configured: boolean
+  openrouter_api_key_masked: string | null
+  catalog_fetched_at: string | null
+  catalog_stale: boolean
+  catalog_age_seconds: number | null
+  preferences: AiPreference[]
+  catalog: OpenRouterModel[]
+  routing: AiRouting
+}
+
+export interface AiOverview {
+  period: string
+  empty: boolean
+  cost: { current: number; previous: number | null }
+  requests: number
+  success_rate: number | null
+  tokens: { input: number; output: number; total: number }
+  free_requests: number
+  paid_requests: number
+  free_tokens: number
+  paid_tokens: number
+  paid_cost_usd: number
+  average_cost_usd: number | null
+  average_latency_ms: number | null
+  cards: Record<string, { cost_usd: number; requests: number }>
+  budget: {
+    enabled: boolean
+    limit: number | null
+    used: number
+    remaining: number | null
+    reserved: number
+    percent_used: number | null
+    allow_manual_override: boolean
+  }
+  ranking: Array<{
+    model_id: string
+    adaptive_rank: number | null
+    adaptive_score: number | null
+    quality_score: number | null
+    cost_score: number | null
+    speed_score: number | null
+    reliability_score: number | null
+    clean_success_rate: number | null
+    repair_rate: number | null
+    average_cost_per_clean_success_usd: number | null
+    average_latency_ms: number | null
+    sample_count: number
+    confidence: string
+    last_used_at: string | null
+  }>
+  routing: Array<{
+    id: number
+    created_at: string | null
+    job_id: number | null
+    event: string
+    strategy: string | null
+    model_id: string | null
+    next_model_id: string | null
+    failure_category: string | null
+    detail: string | null
+  }>
+}
+
+export interface AiUsagePage {
+  total: number
+  offset: number
+  limit: number
+  items: Array<{
+    id: number
+    created_at: string | null
+    job_id: number | null
+    media_title: string | null
+    operation_type: string
+    model_id: string
+    tier: string
+    trigger_type: string
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    cost_usd: number | null
+    status: string
+    failure_category: string | null
+    outcome: string | null
+    latency_ms: number | null
+  }>
+  by_model: Array<{
+    model_id: string
+    requests: number
+    successes: number
+    failures: number
+    success_rate: number
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    cost_usd: number
+    average_latency_ms: number | null
+    clean_success_rate: number
+    repair_rate: number
+    validation_failure_rate: number
+    technical_failure_rate: number
+  }>
+}
+
+export interface AiCosts {
+  period: string
+  series: Array<{ date: string; cost_usd: number }>
+  by_model: Array<{ model_id: string; requests: number; cost_usd: number; tokens: number }>
+  free_vs_paid: {
+    free_requests: number
+    paid_requests: number
+    free_cost_usd: number
+    paid_cost_usd: number
+  }
 }

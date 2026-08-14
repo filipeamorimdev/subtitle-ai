@@ -278,7 +278,7 @@ def test_api_candidates_and_manual_job(app_env, monkeypatch):
     with TestClient(app) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        assert health.json()["version"] == "0.1.0"
+        assert health.json()["version"] == "0.2.0"
 
         settings = client.get("/api/settings")
         assert settings.status_code == 200

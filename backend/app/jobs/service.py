@@ -31,7 +31,7 @@ from app.api.schemas import (
 )
 from app.core.config import get_app_config
 from app.core.logging import get_logger
-from app.db.models import JobRow, TranslationCacheRow
+from app.db.models import AiRoutingEventRow, AiUsageRecordRow, JobRow, TranslationCacheRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import (
     PathMapping,
@@ -39,8 +39,16 @@ from app.integrations.bazarr.paths import (
     is_under_roots,
     mappings_from_settings,
 )
+from app.services.ai_budget import AiBudgetService, BudgetBlockedError
+from app.services.ai_usage import AiUsageService, RecordingOpenRouterClient
 from app.services.candidates import CandidateService, to_bazarr_code2
 from app.services.glossary import GlossaryService
+from app.services.model_router import (
+    ModelRouter,
+    RoutingBlockedError,
+    classify_openrouter_failure,
+    is_technical_failure,
+)
 from app.services.settings import SettingsService
 from app.subtitles.embedded import (
     EmbeddedError,
@@ -62,7 +70,11 @@ from app.subtitles.writer.srt import write_srt_atomic
 from app.jobs.usage import ModelPricing, aggregate_usage, estimate_cost_usd, parse_exchanges
 from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
-from app.translation.openrouter.service import OpenRouterTranslationService
+from app.translation.openrouter.service import (
+    OpenRouterTranslationService,
+    RetryableTranslationError,
+    TranslationCheckpoint,
+)
 
 logger = get_logger("jobs")
 
@@ -502,12 +514,22 @@ class JobService:
             )
         )
         jobs_reset = result.rowcount or 0
+        usage_deleted = self.db.execute(delete(AiUsageRecordRow)).rowcount or 0
+        routing_deleted = self.db.execute(delete(AiRoutingEventRow)).rowcount or 0
         self.db.commit()
 
         return ClearDataResult(
-            deleted=logs_deleted,
-            message=f"Cleared {logs_deleted} usage log(s) and reset token totals on {jobs_reset} job(s).",
-            details={"logs_deleted": logs_deleted, "jobs_reset": jobs_reset},
+            deleted=logs_deleted + usage_deleted,
+            message=(
+                f"Cleared {logs_deleted} usage log(s), {usage_deleted} AI usage record(s), "
+                f"{routing_deleted} routing event(s), and reset token totals on {jobs_reset} job(s)."
+            ),
+            details={
+                "logs_deleted": logs_deleted,
+                "jobs_reset": jobs_reset,
+                "usage_records_deleted": usage_deleted,
+                "routing_events_deleted": routing_deleted,
+            },
         )
 
     async def create_job(
@@ -619,14 +641,26 @@ class JobService:
             return job_to_out(existing)
 
         src_hash = content_hash(source)
-        dkey = dedupe_key(src_hash, target_language, model)
-        completed = self.db.scalar(
-            select(JobRow).where(
-                JobRow.job_kind == "translate",
-                JobRow.dedupe_key == dkey,
-                JobRow.status == "completed",
+        router = ModelRouter(self.db)
+        routing = router.select_models(trigger_type=trigger)
+        candidate_models = [c.model_id for c in routing.candidates] or [model]
+        completed = None
+        dkey = dedupe_key(src_hash, target_language, candidate_models[0])
+        cache_model = candidate_models[0]
+        for candidate_model in candidate_models:
+            maybe_key = dedupe_key(src_hash, target_language, candidate_model)
+            hit = self.db.scalar(
+                select(JobRow).where(
+                    JobRow.job_kind == "translate",
+                    JobRow.dedupe_key == maybe_key,
+                    JobRow.status == "completed",
+                )
             )
-        )
+            if hit and Path(hit.target_subtitle_path).exists():
+                completed = hit
+                dkey = maybe_key
+                cache_model = candidate_model
+                break
         if completed and Path(completed.target_subtitle_path).exists():
             row = JobRow(
                 candidate_key=candidate_key,
@@ -642,7 +676,7 @@ class JobService:
                 target_subtitle_path=str(target),
                 source_language=source_language,
                 target_language=target_language,
-                model=model,
+                model=cache_model,
                 status="skipped",
                 progress=100,
                 reason_code="cache_hit",
@@ -670,10 +704,10 @@ class JobService:
             target_subtitle_path=str(target),
             source_language=source_language,
             target_language=target_language,
-            model=model,
+            model=candidate_models[0],
             status="pending",
             progress=0,
-            dedupe_key=dkey,
+            dedupe_key=dedupe_key(src_hash, target_language, candidate_models[0]),
             source_hash=src_hash,
         )
         self.db.add(row)
@@ -1487,9 +1521,12 @@ class JobService:
 
         log = get_logger("jobs")
         exchange_log: JobOpenRouterExchangeLog | None = None
+        usage_service = AiUsageService(self.db)
+        budget = AiBudgetService(self.db)
+        router = ModelRouter(self.db)
         try:
             public = self.settings.get_public()
-            openrouter_key, model = self.settings.get_openrouter_credentials()
+            openrouter_key, fallback_model = self.settings.get_openrouter_credentials()
             if not openrouter_key:
                 raise OpenRouterError("OpenRouter API key is not configured")
 
@@ -1500,7 +1537,29 @@ class JobService:
             if not source_validation.ok:
                 raise ValueError(source_validation.error_message)
 
-            resolved_model = row.model or model
+            chars = sum(len(block.text) for block in document.blocks)
+            estimated_input = max(1, chars // 4 + 2000)
+            estimated_output = max(1, chars // 4)
+            trigger = getattr(row, "trigger_type", None) or "manual"
+            routing = router.select_models(
+                job=row,
+                estimated_input_tokens=estimated_input,
+                estimated_output_tokens=estimated_output,
+                trigger_type=trigger,
+            )
+            if not routing.candidates:
+                reason = routing.blocked_reason or "no_compatible_model"
+                raise RoutingBlockedError(
+                    "No eligible OpenRouter model for this translation. "
+                    + (
+                        "Blocked by cost or monthly budget."
+                        if reason == "blocked_by_cost_policy"
+                        else "Configure a compatible model in AI → Models."
+                    ),
+                    reason_code=reason,
+                )
+
+            resolved_model = routing.candidates[0].model_id
             config = get_app_config()
             exchange_log = JobOpenRouterExchangeLog(
                 job_openrouter_log_path(config.config_dir, job_id),
@@ -1510,6 +1569,8 @@ class JobService:
                 {
                     "event": "job_start",
                     "model": resolved_model,
+                    "candidates": [c.model_id for c in routing.candidates],
+                    "strategy": routing.strategy,
                     "media_title": row.media_title,
                     "media_path": row.media_path,
                     "source_subtitle_path": row.source_subtitle_path,
@@ -1523,65 +1584,166 @@ class JobService:
             )
             log.info("OpenRouter exchange log job_id=%s path=%s", job_id, exchange_log.path)
 
-            client = OpenRouterClient(
-                openrouter_key,
-                exchange_log=exchange_log,
-                log_full_exchanges=bool(public.openrouter_log_full_exchanges),
-            )
-            service = OpenRouterTranslationService(client)
-
             current = self.db.get(JobRow, job_id)
             if current:
                 current.progress = 5
                 current.progress_detail = "Building glossary"
+                current.model = resolved_model
                 self.db.add(current)
                 self.db.commit()
 
-            glossary = await GlossaryService(self.db).prepare_for_translation(
-                client=client,
-                model=resolved_model,
-                media_type=row.media_type,
-                media_title=row.media_title,
-                target_language_code=row.target_language,
-                target_language_name=public.target_language.name,
-                bazarr_series_id=row.bazarr_series_id,
-                bazarr_movie_id=row.bazarr_movie_id,
-                document=document,
-            )
-            exchange_log.record(
-                {
-                    "event": "glossary_ready",
-                    "leaf_scope_id": glossary.leaf_scope.id,
-                    "leaf_scope_key": glossary.leaf_scope.key,
-                    "universe_key": glossary.universe_key,
-                    "scope_ids": [s.id for s in glossary.scopes],
-                    "term_count": len(glossary.terms),
-                    "suggested_new": glossary.suggested_new,
-                    "input_tokens": glossary.usage_input_tokens,
-                    "output_tokens": glossary.usage_output_tokens,
-                    "total_tokens": glossary.usage_total_tokens,
-                }
-            )
+            checkpoint = TranslationCheckpoint()
+            glossary = None
+            outcome = None
+            last_error: Exception | None = None
+            winning_model = resolved_model
+            repair_used = False
 
-            async def on_progress(done: int, total: int) -> None:
+            for index, candidate in enumerate(routing.candidates):
+                reservation = None
+                try:
+                    reservation = budget.reserve(
+                        amount_micro_usd=int(candidate.estimated_cost_micro_usd or 0),
+                        job_id=job_id,
+                        trigger_type=trigger,
+                        tier=candidate.tier,
+                    )
+                    self.db.commit()
+                except BudgetBlockedError as exc:
+                    router.record_fallback(
+                        job_id=job_id,
+                        model_id=candidate.model_id,
+                        next_model_id=None,
+                        failure_category="budget_blocked",
+                        strategy=routing.strategy,
+                    )
+                    last_error = RoutingBlockedError(str(exc), reason_code="blocked_by_cost_policy")
+                    continue
+
+                inner = OpenRouterClient(
+                    openrouter_key,
+                    exchange_log=exchange_log,
+                    log_full_exchanges=bool(public.openrouter_log_full_exchanges),
+                )
+                client = RecordingOpenRouterClient(
+                    inner,
+                    usage_service,
+                    job_id=job_id,
+                    trigger_type=trigger,
+                    tier=candidate.tier,
+                )
+                service = OpenRouterTranslationService(client)
+
                 current = self.db.get(JobRow, job_id)
-                if not current or current.status == "cancelled":
-                    raise RuntimeError("Job cancelled")
-                # Reserve ~5% for glossary prep.
-                current.progress = round(5 + (done / total) * 95, 2)
-                current.progress_detail = f"{done} / {total} batches"
-                self.db.add(current)
-                self.db.commit()
+                if current:
+                    current.model = candidate.model_id
+                    current.progress_detail = f"Using {candidate.model_id}"
+                    self.db.add(current)
+                    self.db.commit()
 
-            outcome = await service.translate_document(
-                document,
-                model=resolved_model,
-                target_language_code=row.target_language,
-                target_language_name=public.target_language.name,
-                batch_size=public.batch_size,
-                progress_callback=on_progress,
-                glossary_terms=glossary.terms,
-            )
+                try:
+                    if glossary is None:
+                        glossary = await GlossaryService(self.db).prepare_for_translation(
+                            client=client,
+                            model=candidate.model_id,
+                            media_type=row.media_type,
+                            media_title=row.media_title,
+                            target_language_code=row.target_language,
+                            target_language_name=public.target_language.name,
+                            bazarr_series_id=row.bazarr_series_id,
+                            bazarr_movie_id=row.bazarr_movie_id,
+                            document=document,
+                        )
+                        exchange_log.record(
+                            {
+                                "event": "glossary_ready",
+                                "leaf_scope_id": glossary.leaf_scope.id,
+                                "leaf_scope_key": glossary.leaf_scope.key,
+                                "universe_key": glossary.universe_key,
+                                "scope_ids": [s.id for s in glossary.scopes],
+                                "term_count": len(glossary.terms),
+                                "suggested_new": glossary.suggested_new,
+                                "input_tokens": glossary.usage_input_tokens,
+                                "output_tokens": glossary.usage_output_tokens,
+                                "total_tokens": glossary.usage_total_tokens,
+                            }
+                        )
+
+                    async def on_progress(done: int, total: int) -> None:
+                        current = self.db.get(JobRow, job_id)
+                        if not current or current.status == "cancelled":
+                            raise RuntimeError("Job cancelled")
+                        current.progress = round(5 + (done / total) * 95, 2)
+                        current.progress_detail = f"{done} / {total} batches"
+                        self.db.add(current)
+                        self.db.commit()
+
+                    outcome = await service.translate_document(
+                        document,
+                        model=candidate.model_id,
+                        target_language_code=row.target_language,
+                        target_language_name=public.target_language.name,
+                        batch_size=public.batch_size,
+                        progress_callback=on_progress,
+                        glossary_terms=glossary.terms,
+                        checkpoint=checkpoint,
+                    )
+                    winning_model = candidate.model_id
+                    repair_used = bool(outcome.repair_used)
+                    budget.release(reservation)
+                    self.db.commit()
+                    last_error = None
+                    break
+                except RetryableTranslationError as exc:
+                    checkpoint = exc.checkpoint
+                    category = classify_openrouter_failure(exc)
+                    next_model = (
+                        routing.candidates[index + 1].model_id
+                        if index + 1 < len(routing.candidates)
+                        else None
+                    )
+                    router.record_fallback(
+                        job_id=job_id,
+                        model_id=candidate.model_id,
+                        next_model_id=next_model,
+                        failure_category=category,
+                        strategy=routing.strategy,
+                    )
+                    last_error = exc
+                    budget.release(reservation)
+                    self.db.commit()
+                    if next_model is None:
+                        raise
+                    continue
+                except OpenRouterError as exc:
+                    category = classify_openrouter_failure(exc)
+                    budget.release(reservation)
+                    self.db.commit()
+                    if is_technical_failure(category) and index + 1 < len(routing.candidates):
+                        router.record_fallback(
+                            job_id=job_id,
+                            model_id=candidate.model_id,
+                            next_model_id=routing.candidates[index + 1].model_id,
+                            failure_category=category,
+                            strategy=routing.strategy,
+                        )
+                        last_error = exc
+                        continue
+                    raise
+                except Exception:
+                    budget.release(reservation)
+                    self.db.commit()
+                    raise
+            else:
+                if last_error is not None:
+                    raise last_error
+                raise RoutingBlockedError(
+                    "No eligible OpenRouter model for this translation.",
+                    reason_code="no_compatible_model",
+                )
+
+            assert outcome is not None
+            assert glossary is not None
             outcome.usage.input_tokens += glossary.usage_input_tokens
             outcome.usage.output_tokens += glossary.usage_output_tokens
             outcome.usage.total_tokens += glossary.usage_total_tokens
@@ -1592,12 +1754,18 @@ class JobService:
 
             current = self.db.get(JobRow, job_id)
             if not current or current.status == "cancelled":
+                usage_service.set_job_outcome(job_id, "cancelled")
                 exchange_log.record({"event": "job_end", "status": "cancelled"})
+                self.db.commit()
                 return
 
             target_path = Path(current.target_subtitle_path)
             write_srt_atomic(target_path, outcome.document, overwrite=False)
 
+            current.model = winning_model
+            current.dedupe_key = dedupe_key(
+                current.source_hash or "", current.target_language, winning_model
+            )
             current.input_tokens = outcome.usage.input_tokens
             current.output_tokens = outcome.usage.output_tokens
             current.total_tokens = outcome.usage.total_tokens
@@ -1606,7 +1774,6 @@ class JobService:
             current.status = "completed"
             current.completed_at = utcnow()
             if outcome.warnings:
-                # Markup mismatches are soft warnings; file was still written.
                 current.warning = "; ".join(outcome.warnings)
                 if any(w.startswith("glossary_suggested:") for w in outcome.warnings) and all(
                     w.startswith("glossary_suggested:") for w in outcome.warnings
@@ -1625,6 +1792,9 @@ class JobService:
                     target_subtitle_path=current.target_subtitle_path,
                     job_id=current.id,
                 )
+            )
+            usage_service.set_job_outcome(
+                job_id, "success_with_repair" if repair_used else "perfect_success"
             )
 
             try:
@@ -1655,6 +1825,7 @@ class JobService:
                 {
                     "event": "job_end",
                     "status": "completed",
+                    "model": winning_model,
                     "input_tokens": outcome.usage.input_tokens,
                     "output_tokens": outcome.usage.output_tokens,
                     "total_tokens": outcome.usage.total_tokens,
@@ -1662,24 +1833,33 @@ class JobService:
                     "translation_warnings": outcome.warnings,
                 }
             )
-            log.info("Job completed job_id=%s", job_id)
+            log.info("Job completed job_id=%s model=%s", job_id, winning_model)
         except Exception as exc:  # noqa: BLE001
             log.error("Job failed job_id=%s error=%s", job_id, exc)
             current = self.db.get(JobRow, job_id)
+            reason = _reason_code(exc)
             if current and current.status != "cancelled":
                 current.status = "failed"
                 current.error = _public_error(exc)
-                current.reason_code = _reason_code(exc)
+                current.reason_code = reason
                 current.completed_at = utcnow()
                 self.db.add(current)
-                self.db.commit()
+            if reason == "validation_failed":
+                usage_service.set_job_outcome(job_id, "validation_failure")
+            elif reason in {"blocked_by_cost_policy"}:
+                usage_service.set_job_outcome(job_id, "budget_blocked")
+            elif reason == "cancelled":
+                usage_service.set_job_outcome(job_id, "cancelled")
+            else:
+                usage_service.set_job_outcome(job_id, "technical_failure")
+            self.db.commit()
             if exchange_log is not None:
                 exchange_log.record(
                     {
                         "event": "job_end",
                         "status": "failed",
                         "error": _public_error(exc),
-                        "reason_code": _reason_code(exc),
+                        "reason_code": reason,
                     }
                 )
 
@@ -1729,6 +1909,10 @@ class JobService:
 
 
 def _public_error(exc: Exception) -> str:
+    if isinstance(exc, RoutingBlockedError):
+        return str(exc)
+    if isinstance(exc, BudgetBlockedError):
+        return str(exc)
     if isinstance(exc, OpenRouterError):
         return str(exc)
     if isinstance(exc, BazarrError):
@@ -1750,6 +1934,10 @@ def _public_error(exc: Exception) -> str:
 
 
 def _reason_code(exc: Exception) -> str:
+    if isinstance(exc, RoutingBlockedError):
+        return exc.reason_code
+    if isinstance(exc, BudgetBlockedError):
+        return "blocked_by_cost_policy"
     if isinstance(exc, OpenRouterError):
         if "validation" in str(exc).lower():
             return "validation_failed"
@@ -1760,4 +1948,6 @@ def _reason_code(exc: Exception) -> str:
         return "bazarr_error"
     if isinstance(exc, EmbeddedError):
         return "extract_failed"
+    if "cancel" in str(exc).lower():
+        return "cancelled"
     return "failed"

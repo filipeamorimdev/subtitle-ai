@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
+from app.api.ai_routes import router as ai_router
 from app.core.config import get_app_config
 from app.core.logging import setup_logging
 from app.db import init_db
@@ -45,8 +46,9 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Subtitle AI", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Subtitle AI", version="0.2.0", lifespan=lifespan)
     app.include_router(router)
+    app.include_router(ai_router)
 
     dist = _resolve_frontend_dist()
     if dist is not None:

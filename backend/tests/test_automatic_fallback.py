@@ -15,6 +15,7 @@ from app.core.secrets import load_or_create_fernet
 from app.db import Base
 from app.db.models import JobRow, ObservedCandidateRow
 from app.jobs.service import JobService
+from app.services.candidates import CandidateService
 from app.services.fallback import FallbackPlanner
 from app.services.settings import SettingsService
 from app.translation.openrouter.client import ChatResult, OpenRouterClient
@@ -397,6 +398,64 @@ async def test_translate_verify_success_and_failure(auto_env, monkeypatch):
     db.close()
 
 
+def _count_openrouter_and_verify(monkeypatch):
+    chat_calls = {"n": 0}
+    verify_calls = {"n": 0}
+    original_chat = OpenRouterClient.chat_completion
+    original_verify = JobService._verify_target_with_backoff
+
+    async def counting_chat(*args, **kwargs):
+        chat_calls["n"] += 1
+        return await original_chat(*args, **kwargs)
+
+    async def counting_verify(self, row):
+        verify_calls["n"] += 1
+        return await original_verify(self, row)
+
+    monkeypatch.setattr(OpenRouterClient, "chat_completion", counting_chat)
+    monkeypatch.setattr(JobService, "_verify_target_with_backoff", counting_verify)
+    return chat_calls, verify_calls
+
+
+@pytest.mark.asyncio
+async def test_next_action_is_verify_when_target_written_but_bazarr_missing(auto_env):
+    db = auto_env["SessionLocal"]()
+    SettingsService(db, fernet=auto_env["fernet"]).update(
+        SettingsUpdate(automatic_fallback_enabled=True, bazarr_grace_period_minutes=0)
+    )
+    target = auto_env["media"] / "Example.pt-PT.srt"
+    target.write_text(SAMPLE_SRT, encoding="utf-8")
+
+    planner = FallbackPlanner(db)
+    candidate = (await CandidateService(db).list_candidates())[0]
+    assert candidate.reason_code == "target_exists"
+    observed = planner.observe_candidate(candidate)
+
+    db.add(
+        JobRow(
+            candidate_key=candidate.key,
+            job_kind="translate",
+            trigger_type="automatic",
+            media_type="movie",
+            media_path=candidate.media_path,
+            media_title=candidate.title,
+            bazarr_movie_id=candidate.bazarr_movie_id,
+            source_subtitle_path=str(auto_env["source"]),
+            target_subtitle_path=str(target),
+            source_language="en",
+            target_language="pt-PT",
+            model="openai/gpt-4o-mini",
+            status="completed",
+            progress=100,
+            reason_code="bazarr_verify_failed",
+        )
+    )
+    db.commit()
+
+    assert planner.next_action(candidate, observed) == "verify"
+    db.close()
+
+
 @pytest.mark.asyncio
 async def test_verify_failure_does_not_retranslate(auto_env, monkeypatch):
     db = auto_env["SessionLocal"]()
@@ -408,6 +467,7 @@ async def test_verify_failure_does_not_retranslate(auto_env, monkeypatch):
         return None
 
     monkeypatch.setattr("app.jobs.service.asyncio.sleep", fake_sleep)
+    chat_calls, verify_calls = _count_openrouter_and_verify(monkeypatch)
 
     # Keep target missing after write
     auto_env["wanted_missing"][:] = ["pt-PT"]
@@ -422,12 +482,71 @@ async def test_verify_failure_does_not_retranslate(auto_env, monkeypatch):
     assert done.status == "completed"
     assert done.reason_code == "bazarr_verify_failed"
     assert (auto_env["media"] / "Example.pt-PT.srt").exists()
+    openrouter_after_translate = chat_calls["n"]
+    assert openrouter_after_translate > 0
+    assert verify_calls["n"] == 1
+    original_job_id = claimed.id
 
-    # Another scan must not create a second translate
+    # Another scan must schedule verify-only (rescan + backoff), never another translate.
     again = await FallbackPlanner(db).scan_once()
     assert again.created_count == 0
+    assert again.reused_count == 1
     translates = db.scalars(select(JobRow).where(JobRow.job_kind == "translate")).all()
     assert len(translates) == 1
+    assert translates[0].id == original_job_id
+    assert translates[0].status == "completed"
+    assert translates[0].reason_code == "bazarr_verify_failed"
+    assert chat_calls["n"] == openrouter_after_translate
+    assert verify_calls["n"] == 2
+
+    observed = db.scalars(select(ObservedCandidateRow)).one()
+    assert observed.last_outcome == "verify"
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_verify_only_retry_succeeds_without_openrouter(auto_env, monkeypatch):
+    db = auto_env["SessionLocal"]()
+    SettingsService(db, fernet=auto_env["fernet"]).update(
+        SettingsUpdate(automatic_fallback_enabled=True, bazarr_grace_period_minutes=0)
+    )
+
+    async def fake_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.jobs.service.asyncio.sleep", fake_sleep)
+    chat_calls, verify_calls = _count_openrouter_and_verify(monkeypatch)
+    auto_env["wanted_missing"][:] = ["pt-PT"]
+
+    await FallbackPlanner(db).scan_once()
+    service = JobService(db)
+    claimed = service.claim_next_job("translate")
+    assert claimed is not None
+    await service.process_job(claimed.id)
+    done = service.get_job(claimed.id)
+    assert done is not None
+    assert done.reason_code == "bazarr_verify_failed"
+    openrouter_after_translate = chat_calls["n"]
+    assert verify_calls["n"] == 1
+
+    # Bazarr now sees the written file, but the item can still appear wanted.
+    auto_env["subtitle_payload"].clear()
+    auto_env["subtitle_payload"].extend(
+        [
+            ["en", "/movies/Example/Example.en.srt"],
+            ["pt-PT", "/movies/Example/Example.pt-PT.srt"],
+        ]
+    )
+
+    again = await FallbackPlanner(db).scan_once()
+    assert again.created_count == 0
+    refreshed = service.get_job(claimed.id)
+    assert refreshed is not None
+    assert refreshed.reason_code is None
+    assert refreshed.status == "completed"
+    assert chat_calls["n"] == openrouter_after_translate
+    assert verify_calls["n"] == 2
+    assert len(db.scalars(select(JobRow).where(JobRow.job_kind == "translate")).all()) == 1
     db.close()
 
 

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import OpenRouterModelSelect from '../components/OpenRouterModelSelect.vue'
+import { RouterLink } from 'vue-router'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
-import type { AutomationStatus, OpenRouterModel } from '../types'
+import type { AutomationStatus } from '../types'
 import { formatDateTime } from '../utils/datetime'
 
 const LANGUAGES = [
@@ -24,9 +24,6 @@ const clearing = ref(false)
 const scanning = ref(false)
 const bazarrTest = ref<string | null>(null)
 const openrouterTest = ref<string | null>(null)
-const openrouterModels = ref<OpenRouterModel[]>([])
-const modelsLoading = ref(false)
-const modelsError = ref<string | null>(null)
 const automationStatus = ref<AutomationStatus | null>(null)
 
 const form = reactive({
@@ -50,19 +47,6 @@ const form = reactive({
   automatic_retry_enabled: true,
   maximum_automatic_retries: 3,
 })
-
-async function loadOpenRouterModels() {
-  modelsLoading.value = true
-  modelsError.value = null
-  try {
-    const result = await api.getOpenRouterModels()
-    openrouterModels.value = result.models
-  } catch (err) {
-    modelsError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    modelsLoading.value = false
-  }
-}
 
 async function loadAutomationStatus() {
   try {
@@ -91,7 +75,7 @@ onMounted(async () => {
   form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
   form.automatic_retry_enabled = s.automatic_retry_enabled ?? true
   form.maximum_automatic_retries = s.maximum_automatic_retries ?? 3
-  await Promise.all([loadOpenRouterModels(), loadAutomationStatus()])
+  await loadAutomationStatus()
 })
 
 const sourceLanguageOptions = computed(() => {
@@ -279,27 +263,14 @@ function clearUsageStats() {
           Clear saved OpenRouter API key
         </label>
         <div class="block text-sm">
-          <div class="flex items-center justify-between gap-3">
-            <span class="text-ink-500">Model</span>
-            <button
-              type="button"
-              class="text-xs font-semibold text-ink-500 hover:text-ink-800 dark:hover:text-ink-200"
-              :disabled="modelsLoading"
-              @click="loadOpenRouterModels"
-            >
-              {{ modelsLoading ? 'Refreshing…' : 'Refresh list' }}
-            </button>
-          </div>
-          <OpenRouterModelSelect
-            v-model="form.openrouter_model"
-            :models="openrouterModels"
-            :loading="modelsLoading"
-            :error="modelsError"
-            @refresh="loadOpenRouterModels"
-          />
-          <span class="mt-1 block text-xs text-ink-500">
-            Models are loaded from OpenRouter and sorted by price (cheapest first). Prices are USD per million tokens.
-          </span>
+          <span class="text-ink-500">Models</span>
+          <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+            Preferred model: <span class="font-medium">{{ store.settings?.openrouter_model || '—' }}</span>
+            · Strategy: {{ store.settings?.routing_strategy || 'free_first' }}
+          </p>
+          <RouterLink class="mt-2 inline-block text-sm font-semibold text-accent hover:underline" to="/ai/models">
+            Manage AI models, routing, and cost controls
+          </RouterLink>
         </div>
         <div class="flex flex-wrap items-center gap-3">
           <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="testOpenRouter">

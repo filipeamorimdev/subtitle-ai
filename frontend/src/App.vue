@@ -23,6 +23,7 @@ const links = [
   { to: '/candidates', label: 'Candidates' },
   { to: '/jobs', label: 'Jobs' },
   { to: '/glossaries', label: 'Glossaries' },
+  { to: '/ai', label: 'AI' },
   { to: '/settings', label: 'Settings' },
 ]
 </script>

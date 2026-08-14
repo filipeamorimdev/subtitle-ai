@@ -37,11 +37,11 @@ By default only metadata is stored (model, attempt, status, token usage, errors)
 ### OpenRouter
 
 - API key
-- Searchable model picker (fetched from OpenRouter `GET /api/v1/models`, sorted by price)
 - Test Connection
 - Optional full exchange logging (off by default)
+- Model pools, routing strategy, and cost controls live on **AI → Models** (`openrouter_model` remains as a compatibility field)
 
-`GET /api/settings/openrouter/models` proxies the OpenRouter models catalog (text models), converts token prices to USD per million tokens, and returns them cheapest-first.
+`GET /api/settings/openrouter/models` and `GET /api/ai/models` use a 6-hour catalog cache. Missing prices are **unknown**, never treated as free.
 
 ### Automatic Subtitle Fallback
 

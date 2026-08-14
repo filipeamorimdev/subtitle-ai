@@ -42,6 +42,9 @@ NON_RETRYABLE_REASON_CODES = {
     "not_found",
     "extract_failed",
     "cancelled",
+    "blocked_by_cost_policy",
+    "no_compatible_model",
+    "unknown_pricing",
 }
 
 
@@ -142,6 +145,26 @@ class FallbackPlanner:
             .limit(1)
         )
 
+    def _latest_verify_failed_translate(self, candidate_key: str) -> JobRow | None:
+        """Completed translate whose file exists but Bazarr still reports missing."""
+        row = self.db.scalar(
+            select(JobRow)
+            .where(
+                JobRow.candidate_key == candidate_key,
+                JobRow.job_kind == "translate",
+                JobRow.status == "completed",
+                JobRow.reason_code == "bazarr_verify_failed",
+            )
+            .order_by(JobRow.created_at.desc(), JobRow.id.desc())
+            .limit(1)
+        )
+        if row is None:
+            return None
+        target = Path(row.target_subtitle_path)
+        if not target.is_file() or target.stat().st_size <= 0:
+            return None
+        return row
+
     def _can_retry_failed(self, observed: ObservedCandidateRow, candidate: CandidateOut) -> bool:
         public = self.settings.get_public()
         if not public.automatic_retry_enabled:
@@ -180,12 +203,9 @@ class FallbackPlanner:
         observed: ObservedCandidateRow,
         *,
         now: datetime | None = None,
-    ) -> Literal["none", "translate", "extract", "request", "wait_grace"]:
+    ) -> Literal["none", "translate", "extract", "request", "wait_grace", "verify"]:
         now = now or utcnow()
         public = self.settings.get_public()
-
-        if candidate.reason_code == "target_exists":
-            return "none"
 
         if self._active_job(candidate.key) is not None:
             return "none"
@@ -193,13 +213,19 @@ class FallbackPlanner:
         if not self.grace_expired(observed, public.bazarr_grace_period_minutes, now=now):
             return "wait_grace"
 
+        # Written target + Bazarr still missing → verify/rescan only, never translate again.
+        if self._latest_verify_failed_translate(candidate.key) is not None:
+            return "verify"
+
+        if candidate.reason_code == "target_exists":
+            return "none"
+
         # Avoid immediately redoing successful automatic translate.
         latest_translate = self._latest_job(candidate.key, "translate")
         if latest_translate and latest_translate.status == "completed":
             target = Path(latest_translate.target_subtitle_path)
             if target.is_file() and target.stat().st_size > 0:
-                if latest_translate.reason_code != "bazarr_verify_failed":
-                    return "none"
+                return "none"
 
         if candidate.can_translate:
             if latest_translate and latest_translate.status == "failed":
@@ -255,6 +281,27 @@ class FallbackPlanner:
             return None, "none"
 
         jobs = JobService(self.db)
+        if action == "verify":
+            latest = self._latest_verify_failed_translate(candidate.key)
+            if latest is None:
+                observed.last_outcome = "none"
+                self.db.add(observed)
+                self.db.commit()
+                return None, "none"
+            job = await jobs.retry_bazarr_sync(latest.id)
+            observed.last_outcome = "verify"
+            observed.last_reason_code = job.reason_code
+            observed.last_automatic_attempt_at = now
+            self.db.add(observed)
+            self.db.commit()
+            logger.info(
+                "Automatic verify-only retry job_id=%s candidate=%s reason=%s",
+                job.id,
+                candidate.title,
+                job.reason_code,
+            )
+            return job, "verify"
+
         try:
             if action == "translate":
                 existing = self._active_job(candidate.key, "translate")
@@ -393,7 +440,7 @@ class FallbackPlanner:
                 job, outcome = await self.enqueue_for_candidate(candidate, now=now)
                 if outcome == "created":
                     created_count += 1
-                elif outcome == "reused":
+                elif outcome in {"reused", "verify"}:
                     reused_count += 1
                 else:
                     skipped_count += 1

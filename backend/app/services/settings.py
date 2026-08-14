@@ -9,6 +9,7 @@ from app.api.schemas import LanguageOut, PathMappingIn, SettingsOut, SettingsUpd
 from app.core.config import get_app_config
 from app.core.secrets import decrypt_secret, encrypt_secret, load_or_create_fernet, mask_secret
 from app.db.models import SettingsRow
+from app.services.ai_cost import micro_to_usd, usd_to_micro
 
 
 def _bool(value: object, default: bool) -> bool:
@@ -23,6 +24,15 @@ def _int(value: object, default: int, *, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def _micro_to_usd(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return micro_to_usd(int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 class SettingsService:
@@ -52,11 +62,29 @@ class SettingsService:
                 automatic_retry_enabled=True,
                 maximum_automatic_retries=3,
                 openrouter_log_full_exchanges=False,
+                routing_strategy="free_first",
+                allow_paid_fallback=False,
+                allow_free_fallback=True,
+                allow_unknown_pricing=False,
+                monthly_budget_enabled=False,
+                allow_manual_budget_override=False,
             )
             self.db.add(row)
             self.db.commit()
             self.db.refresh(row)
+        self._ensure_legacy_preference(row)
         return row
+
+    def _ensure_legacy_preference(self, row: SettingsRow) -> None:
+        try:
+            from app.services.model_preferences import seed_legacy_model_preference
+
+            seeded = seed_legacy_model_preference(self.db)
+            if seeded is not None:
+                self.db.commit()
+                self.db.refresh(row)
+        except Exception:  # noqa: BLE001
+            self.db.rollback()
 
     def get_public(self) -> SettingsOut:
         row = self.get_or_create_row()
@@ -107,6 +135,20 @@ class SettingsService:
             ),
             openrouter_log_full_exchanges=_bool(
                 getattr(row, "openrouter_log_full_exchanges", False), False
+            ),
+            routing_strategy=getattr(row, "routing_strategy", None) or "free_first",
+            allow_paid_fallback=_bool(getattr(row, "allow_paid_fallback", False), False),
+            allow_free_fallback=_bool(getattr(row, "allow_free_fallback", True), True),
+            allow_unknown_pricing=_bool(getattr(row, "allow_unknown_pricing", False), False),
+            maximum_cost_per_job_usd=_micro_to_usd(
+                getattr(row, "maximum_cost_per_job_micro_usd", None)
+            ),
+            monthly_budget_enabled=_bool(getattr(row, "monthly_budget_enabled", False), False),
+            monthly_budget_amount_usd=_micro_to_usd(
+                getattr(row, "monthly_budget_amount_micro_usd", None)
+            ),
+            allow_manual_budget_override=_bool(
+                getattr(row, "allow_manual_budget_override", False), False
             ),
         )
 
@@ -180,7 +222,31 @@ class SettingsService:
             )
         if payload.openrouter_log_full_exchanges is not None:
             row.openrouter_log_full_exchanges = payload.openrouter_log_full_exchanges
+        if payload.routing_strategy is not None:
+            row.routing_strategy = payload.routing_strategy
+        if payload.allow_paid_fallback is not None:
+            row.allow_paid_fallback = payload.allow_paid_fallback
+        if payload.allow_free_fallback is not None:
+            row.allow_free_fallback = payload.allow_free_fallback
+        if payload.allow_unknown_pricing is not None:
+            row.allow_unknown_pricing = payload.allow_unknown_pricing
+        if payload.clear_maximum_cost_per_job:
+            row.maximum_cost_per_job_micro_usd = None
+        elif payload.maximum_cost_per_job_usd is not None:
+            row.maximum_cost_per_job_micro_usd = usd_to_micro(payload.maximum_cost_per_job_usd)
+        if payload.monthly_budget_enabled is not None:
+            row.monthly_budget_enabled = payload.monthly_budget_enabled
+        if payload.clear_monthly_budget_amount:
+            row.monthly_budget_amount_micro_usd = None
+        elif payload.monthly_budget_amount_usd is not None:
+            row.monthly_budget_amount_micro_usd = usd_to_micro(payload.monthly_budget_amount_usd)
+        if payload.allow_manual_budget_override is not None:
+            row.allow_manual_budget_override = payload.allow_manual_budget_override
         self.db.add(row)
+        self.db.commit()
+        from app.services.model_preferences import seed_legacy_model_preference
+
+        seed_legacy_model_preference(self.db)
         self.db.commit()
         return self.get_public()
 

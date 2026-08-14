@@ -20,6 +20,11 @@ import type {
   Settings,
   SettingsUpdate,
   Stats,
+  AiOverview,
+  AiModelsPayload,
+  AiUsagePage,
+  AiCosts,
+  AiRouting,
 } from '../types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -162,4 +167,40 @@ export const api = {
       : ''
     return request<GlossaryTerm[]>(`/api/glossary/suggested${suffix}`)
   },
+  getAiOverview: (period = 'month') =>
+    request<AiOverview>(`/api/ai/overview?period=${encodeURIComponent(period)}`),
+  getAiUsage: (params: Record<string, string | number | undefined> = {}) => {
+    const search = new URLSearchParams()
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') search.set(key, String(value))
+    })
+    const suffix = search.toString() ? `?${search}` : ''
+    return request<AiUsagePage>(`/api/ai/usage${suffix}`)
+  },
+  getAiCosts: (period = '30d') =>
+    request<AiCosts>(`/api/ai/costs?period=${encodeURIComponent(period)}`),
+  getAiModels: () => request<AiModelsPayload>('/api/ai/models'),
+  refreshAiModels: () => request<{ ok: boolean; stale: boolean; message?: string; count: number }>('/api/ai/models/refresh', { method: 'POST' }),
+  testAiModel: (model_id: string) =>
+    request<ConnectionTestResult>('/api/ai/models/test', {
+      method: 'POST',
+      body: JSON.stringify({ model_id }),
+    }),
+  addAiModel: (model_id: string, tier: 'free' | 'paid') =>
+    request<{ id: number }>(`/api/ai/models`, {
+      method: 'POST',
+      body: JSON.stringify({ model_id, tier }),
+    }),
+  patchAiModel: (id: number, payload: { enabled?: boolean; tier?: 'free' | 'paid' }) =>
+    request(`/api/ai/models/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteAiModel: (id: number) => request(`/api/ai/models/${id}`, { method: 'DELETE' }),
+  reorderAiModels: (tier: 'free' | 'paid', ordered_ids: number[]) =>
+    request('/api/ai/models/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ tier, ordered_ids }),
+    }),
+  getAiRouting: () => request<AiRouting>('/api/ai/routing'),
+  updateAiRouting: (payload: Partial<AiRouting> & { clear_maximum_cost_per_job?: boolean; clear_monthly_budget_amount?: boolean }) =>
+    request<AiRouting>('/api/ai/routing', { method: 'PUT', body: JSON.stringify(payload) }),
+  getAiBudget: () => request<AiOverview['budget']>('/api/ai/budget'),
 }

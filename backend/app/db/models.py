@@ -35,9 +35,108 @@ class SettingsRow(Base):
     automatic_retry_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     maximum_automatic_retries: Mapped[int] = mapped_column(Integer, default=3)
     openrouter_log_full_exchanges: Mapped[bool] = mapped_column(Boolean, default=False)
+    routing_strategy: Mapped[str] = mapped_column(String(32), default="free_first")
+    allow_paid_fallback: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_free_fallback: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_unknown_pricing: Mapped[bool] = mapped_column(Boolean, default=False)
+    maximum_cost_per_job_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_budget_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    monthly_budget_amount_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    allow_manual_budget_override: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class OpenRouterModelPreferenceRow(Base):
+    """User-configured free/paid model pools with explicit priority."""
+
+    __tablename__ = "openrouter_model_preferences"
+    __table_args__ = (
+        UniqueConstraint("model_id", name="uq_openrouter_model_preferences_model_id"),
+        UniqueConstraint("tier", "model_id", name="uq_openrouter_model_preferences_tier_model"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False, index=True)  # free | paid
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OpenRouterCatalogCacheRow(Base):
+    """Cached OpenRouter model catalog metadata (volatile; not cost authority)."""
+
+    __tablename__ = "openrouter_catalog_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    payload_json: Mapped[list[Any] | dict[str, Any]] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AiUsageRecordRow(Base):
+    """Authoritative per-request AI usage and historical pricing snapshot."""
+
+    __tablename__ = "ai_usage_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    operation_type: Mapped[str] = mapped_column(String(64), index=True)  # translation, repair, model_test, ...
+    trigger_type: Mapped[str] = mapped_column(String(16), default="manual", index=True)
+    model_id: Mapped[str] = mapped_column(String(256), index=True)
+    tier: Mapped[str] = mapped_column(String(16), default="unknown", index=True)  # free | paid | unknown
+    status: Mapped[str] = mapped_column(String(32), default="success", index=True)
+    failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    outcome: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actual_cost_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_price_micro_usd_per_million: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_price_micro_usd_per_million: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pricing_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pricing_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class AiBudgetReservationRow(Base):
+    """Lightweight SQLite budget reservation to prevent concurrent overspend."""
+
+    __tablename__ = "ai_budget_reservations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    month_key: Mapped[str] = mapped_column(String(7), nullable=False, index=True)  # YYYY-MM UTC
+    amount_micro_usd: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AiRoutingEventRow(Base):
+    """Recent routing decisions for the AI dashboard (no secrets/content)."""
+
+    __tablename__ = "ai_routing_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    event: Mapped[str] = mapped_column(String(32), nullable=False)  # selected | fallback | blocked
+    strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    next_model_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
 class JobRow(Base):

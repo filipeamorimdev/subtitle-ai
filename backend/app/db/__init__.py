@@ -89,6 +89,27 @@ def init_db() -> None:
             ("automatic_retry_enabled", "ALTER TABLE settings ADD COLUMN automatic_retry_enabled BOOLEAN NOT NULL DEFAULT 1"),
             ("maximum_automatic_retries", "ALTER TABLE settings ADD COLUMN maximum_automatic_retries INTEGER NOT NULL DEFAULT 3"),
             ("openrouter_log_full_exchanges", "ALTER TABLE settings ADD COLUMN openrouter_log_full_exchanges BOOLEAN NOT NULL DEFAULT 0"),
+            ("routing_strategy", "ALTER TABLE settings ADD COLUMN routing_strategy VARCHAR(32) NOT NULL DEFAULT 'free_first'"),
+            ("allow_paid_fallback", "ALTER TABLE settings ADD COLUMN allow_paid_fallback BOOLEAN NOT NULL DEFAULT 0"),
+            ("allow_free_fallback", "ALTER TABLE settings ADD COLUMN allow_free_fallback BOOLEAN NOT NULL DEFAULT 1"),
+            ("allow_unknown_pricing", "ALTER TABLE settings ADD COLUMN allow_unknown_pricing BOOLEAN NOT NULL DEFAULT 0"),
+            ("maximum_cost_per_job_micro_usd", "ALTER TABLE settings ADD COLUMN maximum_cost_per_job_micro_usd INTEGER"),
+            ("monthly_budget_enabled", "ALTER TABLE settings ADD COLUMN monthly_budget_enabled BOOLEAN NOT NULL DEFAULT 0"),
+            ("monthly_budget_amount_micro_usd", "ALTER TABLE settings ADD COLUMN monthly_budget_amount_micro_usd INTEGER"),
+            ("allow_manual_budget_override", "ALTER TABLE settings ADD COLUMN allow_manual_budget_override BOOLEAN NOT NULL DEFAULT 0"),
         ):
             if column not in settings_columns:
                 conn.execute(text(ddl))
+
+    # Seed legacy openrouter_model into preferences if pools are empty.
+    from app.services.model_preferences import seed_legacy_model_preference
+
+    session = get_session_factory()()
+    try:
+        seed_legacy_model_preference(session)
+        session.commit()
+    except Exception:  # noqa: BLE001
+        session.rollback()
+        raise
+    finally:
+        session.close()

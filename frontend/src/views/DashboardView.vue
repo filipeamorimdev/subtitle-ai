@@ -146,7 +146,11 @@ const targetLabel = computed(() => {
   return lang.name ? `${lang.name} (${lang.code})` : lang.code
 })
 
-const modelLabel = computed(() => store.settings?.openrouter_model || '—')
+const modelLabel = computed(() => {
+  const model = store.settings?.openrouter_model || '—'
+  const strategy = store.settings?.routing_strategy
+  return strategy ? `${model} (${strategy.replace('_', ' ')})` : model
+})
 
 function cardClass(tone: 'neutral' | 'active' | 'danger', count: number) {
   if (tone === 'danger' && count > 0) {
@@ -412,7 +416,9 @@ onUnmounted(() => {
           <dt class="text-xs uppercase tracking-wide text-ink-500">
             <span aria-hidden="true">🤖</span> Model
           </dt>
-          <dd class="mt-0.5 truncate font-medium" :title="modelLabel">{{ modelLabel }}</dd>
+          <dd class="mt-0.5 truncate font-medium" :title="modelLabel">
+            <RouterLink class="hover:text-accent" to="/ai/models">{{ modelLabel }}</RouterLink>
+          </dd>
         </div>
       </dl>
       <p v-if="!bazarrOk || !openRouterOk" class="mt-3 text-sm text-ink-600 dark:text-ink-300">

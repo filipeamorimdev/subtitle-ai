@@ -5,12 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.ai_cost import estimate_cost_usd as _estimate_cost_usd
+
 
 @dataclass(frozen=True)
 class ModelPricing:
     name: str
-    prompt_price_per_million: float
-    completion_price_per_million: float
+    prompt_price_per_million: float | None
+    completion_price_per_million: float | None
 
 
 def classify_exchange(request: dict[str, Any] | None) -> str:
@@ -64,10 +66,12 @@ def estimate_cost_usd(
 ) -> float | None:
     if pricing is None:
         return None
-    return (
-        input_tokens * pricing.prompt_price_per_million
-        + output_tokens * pricing.completion_price_per_million
-    ) / 1_000_000
+    return _estimate_cost_usd(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        input_price_per_million=pricing.prompt_price_per_million,
+        output_price_per_million=pricing.completion_price_per_million,
+    )
 
 
 def parse_exchanges(

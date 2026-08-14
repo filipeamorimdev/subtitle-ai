@@ -21,7 +21,8 @@ const searchEl = ref<HTMLInputElement | null>(null)
 const listEl = ref<HTMLElement | null>(null)
 const activeIndex = ref(0)
 
-function formatPrice(value: number): string {
+def formatPrice(value: number | null | undefined): string {
+  if (value == null) return 'Unknown'
   if (value <= 0) return 'Free'
   if (value < 0.01) return `$${value.toFixed(4)}`
   if (value < 1) return `$${value.toFixed(3)}`

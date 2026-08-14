@@ -27,7 +27,9 @@ JobService + Worker
         ↓
 SRT parse / markup protect
         ↓
-OpenRouterTranslationService (batched)
+ModelRouter (pools + cost policy)
+        ↓
+OpenRouterTranslationService (batched; technical fallback)
         ↓
 Validation
         ↓
@@ -46,16 +48,24 @@ Bazarr rescan + verify (best effort)
 | `jobs/scanner` | Background loop; no-op when automatic fallback is disabled |
 | `subtitles` | Parse, markup, validate, write SRT |
 | `translation/openrouter` | Client + batch prompt/response parsing |
+| `services/model_router` | Deterministic free/paid pool selection and cost gating |
+| `services/model_catalog` | Cached OpenRouter catalog, pricing tier, compatibility |
+| `services/ai_budget` | Monthly budget + SQLite reservations |
 | `jobs` | Queue rows, locking, worker loop |
 | `services/settings` | Encrypted secrets, public masked settings |
 
 ## Persistence
 
-- `settings` — singleton configuration (including automatic fallback toggles)
+- `settings` — singleton configuration (including automatic fallback toggles, routing strategy, budget)
 - `jobs` — translation / extract / request work (`trigger_type` = manual \| automatic)
 - `observed_candidates` — first-seen / grace-period state for automation
 - `translation_cache` — completed hash/language/model triples
 - `glossary_scopes` / `glossary_terms` — persistent term memory (universe/series/movie)
+- `openrouter_model_preferences` — free/paid model pools and priority
+- `openrouter_catalog_cache` — 6-hour OpenRouter catalog snapshot
+- `ai_usage_records` — per-request tokens, cost snapshots, outcomes
+- `ai_budget_reservations` — in-flight monthly budget holds
+- `ai_routing_events` — recent routing/fallback decisions
 
 Candidates for the UI are still fetched on demand from Bazarr. Observation rows exist only to support automatic fallback.
 
@@ -72,6 +82,7 @@ Off by default. When enabled:
 ## Non-goals (this milestone)
 
 - Multiple AI providers
+- Adaptive **routing** (ranking is display-only)
 - Non-SRT formats
 - Whisper/ASR
 - TTS / dubbing / media muxing

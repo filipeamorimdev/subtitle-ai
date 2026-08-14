@@ -40,6 +40,16 @@ class SettingsUpdate(BaseModel):
     automatic_retry_enabled: bool | None = None
     maximum_automatic_retries: int | None = Field(default=None, ge=0, le=20)
     openrouter_log_full_exchanges: bool | None = None
+    routing_strategy: Literal["free_only", "paid_only", "free_first", "paid_first"] | None = None
+    allow_paid_fallback: bool | None = None
+    allow_free_fallback: bool | None = None
+    allow_unknown_pricing: bool | None = None
+    maximum_cost_per_job_usd: float | None = Field(default=None, ge=0)
+    clear_maximum_cost_per_job: bool = False
+    monthly_budget_enabled: bool | None = None
+    monthly_budget_amount_usd: float | None = Field(default=None, ge=0)
+    clear_monthly_budget_amount: bool = False
+    allow_manual_budget_override: bool | None = None
 
 
 class SettingsOut(BaseModel):
@@ -63,6 +73,14 @@ class SettingsOut(BaseModel):
     automatic_retry_enabled: bool = True
     maximum_automatic_retries: int = 3
     openrouter_log_full_exchanges: bool = False
+    routing_strategy: str = "free_first"
+    allow_paid_fallback: bool = False
+    allow_free_fallback: bool = True
+    allow_unknown_pricing: bool = False
+    maximum_cost_per_job_usd: float | None = None
+    monthly_budget_enabled: bool = False
+    monthly_budget_amount_usd: float | None = None
+    allow_manual_budget_override: bool = False
 
 
 class ConnectionTestResult(BaseModel):
@@ -89,9 +107,17 @@ class ClearGlossariesRequest(BaseModel):
 class OpenRouterModelOut(BaseModel):
     id: str
     name: str
-    prompt_price_per_million: float
-    completion_price_per_million: float
+    prompt_price_per_million: float | None = None
+    completion_price_per_million: float | None = None
     context_length: int | None = None
+    pricing_tier: str | None = None
+    description: str | None = None
+    compatible: bool | None = None
+    compatibility_reason: str | None = None
+    stale: bool | None = None
+    unavailable: bool | None = None
+    input_modalities: list[str] | None = None
+    output_modalities: list[str] | None = None
 
 
 class OpenRouterModelsOut(BaseModel):
@@ -417,3 +443,57 @@ class GlossaryTermReview(BaseModel):
 class GlossaryUniverseOut(BaseModel):
     key: str
     display_name: str
+
+
+class AiRoutingOut(BaseModel):
+    routing_strategy: str
+    allow_paid_fallback: bool
+    allow_free_fallback: bool
+    allow_unknown_pricing: bool
+    maximum_cost_per_job_usd: float | None = None
+    monthly_budget_enabled: bool = False
+    monthly_budget_amount_usd: float | None = None
+    allow_manual_budget_override: bool = False
+
+
+class AiRoutingUpdate(BaseModel):
+    routing_strategy: Literal["free_only", "paid_only", "free_first", "paid_first"] | None = None
+    allow_paid_fallback: bool | None = None
+    allow_free_fallback: bool | None = None
+    allow_unknown_pricing: bool | None = None
+    maximum_cost_per_job_usd: float | None = Field(default=None, ge=0)
+    clear_maximum_cost_per_job: bool = False
+    monthly_budget_enabled: bool | None = None
+    monthly_budget_amount_usd: float | None = Field(default=None, ge=0)
+    clear_monthly_budget_amount: bool = False
+    allow_manual_budget_override: bool | None = None
+
+
+class AiModelPreferenceIn(BaseModel):
+    model_id: str
+    tier: Literal["free", "paid"]
+    enabled: bool = True
+
+
+class AiModelPatch(BaseModel):
+    enabled: bool | None = None
+    tier: Literal["free", "paid"] | None = None
+
+
+class AiModelReorderIn(BaseModel):
+    tier: Literal["free", "paid"]
+    ordered_ids: list[int]
+
+
+class AiModelTestIn(BaseModel):
+    model_id: str
+
+
+class AiBudgetOut(BaseModel):
+    enabled: bool
+    limit: float | None = None
+    used: float = 0
+    remaining: float | None = None
+    reserved: float = 0
+    percent_used: float | None = None
+    allow_manual_override: bool = False

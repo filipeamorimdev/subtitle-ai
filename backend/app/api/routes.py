@@ -114,12 +114,18 @@ async def test_openrouter(db: Session = Depends(get_db)) -> ConnectionTestResult
 
 @router.get("/settings/openrouter/models", response_model=OpenRouterModelsOut)
 async def list_openrouter_models(db: Session = Depends(get_db)) -> OpenRouterModelsOut:
+    from app.services.model_catalog import ModelCatalogService, check_compatibility
+
     service = SettingsService(db)
-    key, _model = service.get_openrouter_credentials()
+    public = service.get_public()
+    catalog = ModelCatalogService(db)
     try:
-        models = await OpenRouterClient.list_models(api_key=key or None)
+        snapshot = await catalog.get_models()
     except OpenRouterError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cached = catalog.get_cached()
+        if cached is None:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        snapshot = cached
     return OpenRouterModelsOut(
         models=[
             OpenRouterModelOut(
@@ -128,8 +134,16 @@ async def list_openrouter_models(db: Session = Depends(get_db)) -> OpenRouterMod
                 prompt_price_per_million=m.prompt_price_per_million,
                 completion_price_per_million=m.completion_price_per_million,
                 context_length=m.context_length,
+                pricing_tier=m.pricing_tier,
+                description=m.description,
+                compatible=check_compatibility(m, batch_size=public.batch_size)[0],
+                compatibility_reason=check_compatibility(m, batch_size=public.batch_size)[1],
+                stale=snapshot.stale,
+                unavailable=False,
+                input_modalities=m.input_modalities,
+                output_modalities=m.output_modalities,
             )
-            for m in models
+            for m in snapshot.models
         ]
     )
 
