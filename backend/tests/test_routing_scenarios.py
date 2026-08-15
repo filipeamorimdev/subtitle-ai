@@ -247,6 +247,7 @@ async def test_scenario_e_per_job_budget(routing_env):
     assert done.status == "failed"
     assert done.reason_code == "blocked_by_cost_policy"
     assert routing_env["calls"] == []
+    assert list(db.scalars(select(AiUsageRecordRow)).all()) == []
     db.close()
 
 
@@ -276,6 +277,12 @@ async def test_scenario_f_monthly_budget(routing_env):
     assert done.status == "failed"
     assert done.reason_code == "blocked_by_cost_policy"
     assert "paid/a" not in routing_env["calls"]
+    new_rows = [
+        r
+        for r in db.scalars(select(AiUsageRecordRow)).all()
+        if r.job_id == done.id
+    ]
+    assert new_rows == []
     db.close()
 
 

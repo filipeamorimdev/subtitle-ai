@@ -18,6 +18,12 @@ logger = get_logger("ai_budget")
 # Process-wide lock so concurrent worker/API sessions serialize check+insert+commit.
 # Combined with committing inside the lock this enforces:
 # sum(active reservations) <= remaining budget.
+#
+# This is NOT a distributed lock. It is safe for concurrent workers and API
+# activity inside a single Python process — the supported deployment model
+# (one Subtitle AI application process, one SQLite database, Docker).
+# Running multiple independent application processes against the same SQLite
+# database is not a supported concurrency model for budget reservations.
 _BUDGET_LOCK = threading.Lock()
 
 
@@ -145,8 +151,8 @@ class AiBudgetService:
         or manual override). Raises BudgetBlockedError when blocked.
 
         Commits the reservation before returning so callers cannot await between
-        insert and commit. Serialized with a process-wide lock appropriate for the
-        single-service SQLite deployment.
+        insert and commit. Serialized with a process-wide lock for the supported
+        single-process SQLite deployment (not a distributed lock).
         """
         if tier != "paid" or amount_micro_usd <= 0:
             return None

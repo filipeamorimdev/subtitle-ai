@@ -112,21 +112,6 @@ const showDoneSection = computed(
   () => !categoryFilter.value && doneCandidates.value.length > 0,
 )
 
-const requestableCount = computed(
-  () => filteredOpenCandidates.value.filter((item) => canRequestSource(item) && !item.active_request_job_id).length,
-)
-
-const extractableCount = computed(
-  () => filteredOpenCandidates.value.filter((item) => item.can_extract && !item.active_extract_job_id).length,
-)
-
-const translatableCount = computed(
-  () =>
-    filteredOpenCandidates.value.filter(
-      (item) => item.can_translate && !item.active_translate_job_id,
-    ).length,
-)
-
 const selectedCandidates = computed(() =>
   filteredOpenCandidates.value.filter((item) => selectedKeys.value.has(item.key)),
 )

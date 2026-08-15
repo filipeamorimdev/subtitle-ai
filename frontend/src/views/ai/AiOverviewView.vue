@@ -228,12 +228,12 @@ onMounted(load)
                   fill="none"
                   stroke="currentColor"
                   stroke-width="2"
-                  :points="costs.series.map((p, i) => `${(i / Math.max(1, costs.series.length - 1)) * 400},${120 - (p.cost_usd / maxCost) * 100}`).join(' ')"
+                  :points="(costs?.series || []).map((p, i) => `${(i / Math.max(1, (costs?.series.length || 1) - 1)) * 400},${120 - (p.cost_usd / maxCost) * 100}`).join(' ')"
                 />
                 <circle
-                  v-for="(p, i) in costs.series"
+                  v-for="(p, i) in (costs?.series || [])"
                   :key="p.date"
-                  :cx="(i / Math.max(1, costs.series.length - 1)) * 400"
+                  :cx="(i / Math.max(1, (costs?.series.length || 1) - 1)) * 400"
                   :cy="120 - (p.cost_usd / maxCost) * 100"
                   r="4"
                   class="fill-accent cursor-pointer"

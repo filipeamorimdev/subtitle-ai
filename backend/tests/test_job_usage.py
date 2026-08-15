@@ -159,3 +159,40 @@ def test_estimate_and_parse_exchanges():
     assert agg["pricing_source"] == "mixed"
     assert len(agg["by_model"]) == 1
     assert {a["action"] for a in agg["by_action"]} == {"translate", "glossary_extract"}
+
+
+def test_legacy_parse_without_live_catalog_does_not_reprice():
+    entries = [
+        {
+            "event": "exchange",
+            "request": {
+                "model": "openai/gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a professional audiovisual subtitle translator.",
+                    }
+                ],
+            },
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "model": "openai/gpt-4o-mini",
+                    "usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 500,
+                        "total_tokens": 1500,
+                    },
+                },
+            },
+            "error": None,
+        }
+    ]
+    rows = parse_exchanges(
+        entries,
+        fallback_model="openai/gpt-4o-mini",
+        pricing_by_model={},
+    )
+    assert len(rows) == 1
+    assert rows[0]["cost_usd"] is None
+    assert rows[0]["cost_estimated"] is False

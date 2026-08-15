@@ -74,3 +74,24 @@ def test_conservative_unknown_pricing():
     )
     assert cons.estimated_cost_micro_usd is None
     assert cons.conservative_cost_micro_usd is None
+
+
+def test_conservative_includes_overhead_and_multiplier():
+    cons = estimate_conservative_job_cost_micro(
+        char_count=400,  # 100 subtitle tokens
+        input_price_per_million=1.0,
+        output_price_per_million=2.0,
+    )
+    assert cons.subtitle_tokens == 100
+    assert cons.input_tokens == 100 + 2000 + 1500
+    assert cons.output_tokens == 115
+    assert cons.estimated_cost_micro_usd is not None
+    assert cons.conservative_cost_micro_usd is not None
+    from decimal import Decimal, ROUND_HALF_UP
+
+    expected = int(
+        (Decimal(cons.estimated_cost_micro_usd) * Decimal("1.25")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+    assert cons.conservative_cost_micro_usd == expected

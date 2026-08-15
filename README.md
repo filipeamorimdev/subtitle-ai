@@ -12,7 +12,7 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 
 1. Configure Bazarr, languages, batch size, automation, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
 2. Optionally enable **Automatic Subtitle Fallback** under Settings (off by default). When enabled, Subtitle AI periodically scans Bazarr wanted items, waits a configurable grace period, then automatically request/extract/translate missing target subtitles. This can incur OpenRouter API costs.
-3. Open **AI → Models & Routing** to set the OpenRouter API key, free/paid pools, routing strategy, per-job cost caps, and a monthly budget. Paid fallback stays off unless you enable it.
+3. Open **AI → Models & Routing** to set the OpenRouter API key, free/paid pools, routing strategy, per-job cost caps, a monthly budget, and OpenRouter diagnostic exchange logging. Paid fallback stays off unless you enable it.
 4. Open **Dashboard** for current activity (automation, jobs, candidate health, compact AI summary), or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
 5. For each item, use the action that matches its state (manual workflow still works even when automatic fallback is enabled):
    - **Request EN** (or your source language) — ask Bazarr to search for a source SRT; if none is found and an embedded text track exists, Subtitle AI falls back to ffmpeg extract.
@@ -33,15 +33,17 @@ When automatic fallback is **off**, nothing is scheduled — only clicks create 
 | **Jobs** | Job history for `translate`, `extract`, and `request`; status filters |
 | **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
 | **Usage stats** | Per-job token/cost breakdown (from `ai_usage_records` snapshots) |
-| **AI** | Control center: Overview (status, budget, ranking), Models & Routing, Usage analytics |
+| **AI** | Control Center: Overview (status, budget, ranking), Models & Routing (complete AI configuration), Usage analytics |
 | **Glossary** | Universe / series / movie term scopes; lock terms; review suggested terms |
-| **Settings** | Bazarr, languages, batch size, automatic fallback, path mappings, diagnostics |
+| **Settings** | Bazarr, languages, batch size, automatic fallback, media/path mappings, job concurrency, advanced cleanup |
 
 Semantic split:
 
 - **Dashboard** → what is happening?
 - **AI** → how is AI behaving and how do I control it?
 - **Settings** → how is Subtitle AI configured?
+
+Generic Settings does **not** contain OpenRouter keys, model pools, routing, cost/budget controls, or AI exchange logging. Those live only under **AI → Models & Routing**.
 
 ## Architecture
 
@@ -153,9 +155,9 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 
 ### OpenRouter
 
-- API key (stored encrypted; UI shows a masked value after save)
-- Models, routing, and cost controls under **AI → Models** (free/paid pools; `openrouter_model` is kept as a compatibility field)
-- Use **Test Connection** on Settings or per-model Test on the AI page
+- API key (stored encrypted; UI shows a masked value after save) — configure under **AI → Models & Routing**
+- Models, routing, cost/budget controls, and diagnostic exchange logging also live there (`openrouter_model` is kept as a compatibility field)
+- Use per-model **Test** on the AI page
 
 ### Translation
 
@@ -194,8 +196,24 @@ npm run dev
 ```
 
 ```bash
-cd backend && pytest
+# Full backend test suite
+cd backend && pytest -q
+
+# Frontend production build (Vue + TypeScript)
+cd frontend && npx vue-tsc --noEmit && npm run build
 ```
+
+## Upgrade / migration
+
+Docker startup runs `init_db()`:
+
+1. Creates any missing tables (`openrouter_model_preferences`, `ai_usage_records`, …).
+2. Adds missing settings/jobs columns with safe defaults.
+3. Seeds the legacy `openrouter_model` into a model preference if pools are empty (`:free` → `free_only`, otherwise `paid_only`). Paid fallback is never enabled by migration.
+
+Existing jobs, settings, glossaries, and automatic-fallback state are preserved. Historical costs are not rewritten against the current OpenRouter catalogue.
+
+Keep `/config` mounted across image upgrades. Recreate the container on the new image; do not copy the SQLite file between multiple running app processes.
 
 ## Security notes
 

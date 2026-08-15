@@ -50,7 +50,9 @@ Bazarr rescan + verify (best effort)
 | `translation/openrouter` | Client + batch prompt/response parsing |
 | `services/model_router` | Deterministic free/paid pool selection and cost gating |
 | `services/model_catalog` | Cached OpenRouter catalog, pricing tier, compatibility |
-| `services/ai_budget` | Monthly budget + SQLite reservations |
+| `services/ai_budget` | Monthly budget + process-wide SQLite reservations |
+| `services/ai_usage` | Authoritative per-request cost/usage snapshots |
+| `services/ai_ranking` | Display-only adaptive ranking (never used for routing) |
 | `jobs` | Queue rows, locking, worker loop |
 | `services/settings` | Encrypted secrets, public masked settings |
 
@@ -63,11 +65,37 @@ Bazarr rescan + verify (best effort)
 - `glossary_scopes` / `glossary_terms` — persistent term memory (universe/series/movie)
 - `openrouter_model_preferences` — free/paid model pools and priority
 - `openrouter_catalog_cache` — 6-hour OpenRouter catalog snapshot
-- `ai_usage_records` — per-request tokens, cost snapshots, outcomes
+- `ai_usage_records` — **authoritative** per-request tokens, request-time pricing snapshots, outcomes
 - `ai_budget_reservations` — in-flight monthly budget holds
 - `ai_routing_events` — recent routing/fallback decisions
 
 Candidates for the UI are still fetched on demand from Bazarr. Observation rows exist only to support automatic fallback.
+
+Job OpenRouter JSONL logs remain debug detail. They are not a competing historical accounting system and are never used to reprice history from the live catalogue.
+
+## Deployment model
+
+The supported deployment is:
+
+```text
+one Subtitle AI application process
+        ↓
+one SQLite database under /config
+        ↓
+Docker (single container)
+```
+
+Budget reservations use a **process-wide lock** around check / insert / commit. That is concurrency-safe for concurrent workers and API activity **inside the same Python process**. It is not a distributed lock. Running multiple independent application processes against the same SQLite database is **not** a supported concurrency model for budget reservations.
+
+## AI Control Center vs Settings
+
+| Surface | Answers |
+| --- | --- |
+| Dashboard | What is Subtitle AI doing right now? |
+| AI (Overview / Models & Routing / Usage) | How is AI behaving, and how do I control it? |
+| Settings | How is Subtitle AI configured? (Bazarr, languages, automation, media paths, concurrency) |
+
+All OpenRouter/AI configuration lives under **AI → Models & Routing**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
 
 ## Automatic fallback
 
@@ -78,6 +106,10 @@ Off by default. When enabled:
 3. After `bazarr_grace_period_minutes`, the planner enqueues at most one next job (translate, extract, or request).
 4. Automatic extract/request success chains into translate while the toggle remains on.
 5. Manual jobs are claimed before automatic jobs of the same kind.
+
+## Upgrade from v0.1
+
+On startup `init_db()` adds missing tables/columns and seeds `openrouter_model` into `openrouter_model_preferences` when pools are empty. Existing jobs and settings are preserved. Paid fallback stays off. Historical records are not rewritten.
 
 ## Non-goals (this milestone)
 

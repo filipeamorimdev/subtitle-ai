@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Subtitle AI", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Subtitle AI", version="0.2.1", lifespan=lifespan)
     app.include_router(router)
     app.include_router(ai_router)
 

@@ -73,7 +73,10 @@ def test_concurrent_reservations_sequential_release(tmp_path):
 
 
 def test_concurrent_reservations_two_sessions(tmp_path):
-    """Two threads / two sessions cannot both consume the same remaining budget."""
+    """Two threads / two sessions cannot both consume the same remaining budget.
+
+    Uses a Barrier so both reserve() calls start together — this is not sequential.
+    """
     engine, Session = _budget_engine(tmp_path, used=0, limit=50_000, name="race.db")
     barrier = threading.Barrier(2)
     results: list[object] = []

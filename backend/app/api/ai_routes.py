@@ -43,6 +43,7 @@ def _routing_out(db: Session) -> AiRoutingOut:
         monthly_budget_enabled=public.monthly_budget_enabled,
         monthly_budget_amount_usd=public.monthly_budget_amount_usd,
         allow_manual_budget_override=public.allow_manual_budget_override,
+        openrouter_log_full_exchanges=public.openrouter_log_full_exchanges,
     )
 
 
@@ -345,6 +346,7 @@ def put_routing(payload: AiRoutingUpdate, db: Session = Depends(get_db)) -> AiRo
             allow_manual_budget_override=payload.allow_manual_budget_override,
             openrouter_api_key=payload.openrouter_api_key,
             clear_openrouter_api_key=payload.clear_openrouter_api_key,
+            openrouter_log_full_exchanges=payload.openrouter_log_full_exchanges,
         )
     )
     return _routing_out(db)

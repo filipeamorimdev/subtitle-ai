@@ -99,6 +99,7 @@ onMounted(load)
       <select v-model="filters.operation" class="rounded-md border border-ink-300 bg-transparent px-2 py-1 text-sm dark:border-ink-600" @change="load">
         <option value="">Operation</option>
         <option value="translation">translation</option>
+        <option value="translation_retry">translation_retry</option>
         <option value="translation_repair">translation_repair</option>
         <option value="glossary_extract">glossary_extract</option>
         <option value="glossary_universe">glossary_universe</option>
@@ -139,12 +140,10 @@ onMounted(load)
           <div class="font-display text-xl font-bold">{{ formatPct(totals?.success_rate) }}</div>
         </article>
         <article class="rounded-xl border border-ink-200 bg-white/80 px-4 py-3 dark:border-ink-800 dark:bg-ink-900/60">
-          <div class="text-xs uppercase text-ink-500">Clean success</div>
-          <div class="font-display text-xl font-bold">{{ formatPct(totals?.clean_success_rate) }}</div>
-        </article>
-        <article class="rounded-xl border border-ink-200 bg-white/80 px-4 py-3 dark:border-ink-800 dark:bg-ink-900/60">
-          <div class="text-xs uppercase text-ink-500">Repair rate</div>
-          <div class="font-display text-xl font-bold">{{ formatPct(totals?.repair_rate) }}</div>
+          <div class="text-xs uppercase text-ink-500">Avg latency</div>
+          <div class="font-display text-xl font-bold">
+            {{ totals?.average_latency_ms != null ? `${(totals.average_latency_ms / 1000).toFixed(1)}s` : '—' }}
+          </div>
         </article>
       </div>
 
@@ -175,7 +174,7 @@ onMounted(load)
               fill="none"
               stroke="currentColor"
               stroke-width="2"
-              :points="costs.series.map((p, i) => `${(i / Math.max(1, costs.series.length - 1)) * 400},${100 - (p.cost_usd / maxCost) * 90}`).join(' ')"
+              :points="(costs?.series || []).map((p, i) => `${(i / Math.max(1, (costs?.series.length || 1) - 1)) * 400},${100 - (p.cost_usd / maxCost) * 90}`).join(' ')"
             />
           </svg>
           <p v-else class="mt-3 text-sm text-ink-500">No cost series.</p>

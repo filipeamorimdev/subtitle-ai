@@ -136,11 +136,15 @@ def test_confidence_buckets(tmp_path):
 def test_model_test_and_glossary_excluded(tmp_path):
     db = _db(tmp_path)
     _add(db, model_id="prod/a", operation_type="translation", n=20)
+    _add(db, model_id="retry/a", operation_type="translation_retry", n=20)
+    _add(db, model_id="repair/a", operation_type="translation_repair", n=20)
     _add(db, model_id="test/b", operation_type="model_test", n=50)
     _add(db, model_id="gloss/c", operation_type="glossary_extract", n=50)
     _add(db, model_id="univ/d", operation_type="glossary_universe", n=50)
     ranks = {r.model_id: r for r in AiRankingService(db).rank_models()}
     assert "prod/a" in ranks
+    assert "retry/a" in ranks
+    assert "repair/a" in ranks
     assert "test/b" not in ranks
     assert "gloss/c" not in ranks
     assert "univ/d" not in ranks

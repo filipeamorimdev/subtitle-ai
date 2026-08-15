@@ -209,6 +209,7 @@ export const api = {
     clear_monthly_budget_amount?: boolean
     openrouter_api_key?: string
     clear_openrouter_api_key?: boolean
+    openrouter_log_full_exchanges?: boolean
   }) =>
     request<AiRouting>('/api/ai/routing', { method: 'PUT', body: JSON.stringify(payload) }),
   getAiBudget: () => request<AiOverview['budget']>('/api/ai/budget'),

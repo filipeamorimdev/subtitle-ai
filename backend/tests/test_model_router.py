@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.db.models import OpenRouterCatalogCacheRow, OpenRouterModelPreferenceRow, SettingsRow
+from app.services.ai_cost import estimate_request_cost_micro
 from app.services.model_router import ModelRouter, RoutingPolicy
 from app.translation.openrouter.client import OpenRouterModelInfo
 
@@ -118,6 +119,36 @@ def test_per_job_budget_skips_expensive(tmp_path):
     # paid/a = $3, paid/b = $15; cap is $0.001 so both skipped
     assert result.blocked_reason == "blocked_by_cost_policy"
     assert ids(result) == []
+
+
+def test_per_job_cap_uses_conservative_char_count(tmp_path):
+    """Naive subtitle tokens would fit; conservative overhead must still block."""
+    db = setup_db(tmp_path, [("paid/a", "paid", True)], strategy="paid_only", cap=1000)
+    result = ModelRouter(db).select_models(
+        policy=RoutingPolicy(strategy="paid_only", maximum_cost_per_job_micro_usd=1000),
+        char_count=400,
+    )
+    assert result.blocked_reason == "blocked_by_cost_policy"
+    assert ids(result) == []
+
+
+def test_conservative_estimate_attached_to_candidate(tmp_path):
+    db = setup_db(tmp_path, [("paid/a", "paid", True)], strategy="paid_only", cap=1_000_000)
+    result = ModelRouter(db).select_models(
+        policy=RoutingPolicy(strategy="paid_only", maximum_cost_per_job_micro_usd=1_000_000),
+        char_count=400,
+    )
+    assert ids(result) == ["paid/a"]
+    est = result.candidates[0].estimated_cost_micro_usd
+    assert est is not None
+    naive = estimate_request_cost_micro(
+        estimated_input_tokens=100,
+        estimated_output_tokens=100,
+        input_price_per_million=1.0,
+        output_price_per_million=2.0,
+    )
+    assert naive is not None
+    assert est > naive
 
 
 def test_catalog_miss_keeps_configured_paid_model(tmp_path):

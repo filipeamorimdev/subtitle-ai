@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
-import type { AutomationStatus } from '../types'
+import type { AutomationStatus, PathMapping } from '../types'
 import { formatDateTime } from '../utils/datetime'
 
 const LANGUAGES = [
@@ -29,7 +29,6 @@ const form = reactive({
   bazarr_url: '',
   bazarr_api_key: '',
   clear_bazarr_api_key: false,
-  openrouter_log_full_exchanges: false,
   target_language_code: 'pt-PT',
   target_language_name: 'Portuguese (Portugal)',
   source_language_code: 'en',
@@ -42,7 +41,24 @@ const form = reactive({
   bazarr_grace_period_minutes: 10,
   automatic_retry_enabled: true,
   maximum_automatic_retries: 3,
+  path_mappings: '' as string,
 })
+
+function mappingsToText(mappings: PathMapping[]) {
+  return mappings.map((m) => `${m.bazarr_prefix} => ${m.local_prefix}`).join('\n')
+}
+
+function textToMappings(text: string): PathMapping[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [bazarr_prefix, local_prefix] = line.split('=>').map((part) => part.trim())
+      return { bazarr_prefix, local_prefix }
+    })
+    .filter((m) => m.bazarr_prefix && m.local_prefix)
+}
 
 async function loadAutomationStatus() {
   try {
@@ -57,7 +73,6 @@ onMounted(async () => {
   const s = store.settings
   if (!s) return
   form.bazarr_url = s.bazarr_url || ''
-  form.openrouter_log_full_exchanges = s.openrouter_log_full_exchanges ?? false
   form.target_language_code = s.target_language.code
   form.target_language_name = s.target_language.name
   form.source_language_code = s.source_languages?.[0] || 'en'
@@ -70,6 +85,7 @@ onMounted(async () => {
   form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
   form.automatic_retry_enabled = s.automatic_retry_enabled ?? true
   form.maximum_automatic_retries = s.maximum_automatic_retries ?? 3
+  form.path_mappings = mappingsToText(s.path_mappings || [])
   await loadAutomationStatus()
 })
 
@@ -93,7 +109,6 @@ async function save() {
       bazarr_url: form.bazarr_url,
       bazarr_api_key: form.bazarr_api_key || undefined,
       clear_bazarr_api_key: form.clear_bazarr_api_key,
-      openrouter_log_full_exchanges: form.openrouter_log_full_exchanges,
       target_language_code: form.target_language_code,
       target_language_name: form.target_language_name,
       source_languages: [form.source_language_code || 'en'],
@@ -106,6 +121,7 @@ async function save() {
       bazarr_grace_period_minutes: Number(form.bazarr_grace_period_minutes) || 0,
       automatic_retry_enabled: form.automatic_retry_enabled,
       maximum_automatic_retries: Number(form.maximum_automatic_retries) || 0,
+      path_mappings: textToMappings(form.path_mappings),
     })
     form.bazarr_api_key = ''
     form.clear_bazarr_api_key = false
@@ -198,6 +214,10 @@ function clearUsageStats() {
   <section class="space-y-8">
     <div>
       <h1 class="font-display text-2xl font-bold sm:text-3xl">Settings</h1>
+      <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+        How Subtitle AI is configured. AI keys, models, routing, and budgets live under
+        <RouterLink class="font-semibold text-accent hover:underline" to="/ai/models">AI → Models &amp; Routing</RouterLink>.
+      </p>
     </div>
 
     <p v-if="message" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
@@ -231,23 +251,6 @@ function clearUsageStats() {
           </button>
           <span v-if="bazarrTest" class="min-w-0 break-words text-sm text-ink-600 dark:text-ink-300">{{ bazarrTest }}</span>
         </div>
-      </fieldset>
-
-      <fieldset class="min-w-0 space-y-4 overflow-visible rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <legend class="px-1 font-display text-lg font-semibold">AI configuration</legend>
-        <p class="text-sm text-ink-600 dark:text-ink-300">
-          OpenRouter API key, model pools, routing strategy, and cost/budget controls live under
-          <RouterLink class="font-semibold text-accent hover:underline" to="/ai/models">AI → Models &amp; Routing</RouterLink>.
-        </p>
-        <label class="flex items-start gap-2 text-sm">
-          <input v-model="form.openrouter_log_full_exchanges" type="checkbox" class="mt-1" />
-          <span>
-            <span class="font-medium">Log full OpenRouter exchanges</span>
-            <span class="mt-1 block text-xs text-ink-500">
-              Off by default. When enabled, job logs include full request/response subtitle content for debugging.
-            </span>
-          </span>
-        </label>
       </fieldset>
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
@@ -390,15 +393,36 @@ function clearUsageStats() {
         <span class="block text-xs text-ink-500">Each limit accepts 1–20. Changes apply on the next worker poll.</span>
       </fieldset>
 
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <legend class="px-1 font-display text-lg font-semibold">Media</legend>
+        <div class="text-sm">
+          <span class="text-ink-500">Container media roots</span>
+          <p class="mt-1 font-mono text-xs text-ink-700 dark:text-ink-300">
+            {{ (store.settings?.media_roots || []).join(', ') || '—' }}
+          </p>
+          <span class="mt-1 block text-xs text-ink-500">
+            Auto-discovered from Docker volume mounts under <code class="font-mono">/data</code> and <code class="font-mono">/media</code>. Not editable here.
+          </span>
+        </div>
+        <label class="block text-sm">
+          <span class="text-ink-500">Path mappings (one per line: Bazarr path => local path)</span>
+          <textarea v-model="form.path_mappings" rows="4" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 font-mono text-xs dark:border-ink-600" placeholder="/movies => /data/movies" />
+          <span class="mt-1 block text-xs text-ink-500">
+            Bazarr and Subtitle AI must see compatible media paths. Map prefixes when they differ.
+          </span>
+        </label>
+      </fieldset>
+
       <button class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60" type="submit" :disabled="saving">
         {{ saving ? 'Saving…' : 'Save settings' }}
       </button>
     </form>
 
     <fieldset class="min-w-0 space-y-5 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-      <legend class="px-1 font-display text-lg font-semibold">Clear data</legend>
+      <legend class="px-1 font-display text-lg font-semibold">Advanced</legend>
       <p class="text-sm text-ink-500">
-        Permanently delete stored history and stats. These actions cannot be undone.
+        Application diagnostics and irreversible data cleanup. OpenRouter exchange logging is configured under
+        <RouterLink class="font-semibold text-accent hover:underline" to="/ai/models">AI → Models &amp; Routing</RouterLink>.
       </p>
 
       <div class="space-y-3">

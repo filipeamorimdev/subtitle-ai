@@ -23,6 +23,7 @@ const routing = reactive({
   monthly_budget_enabled: false,
   monthly_budget_amount_usd: 5 as number | null,
   allow_manual_budget_override: false,
+  openrouter_log_full_exchanges: false,
 })
 
 function formatPrice(value: number | null | undefined): string {
@@ -249,6 +250,17 @@ onMounted(load)
             Allow manual jobs to bypass budget
           </label>
         </div>
+        <h3 class="mt-5 font-display font-semibold">Diagnostics</h3>
+        <label class="mt-3 flex items-start gap-2 text-sm">
+          <input v-model="routing.openrouter_log_full_exchanges" type="checkbox" class="mt-1" />
+          <span>
+            <span class="font-medium">Log full OpenRouter exchanges</span>
+            <span class="mt-1 block text-xs text-ink-500">
+              Off by default. When enabled, job logs may contain full subtitle prompts and responses.
+              Only enable this when actively debugging. API keys and secrets are never written.
+            </span>
+          </span>
+        </label>
       </section>
 
       <div class="grid gap-4 lg:grid-cols-2">

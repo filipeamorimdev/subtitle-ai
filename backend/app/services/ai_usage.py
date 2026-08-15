@@ -73,7 +73,15 @@ class AiUsageService:
             actual_cost_usd=actual_cost_usd,
         )
         actual_micro = usd_to_micro(actual_cost_usd) if actual_cost_usd is not None else None
-        estimated = breakdown.total_cost_micro_usd if breakdown.pricing_source != "none" else None
+        # Token-based estimate from the request-time snapshot — never overwrite
+        # this with billed actual, and never treat estimate as billed cost.
+        if (
+            breakdown.input_price_micro_usd_per_million is not None
+            and breakdown.output_price_micro_usd_per_million is not None
+        ):
+            estimated = breakdown.input_cost_micro_usd + breakdown.output_cost_micro_usd
+        else:
+            estimated = None
         if actual_micro is None and breakdown.pricing_source == "openrouter":
             actual_micro = breakdown.total_cost_micro_usd
 

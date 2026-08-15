@@ -18,6 +18,8 @@ cd backend
 pytest -q
 ```
 
+Run the full suite (not only AI tests) before a release. Do not remove or weaken tests to make the suite green.
+
 ## Frontend
 
 ```bash
@@ -28,7 +30,15 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:6768`.
 
-Production build is copied into the Docker image and served by FastAPI.
+Production build (TypeScript check + Vue compile):
+
+```bash
+cd frontend
+npx vue-tsc --noEmit
+npm run build
+```
+
+The Docker image runs `npm run build` and FastAPI serves `frontend/dist`.
 
 ## Docker
 
@@ -36,6 +46,18 @@ Production build is copied into the Docker image and served by FastAPI.
 docker compose build
 docker compose up
 ```
+
+### Upgrade an existing install
+
+1. Stop the container (keep the `/config` volume).
+2. Pull/build the new image.
+3. Start the same compose stack with the same `/config` mount.
+4. On startup the app runs `init_db()`: missing tables/columns are added, and a lone legacy `openrouter_model` is seeded into the model pool without enabling paid fallback.
+5. Open Dashboard, then **AI → Overview** and **AI → Models & Routing**, and confirm the previous model is still selected.
+
+Do not run multiple Subtitle AI containers against the same SQLite file.
+
+Alembic revisions exist under `backend/alembic/versions` for schema history. Docker deployments rely on `init_db()` rather than `alembic upgrade` at runtime.
 
 ## Project layout
 

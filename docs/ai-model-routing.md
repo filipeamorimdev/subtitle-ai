@@ -2,7 +2,7 @@
 
 Subtitle AI v0.2.1 routes translation jobs across **configured OpenRouter models** using explicit pools and cost policy. Adaptive ranking on the AI Overview page is **display-only** and never used for routing.
 
-Configure this under **AI → Models & Routing** (OpenRouter API key, pools, strategy, and budgets). Settings keeps only non-AI application options (Bazarr, languages, automation, diagnostics). `openrouter_model` remains a compatibility field (first enabled preference).
+Configure this under **AI → Models & Routing** (OpenRouter API key, pools, strategy, budgets, and diagnostic exchange logging). Generic Settings contains only application options (Bazarr, languages, automation, media paths, concurrency). `openrouter_model` remains a compatibility field (first enabled preference).
 
 ## Pools and priority
 
@@ -61,10 +61,11 @@ Actual billed cost is still recorded after each request from OpenRouter usage / 
 Money is stored as integer **micro-USD**.
 
 - **Per-job cap** skips paid models whose **conservative** estimate exceeds `maximum_cost_per_job`
-- **Monthly budget** reservations are serialized with a process-wide lock and committed before the AI call, so concurrent jobs cannot overspend remaining budget
+- **Monthly budget** reservations are serialized with a **process-wide lock** and committed before the AI call, so concurrent jobs in the same process cannot overspend remaining budget
+- The lock is **not** a distributed lock. The supported deployment is a single application process and a single SQLite database (Docker). Multiple independent processes sharing one SQLite file is not a supported concurrency model for budget reservations
 - Free models skip reservation
 - Manual jobs may bypass the monthly cap only when `allow_manual_budget_override` is on; automatic jobs never bypass
-- Blocked jobs use reason `blocked_by_cost_policy` and are **not** retried by automatic fallback
+- Blocked jobs use reason `blocked_by_cost_policy`, create **no** AI request, and are **not** retried by automatic fallback
 
 ## Adaptive ranking (display-only)
 
@@ -89,6 +90,8 @@ Model tests still count toward budget and usage analytics but never influence ad
 ## Authoritative usage
 
 `ai_usage_records` is the historical AI cost source (dashboard, usage page, job stats). Rows store the pricing snapshot from the request. Job exchange logs remain for debug detail and are not used to reprice history from a live catalog.
+
+Full request/response bodies remain opt-in under **AI → Models & Routing → Diagnostics** (`openrouter_log_full_exchanges`, default off).
 
 ## Privacy
 

@@ -14,7 +14,7 @@ const tabs = [
     <div>
       <h1 class="font-display text-2xl font-bold sm:text-3xl">AI</h1>
       <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-        Models, routing, cost, and usage for OpenRouter translation.
+        AI Control Center — how AI is behaving and how you control it.
       </p>
     </div>
     <nav class="flex flex-wrap gap-1 border-b border-ink-200 dark:border-ink-800">

@@ -383,6 +383,7 @@ export interface AiRouting {
   monthly_budget_enabled: boolean
   monthly_budget_amount_usd: number | null
   allow_manual_budget_override: boolean
+  openrouter_log_full_exchanges: boolean
 }
 
 export interface AiPreference {

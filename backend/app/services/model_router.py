@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.db.models import AiRoutingEventRow, JobRow, OpenRouterModelPreferenceRow, SettingsRow
 from app.services.ai_budget import AiBudgetService
-from app.services.ai_cost import estimate_conservative_job_cost_micro, estimate_request_cost_micro
+from app.services.ai_cost import (
+    CONSERVATIVE_COST_MULTIPLIER,
+    estimate_conservative_job_cost_micro,
+    estimate_request_cost_micro,
+)
 from app.services.model_catalog import ModelCatalogService
 from app.services.model_preferences import list_preferences
 
@@ -205,7 +209,7 @@ class ModelRouter:
                 )
                 est = cons.conservative_cost_micro_usd
             elif estimated_input_tokens or estimated_output_tokens:
-                # Apply the same 1.25 safety multiplier when callers pass raw tokens.
+                # Same conservative 1.25 multiplier as estimate_conservative_job_cost_micro.
                 raw = estimate_request_cost_micro(
                     estimated_input_tokens=max(estimated_input_tokens, 1),
                     estimated_output_tokens=max(estimated_output_tokens, 1),
@@ -216,7 +220,7 @@ class ModelRouter:
                     from decimal import Decimal, ROUND_HALF_UP
 
                     est = int(
-                        (Decimal(raw) * Decimal("1.25")).quantize(
+                        (Decimal(raw) * CONSERVATIVE_COST_MULTIPLIER).quantize(
                             Decimal("1"), rounding=ROUND_HALF_UP
                         )
                     )

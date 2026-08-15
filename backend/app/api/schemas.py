@@ -454,6 +454,7 @@ class AiRoutingOut(BaseModel):
     monthly_budget_enabled: bool = False
     monthly_budget_amount_usd: float | None = None
     allow_manual_budget_override: bool = False
+    openrouter_log_full_exchanges: bool = False
 
 
 class AiRoutingUpdate(BaseModel):
@@ -469,6 +470,7 @@ class AiRoutingUpdate(BaseModel):
     allow_manual_budget_override: bool | None = None
     openrouter_api_key: str | None = None
     clear_openrouter_api_key: bool = False
+    openrouter_log_full_exchanges: bool | None = None
 
 
 class AiModelPreferenceIn(BaseModel):
