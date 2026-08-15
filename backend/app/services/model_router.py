@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.db.models import AiRoutingEventRow, JobRow, OpenRouterModelPreferenceRow, SettingsRow
 from app.services.ai_budget import AiBudgetService
-from app.services.ai_cost import estimate_request_cost_micro
+from app.services.ai_cost import estimate_conservative_job_cost_micro, estimate_request_cost_micro
 from app.services.model_catalog import ModelCatalogService
 from app.services.model_preferences import list_preferences
 
@@ -136,6 +136,7 @@ class ModelRouter:
         estimated_input_tokens: int = 0,
         estimated_output_tokens: int = 0,
         trigger_type: str = "manual",
+        char_count: int | None = None,
     ) -> RoutingResult:
         settings = self.db.get(SettingsRow, 1)
         if settings is None:
@@ -196,13 +197,29 @@ class ModelRouter:
             in_price = info.prompt_price_per_million if info else None
             out_price = info.completion_price_per_million if info else None
             est = None
-            if estimated_input_tokens or estimated_output_tokens:
-                est = estimate_request_cost_micro(
+            if char_count is not None:
+                cons = estimate_conservative_job_cost_micro(
+                    char_count=char_count,
+                    input_price_per_million=in_price,
+                    output_price_per_million=out_price,
+                )
+                est = cons.conservative_cost_micro_usd
+            elif estimated_input_tokens or estimated_output_tokens:
+                # Apply the same 1.25 safety multiplier when callers pass raw tokens.
+                raw = estimate_request_cost_micro(
                     estimated_input_tokens=max(estimated_input_tokens, 1),
                     estimated_output_tokens=max(estimated_output_tokens, 1),
                     input_price_per_million=in_price,
                     output_price_per_million=out_price,
                 )
+                if raw is not None:
+                    from decimal import Decimal, ROUND_HALF_UP
+
+                    est = int(
+                        (Decimal(raw) * Decimal("1.25")).quantize(
+                            Decimal("1"), rounding=ROUND_HALF_UP
+                        )
+                    )
 
             # Per-job cap: skip paid models that cannot fit.
             if effective_tier == "paid" and est is not None:

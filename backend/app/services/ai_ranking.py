@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session
 from app.db.models import AiUsageRecordRow
 from app.services.ai_cost import effective_cost_micro, micro_to_usd
 
+# Only translation-related production operations influence adaptive rank.
+TRANSLATION_RANKING_OPS = frozenset(
+    {"translation", "translation_retry", "translation_repair"}
+)
+
 
 @dataclass
 class ModelRank:
@@ -34,6 +39,7 @@ class ModelRank:
     adaptive_rank: int | None
     confidence: str  # insufficient | low | medium | high
     sample_count: int
+    configured_priority: int | None = None
 
 
 def _confidence(n: int) -> str:
@@ -57,6 +63,10 @@ def _norm_invert(values: dict[str, float]) -> dict[str, float]:
     return {k: 100.0 * (1.0 - (v - lo) / (hi - lo)) for k, v in values.items()}
 
 
+def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    return max(lo, min(hi, value))
+
+
 class AiRankingService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -67,7 +77,9 @@ class AiRankingService:
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> list[ModelRank]:
-        query = select(AiUsageRecordRow).where(AiUsageRecordRow.operation_type != "model_test")
+        query = select(AiUsageRecordRow).where(
+            AiUsageRecordRow.operation_type.in_(TRANSLATION_RANKING_OPS)
+        )
         if start is not None:
             query = query.where(AiUsageRecordRow.created_at >= start)
         if end is not None:
@@ -104,14 +116,18 @@ class AiRankingService:
             p50 = float(median(latencies)) if len(latencies) >= 10 else None
             last_used = max((r.created_at for r in items if r.created_at), default=None)
 
+            # quality = clean% − 25×repair_rate − 50×validation_failure_rate
             quality = None
             if clean_rate is not None:
-                quality = max(0.0, min(100.0, clean_rate * 100.0 - (repair_rate or 0) * 25.0 * 100.0 / 100.0))
-                quality = max(0.0, min(100.0, (clean_rate * 100.0) - ((repair_rate or 0) * 25.0)))
+                quality = _clamp(
+                    (clean_rate * 100.0)
+                    - ((repair_rate or 0.0) * 25.0)
+                    - ((val_rate or 0.0) * 50.0)
+                )
 
             reliability = None
             if tech_rate is not None:
-                reliability = max(0.0, min(100.0, (1.0 - tech_rate) * 100.0))
+                reliability = _clamp((1.0 - tech_rate) * 100.0)
 
             if avg_clean_cost is not None:
                 cost_for_score[model_id] = float(avg_clean_cost)

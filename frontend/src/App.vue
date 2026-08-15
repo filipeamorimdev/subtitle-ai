@@ -20,10 +20,11 @@ watch(
 )
 
 const links = [
+  { to: '/', label: 'Dashboard' },
   { to: '/candidates', label: 'Candidates' },
   { to: '/jobs', label: 'Jobs' },
-  { to: '/glossaries', label: 'Glossaries' },
   { to: '/ai', label: 'AI' },
+  { to: '/glossaries', label: 'Glossary' },
   { to: '/settings', label: 'Settings' },
 ]
 </script>

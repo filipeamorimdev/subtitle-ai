@@ -4,7 +4,7 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 const route = useRoute()
 const tabs = [
   { to: '/ai/overview', label: 'Overview' },
-  { to: '/ai/models', label: 'Models' },
+  { to: '/ai/models', label: 'Models & Routing' },
   { to: '/ai/usage', label: 'Usage' },
 ]
 </script>

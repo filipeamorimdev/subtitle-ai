@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import AiUsageRecordRow
 from app.services.ai_cost import estimate_cost_micro_usd, usd_to_micro
+from app.services.ai_ranking import TRANSLATION_RANKING_OPS
 from app.services.model_catalog import ModelCatalogService
 from app.translation.openrouter.client import ChatResult, batch_base_model
 
@@ -130,17 +131,31 @@ class AiUsageService:
             tier=tier,
         )
 
-    def set_job_outcome(self, job_id: int, outcome: str) -> None:
+    def set_translation_outcomes(self, job_id: int, outcome: str) -> None:
+        """Apply a job-level outcome only to translation-related usage rows.
+
+        Glossary and model_test rows keep their own outcomes and must never
+        inherit translation perfect_success / repair / validation results.
+        """
         from sqlalchemy import select
 
         rows = list(
-            self.db.scalars(select(AiUsageRecordRow).where(AiUsageRecordRow.job_id == job_id)).all()
+            self.db.scalars(
+                select(AiUsageRecordRow).where(
+                    AiUsageRecordRow.job_id == job_id,
+                    AiUsageRecordRow.operation_type.in_(TRANSLATION_RANKING_OPS),
+                )
+            ).all()
         )
         for row in rows:
             if row.outcome is None:
                 row.outcome = outcome
                 self.db.add(row)
         self.db.flush()
+
+    def set_job_outcome(self, job_id: int, outcome: str) -> None:
+        """Backward-compatible alias; only updates translation-related rows."""
+        self.set_translation_outcomes(job_id, outcome)
 
 
 class RecordingOpenRouterClient:
@@ -186,7 +201,7 @@ class RecordingOpenRouterClient:
                 job_id=self._job_id,
                 status="failed",
                 failure_category=classify_openrouter_failure(exc),
-                outcome="technical_failure" if getattr(exc, "retryable", False) else None,
+                outcome="technical_failure",
                 tier=self._tier,
             )
             self._usage.db.commit()

@@ -144,6 +144,15 @@ class ModelPreferenceService:
         model_id = model_id.strip()
         if tier not in ("free", "paid"):
             raise ValueError("tier must be free or paid")
+        catalog_tier = _classify_tier_from_cache(self.db, batch_base_model(model_id))
+        if catalog_tier == "paid" and tier == "free":
+            raise ValueError(
+                f"Model {model_id} is priced as paid in the catalog and cannot be added to the free pool"
+            )
+        if catalog_tier == "free" and tier == "paid":
+            raise ValueError(
+                f"Model {model_id} is priced as free in the catalog and cannot be added to the paid pool"
+            )
         existing = self.db.scalar(
             select(OpenRouterModelPreferenceRow).where(
                 OpenRouterModelPreferenceRow.model_id == model_id

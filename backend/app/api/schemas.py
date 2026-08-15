@@ -467,6 +467,8 @@ class AiRoutingUpdate(BaseModel):
     monthly_budget_amount_usd: float | None = Field(default=None, ge=0)
     clear_monthly_budget_amount: bool = False
     allow_manual_budget_override: bool | None = None
+    openrouter_api_key: str | None = None
+    clear_openrouter_api_key: bool = False
 
 
 class AiModelPreferenceIn(BaseModel):

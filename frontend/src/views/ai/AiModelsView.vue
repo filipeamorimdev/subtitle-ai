@@ -11,6 +11,8 @@ const pickerOpen = ref(false)
 const pickerQuery = ref('')
 const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid'>('compatible')
 const testResult = ref<Record<number, string>>({})
+const apiKey = ref('')
+const clearApiKey = ref(false)
 
 const routing = reactive({
   routing_strategy: 'free_first',
@@ -29,6 +31,23 @@ function formatPrice(value: number | null | undefined): string {
   if (value < 0.01) return `$${value.toFixed(4)}`
   if (value < 1) return `$${value.toFixed(3)}`
   return `$${value.toFixed(2)}`
+}
+
+function formatUsd(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (n === 0) return '$0'
+  if (n < 0.01) return `$${n.toFixed(4)}`
+  return `$${n.toFixed(3)}`
+}
+
+function formatPct(n: number | null | undefined): string {
+  if (n == null) return '—'
+  return `${(n * 100).toFixed(0)}%`
+}
+
+function formatLatency(ms: number | null | undefined): string {
+  if (ms == null) return '—'
+  return `${(ms / 1000).toFixed(1)}s`
 }
 
 function badge(tier?: string | null, stale?: boolean, unavailable?: boolean) {
@@ -69,13 +88,22 @@ async function load() {
 
 async function saveRouting() {
   message.value = null
-  await api.updateAiRouting({
-    ...routing,
-    clear_maximum_cost_per_job: routing.maximum_cost_per_job_usd == null,
-    clear_monthly_budget_amount: routing.monthly_budget_amount_usd == null,
-  })
-  message.value = 'Routing and cost controls saved.'
-  await load()
+  error.value = null
+  try {
+    await api.updateAiRouting({
+      ...routing,
+      clear_maximum_cost_per_job: routing.maximum_cost_per_job_usd == null,
+      clear_monthly_budget_amount: routing.monthly_budget_amount_usd == null,
+      openrouter_api_key: apiKey.value || undefined,
+      clear_openrouter_api_key: clearApiKey.value,
+    })
+    apiKey.value = ''
+    clearApiKey.value = false
+    message.value = 'Routing and cost controls saved.'
+    await load()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  }
 }
 
 async function refresh() {
@@ -131,6 +159,14 @@ function catalogAge(seconds: number | null): string {
   return `${Math.round(seconds / 3600)} hours ago`
 }
 
+function canAddFree(model: OpenRouterModel) {
+  return model.compatible !== false && model.pricing_tier === 'free'
+}
+
+function canAddPaid(model: OpenRouterModel) {
+  return model.compatible !== false && (model.pricing_tier === 'paid' || model.pricing_tier === 'unknown')
+}
+
 onMounted(load)
 </script>
 
@@ -143,15 +179,30 @@ onMounted(load)
     <template v-else-if="data">
       <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <h2 class="font-display text-lg font-semibold">OpenRouter</h2>
-        <p class="mt-2 text-sm">API key: {{ data.openrouter_api_key_masked || 'Not configured' }}</p>
-        <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-          Connection: {{ data.openrouter_configured ? 'Configured' : 'Not configured' }}
-          · Last catalog refresh: {{ catalogAge(data.catalog_age_seconds) }}
+        <label class="mt-3 block text-sm">
+          <span class="text-ink-500">API key</span>
+          <input v-model="apiKey" type="password" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="Leave blank to keep existing" />
+          <span v-if="data.openrouter_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
+            Saved: {{ data.openrouter_api_key_masked }}
+          </span>
+        </label>
+        <label class="mt-2 flex items-center gap-2 text-sm">
+          <input v-model="clearApiKey" type="checkbox" />
+          Clear saved OpenRouter API key
+        </label>
+        <p class="mt-2 text-sm text-ink-600 dark:text-ink-300">
+          Connection: {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
+          · Catalog: {{ catalogAge(data.catalog_age_seconds) }}
           <span v-if="data.catalog_stale" class="text-amber-700"> (stale)</span>
         </p>
-        <button class="mt-3 rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="refresh">
-          Refresh models
-        </button>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="refresh">
+            Refresh models
+          </button>
+          <button class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white" type="button" @click="saveRouting">
+            Save OpenRouter &amp; routing
+          </button>
+        </div>
       </section>
 
       <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
@@ -198,7 +249,6 @@ onMounted(load)
             Allow manual jobs to bypass budget
           </label>
         </div>
-        <button class="mt-4 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white" type="button" @click="saveRouting">Save routing</button>
       </section>
 
       <div class="grid gap-4 lg:grid-cols-2">
@@ -211,18 +261,28 @@ onMounted(load)
             <li v-for="pref in freePool" :key="pref.id" class="rounded-md border border-ink-200 p-3 dark:border-ink-700">
               <div class="flex items-start justify-between gap-2">
                 <div>
-                  <div class="font-medium">☰ {{ pref.name || pref.model_id }}</div>
-                  <div class="text-xs text-ink-500">{{ pref.model_id }} · #{{ pref.priority }}
-                    <span v-if="pref.adaptive_rank"> · adaptive #{{ pref.adaptive_rank }}</span>
-                    <span v-else> · adaptive insufficient data</span>
+                  <div class="font-medium">{{ pref.name || pref.model_id }}</div>
+                  <div class="mt-1 flex flex-wrap gap-1.5 text-xs">
+                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">Priority #{{ pref.priority }}</span>
+                    <span
+                      v-if="pref.adaptive_rank"
+                      class="rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent"
+                    >Adaptive #{{ pref.adaptive_rank }}</span>
+                    <span v-else class="text-ink-500">Adaptive: insufficient data ({{ pref.sample_count || 0 }} samples)</span>
+                    <span class="rounded border px-1.5 py-0.5">FREE</span>
+                    <span :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
+                      {{ pref.compatibility_reason || 'Compatible' }}
+                    </span>
                   </div>
-                  <div class="mt-1 text-xs">
-                    {{ badge(pref.pricing_tier, pref.stale, pref.unavailable) }}
-                    · {{ pref.context_length ? `${pref.context_length} ctx` : 'ctx unknown' }}
+                  <div class="mt-2 text-xs text-ink-600 dark:text-ink-300">
+                    Clean success: {{ formatPct(pref.clean_success_rate) }}
+                    · Cost: {{ formatUsd(pref.average_cost_per_clean_success_usd) }}
+                    · Speed: {{ formatLatency(pref.average_latency_ms) }}
+                    · Samples: {{ pref.sample_count || 0 }}
+                  </div>
+                  <div class="mt-1 text-xs text-ink-500">
+                    {{ pref.model_id }} · {{ badge(pref.pricing_tier, pref.stale, pref.unavailable) }}
                     · {{ formatPrice(pref.prompt_price_per_million) }} in / {{ formatPrice(pref.completion_price_per_million) }} out
-                  </div>
-                  <div class="mt-1 text-xs" :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
-                    {{ pref.compatibility_reason || 'Compatible' }}
                   </div>
                 </div>
                 <div class="flex flex-col gap-1">
@@ -250,17 +310,28 @@ onMounted(load)
             <li v-for="pref in paidPool" :key="pref.id" class="rounded-md border border-ink-200 p-3 dark:border-ink-700">
               <div class="flex items-start justify-between gap-2">
                 <div>
-                  <div class="font-medium">☰ {{ pref.name || pref.model_id }}</div>
-                  <div class="text-xs text-ink-500">{{ pref.model_id }} · #{{ pref.priority }}
-                    <span v-if="pref.adaptive_rank"> · adaptive #{{ pref.adaptive_rank }}</span>
-                    <span v-else> · adaptive insufficient data</span>
+                  <div class="font-medium">{{ pref.name || pref.model_id }}</div>
+                  <div class="mt-1 flex flex-wrap gap-1.5 text-xs">
+                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">Priority #{{ pref.priority }}</span>
+                    <span
+                      v-if="pref.adaptive_rank"
+                      class="rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent"
+                    >Adaptive #{{ pref.adaptive_rank }}</span>
+                    <span v-else class="text-ink-500">Adaptive: insufficient data ({{ pref.sample_count || 0 }} samples)</span>
+                    <span class="rounded border px-1.5 py-0.5">PAID</span>
+                    <span :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
+                      {{ pref.compatibility_reason || 'Compatible' }}
+                    </span>
                   </div>
-                  <div class="mt-1 text-xs">
-                    {{ badge(pref.pricing_tier, pref.stale, pref.unavailable) }}
+                  <div class="mt-2 text-xs text-ink-600 dark:text-ink-300">
+                    Clean success: {{ formatPct(pref.clean_success_rate) }}
+                    · Cost: {{ formatUsd(pref.average_cost_per_clean_success_usd) }}
+                    · Speed: {{ formatLatency(pref.average_latency_ms) }}
+                    · Samples: {{ pref.sample_count || 0 }}
+                  </div>
+                  <div class="mt-1 text-xs text-ink-500">
+                    {{ pref.model_id }} · {{ badge(pref.pricing_tier, pref.stale, pref.unavailable) }}
                     · {{ formatPrice(pref.prompt_price_per_million) }} in / {{ formatPrice(pref.completion_price_per_million) }} out
-                  </div>
-                  <div class="mt-1 text-xs" :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
-                    {{ pref.compatibility_reason || 'Compatible' }}
                   </div>
                 </div>
                 <div class="flex flex-col gap-1">
@@ -296,8 +367,8 @@ onMounted(load)
             <div class="text-xs">{{ formatPrice(model.prompt_price_per_million) }} in / {{ formatPrice(model.completion_price_per_million) }} out</div>
             <div class="text-xs" :class="model.compatible === false ? 'text-red-700' : 'text-emerald-700'">{{ model.compatibility_reason }}</div>
             <div class="mt-2 flex gap-2">
-              <button class="rounded border px-2 py-1 text-xs" type="button" :disabled="model.compatible === false" @click="addModel(model, 'free')">Add to Free</button>
-              <button class="rounded border px-2 py-1 text-xs" type="button" :disabled="model.compatible === false" @click="addModel(model, 'paid')">Add to Paid</button>
+              <button class="rounded border px-2 py-1 text-xs disabled:opacity-40" type="button" :disabled="!canAddFree(model)" @click="addModel(model, 'free')">Add to Free</button>
+              <button class="rounded border px-2 py-1 text-xs disabled:opacity-40" type="button" :disabled="!canAddPaid(model)" @click="addModel(model, 'paid')">Add to Paid</button>
             </div>
           </li>
         </ul>

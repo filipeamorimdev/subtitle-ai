@@ -150,6 +150,9 @@ async def ai_models(db: Session = Depends(get_db)) -> dict:
                 "sample_count": rank.sample_count if rank else 0,
                 "clean_success_rate": rank.clean_success_rate if rank else None,
                 "repair_rate": rank.repair_rate if rank else None,
+                "average_cost_per_clean_success_usd": (
+                    rank.average_cost_per_clean_success_usd if rank else None
+                ),
                 "average_latency_ms": rank.average_latency_ms if rank else None,
                 "last_used_at": rank.last_used_at.isoformat() if rank and rank.last_used_at else None,
             }
@@ -217,7 +220,6 @@ async def test_model(payload: AiModelTestIn, db: Session = Depends(get_db)) -> C
             trigger_type="manual",
             tier=tier,
         )
-        db.commit()
         client = OpenRouterClient(key)
         result = await client.chat_completion(
             model=batch_base_model(payload.model_id),
@@ -267,7 +269,6 @@ async def test_model(payload: AiModelTestIn, db: Session = Depends(get_db)) -> C
         return ConnectionTestResult(ok=False, message=str(exc))
     finally:
         budget.release(reservation)
-        db.commit()
 
 
 @router.post("/models")
@@ -342,6 +343,8 @@ def put_routing(payload: AiRoutingUpdate, db: Session = Depends(get_db)) -> AiRo
             monthly_budget_amount_usd=payload.monthly_budget_amount_usd,
             clear_monthly_budget_amount=payload.clear_monthly_budget_amount,
             allow_manual_budget_override=payload.allow_manual_budget_override,
+            openrouter_api_key=payload.openrouter_api_key,
+            clear_openrouter_api_key=payload.clear_openrouter_api_key,
         )
     )
     return _routing_out(db)

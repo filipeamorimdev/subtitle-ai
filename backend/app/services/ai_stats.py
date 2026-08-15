@@ -5,13 +5,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import AiRoutingEventRow, AiUsageRecordRow, JobRow
+from app.db.models import (
+    AiRoutingEventRow,
+    AiUsageRecordRow,
+    JobRow,
+    SettingsRow,
+)
 from app.services.ai_budget import AiBudgetService
 from app.services.ai_cost import effective_cost_micro, micro_to_usd
-from app.services.ai_ranking import AiRankingService
+from app.services.ai_ranking import TRANSLATION_RANKING_OPS, AiRankingService
+from app.services.model_catalog import ModelCatalogService
+from app.services.model_preferences import list_preferences
+from app.translation.openrouter.client import batch_base_model
 
 
 def utcnow() -> datetime:
@@ -50,38 +58,98 @@ def period_bounds(
 
 
 def _cost_expr():
-    return func.coalesce(AiUsageRecordRow.actual_cost_micro_usd, AiUsageRecordRow.estimated_cost_micro_usd, 0)
+    return func.coalesce(
+        AiUsageRecordRow.actual_cost_micro_usd,
+        AiUsageRecordRow.estimated_cost_micro_usd,
+        0,
+    )
 
 
 class AiStatsService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def _filtered(self, start: datetime | None, end: datetime | None):
-        query = select(AiUsageRecordRow)
+    def _apply_time(self, query, start: datetime | None, end: datetime | None):
         if start is not None:
             query = query.where(AiUsageRecordRow.created_at >= start)
         if end is not None:
             query = query.where(AiUsageRecordRow.created_at < end)
         return query
 
+    def _filtered(self, start: datetime | None, end: datetime | None):
+        return self._apply_time(select(AiUsageRecordRow), start, end)
+
     def _aggregate(self, start: datetime | None, end: datetime | None) -> dict[str, Any]:
-        rows = list(self.db.scalars(self._filtered(start, end)).all())
-        requests = len(rows)
-        successful = sum(1 for r in rows if r.status == "success")
-        failed = sum(1 for r in rows if r.status != "success")
-        input_tokens = sum(r.input_tokens or 0 for r in rows)
-        output_tokens = sum(r.output_tokens or 0 for r in rows)
-        total_tokens = sum(r.total_tokens or 0 for r in rows)
-        cost = sum(effective_cost_micro(r) for r in rows)
-        latencies = [r.latency_ms for r in rows if r.latency_ms is not None]
-        free_requests = sum(1 for r in rows if r.tier == "free")
-        paid_requests = sum(1 for r in rows if r.tier == "paid")
-        free_tokens = sum((r.total_tokens or 0) for r in rows if r.tier == "free")
-        paid_tokens = sum((r.total_tokens or 0) for r in rows if r.tier == "paid")
-        paid_cost = sum(effective_cost_micro(r) for r in rows if r.tier == "paid")
-        translations = [r for r in rows if r.operation_type in {"translation", "translation_retry", "translation_repair"}]
-        avg_cost = (cost / len(translations)) if translations else None
+        cost_col = _cost_expr()
+        base = select(
+            func.count(AiUsageRecordRow.id),
+            func.coalesce(
+                func.sum(case((AiUsageRecordRow.status == "success", 1), else_=0)), 0
+            ),
+            func.coalesce(func.sum(AiUsageRecordRow.input_tokens), 0),
+            func.coalesce(func.sum(AiUsageRecordRow.output_tokens), 0),
+            func.coalesce(func.sum(AiUsageRecordRow.total_tokens), 0),
+            func.coalesce(func.sum(cost_col), 0),
+            func.avg(AiUsageRecordRow.latency_ms),
+            func.coalesce(
+                func.sum(case((AiUsageRecordRow.tier == "free", 1), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(case((AiUsageRecordRow.tier == "paid", 1), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (AiUsageRecordRow.tier == "free", AiUsageRecordRow.total_tokens),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (AiUsageRecordRow.tier == "paid", AiUsageRecordRow.total_tokens),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((AiUsageRecordRow.tier == "paid", cost_col), else_=0)), 0
+            ),
+        )
+        base = self._apply_time(base, start, end)
+        row = self.db.execute(base).one()
+        requests = int(row[0] or 0)
+        successful = int(row[1] or 0)
+        failed = requests - successful
+        input_tokens = int(row[2] or 0)
+        output_tokens = int(row[3] or 0)
+        total_tokens = int(row[4] or 0)
+        cost = int(row[5] or 0)
+        avg_latency = float(row[6]) if row[6] is not None else None
+        free_requests = int(row[7] or 0)
+        paid_requests = int(row[8] or 0)
+        free_tokens = int(row[9] or 0)
+        paid_tokens = int(row[10] or 0)
+        paid_cost = int(row[11] or 0)
+
+        # Correctness metrics over translation-related ops only.
+        t_query = select(AiUsageRecordRow).where(
+            AiUsageRecordRow.operation_type.in_(TRANSLATION_RANKING_OPS)
+        )
+        t_query = self._apply_time(t_query, start, end)
+        t_rows = list(self.db.scalars(t_query).all())
+        t_n = len(t_rows)
+        scored = [r for r in t_rows if r.outcome not in {"budget_blocked", "cancelled", None}]
+        denom = len(scored) or t_n or 1
+        perfect = sum(1 for r in t_rows if r.outcome == "perfect_success")
+        repaired = sum(1 for r in t_rows if r.outcome == "success_with_repair")
+        validation = sum(1 for r in t_rows if r.outcome == "validation_failure")
+        technical = sum(1 for r in t_rows if r.outcome == "technical_failure")
+        avg_cost = (cost / t_n) if t_n else None
+
         return {
             "requests": requests,
             "successful_requests": successful,
@@ -93,13 +161,63 @@ class AiStatsService:
             "cost_micro_usd": cost,
             "cost_usd": micro_to_usd(cost) or 0.0,
             "average_cost_usd": micro_to_usd(int(avg_cost)) if avg_cost is not None else None,
-            "average_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
+            "average_latency_ms": avg_latency,
             "free_requests": free_requests,
             "paid_requests": paid_requests,
             "free_tokens": free_tokens,
             "paid_tokens": paid_tokens,
             "paid_cost_usd": micro_to_usd(paid_cost) or 0.0,
+            "clean_success_rate": (perfect / denom) if t_n else None,
+            "repair_rate": (repaired / denom) if t_n else None,
+            "validation_failure_rate": (validation / denom) if t_n else None,
+            "technical_failure_rate": (technical / t_n) if t_n else None,
+            "translation_requests": t_n,
         }
+
+    def _ai_status(self, budget, month_agg: dict[str, Any]) -> tuple[str, list[str]]:
+        reasons: list[str] = []
+        settings = self.db.get(SettingsRow, 1)
+        openrouter_configured = bool(
+            settings and getattr(settings, "openrouter_api_key_encrypted", None)
+        )
+        if not openrouter_configured:
+            reasons.append("OpenRouter not configured")
+
+        prefs = list_preferences(self.db, enabled_only=False)
+        enabled = [p for p in prefs if p.enabled]
+        if prefs and not enabled:
+            reasons.append("All models disabled")
+
+        catalog = ModelCatalogService(self.db)
+        batch_size = int(getattr(settings, "batch_size", 25) or 25) if settings else 25
+        unavailable = 0
+        compatible_enabled = 0
+        for pref in enabled:
+            meta = catalog.annotate_model(pref.model_id, batch_size=batch_size)
+            if meta.get("unavailable"):
+                unavailable += 1
+            elif meta.get("compatible", True):
+                compatible_enabled += 1
+        if unavailable:
+            reasons.append(f"{unavailable} preferred model{'s' if unavailable != 1 else ''} unavailable")
+        if enabled and compatible_enabled == 0 and not any("OpenRouter" in r for r in reasons):
+            reasons.append("No compatible model")
+
+        if budget.enabled and budget.percent_used is not None:
+            if budget.percent_used >= 100 or (budget.remaining_micro_usd or 0) <= 0:
+                reasons.append("Monthly budget exhausted")
+            elif budget.percent_used >= 90:
+                reasons.append(f"Monthly budget {budget.percent_used:.0f}% used")
+
+        tech = month_agg.get("technical_failure_rate")
+        if tech is not None and month_agg.get("translation_requests", 0) >= 10 and tech >= 0.25:
+            reasons.append(f"High recent technical failure rate ({tech * 100:.0f}%)")
+
+        if reasons:
+            return "attention", reasons
+        if month_agg.get("requests", 0) == 0:
+            return "idle", []
+        return "healthy", []
 
     def overview(self, period: str = "month") -> dict[str, Any]:
         start, end, prev_start, prev_end = period_bounds(period)
@@ -107,20 +225,45 @@ class AiStatsService:
         previous = self._aggregate(prev_start, prev_end) if prev_start else None
         budget = AiBudgetService(self.db).status()
         ranking = AiRankingService(self.db).rank_models(start=start, end=end)
+        prefs = list_preferences(self.db, enabled_only=False)
+        priority_by_model: dict[str, int] = {}
+        for pref in prefs:
+            priority_by_model[pref.model_id] = pref.priority
+            priority_by_model[batch_base_model(pref.model_id)] = pref.priority
+
         routing = self.recent_routing(limit=20)
         empty = current["requests"] == 0
         month = self._aggregate(*period_bounds("month")[:2])
         week = self._aggregate(*period_bounds("7d")[:2])
         today = self._aggregate(*period_bounds("today")[:2])
+        status, status_reasons = self._ai_status(budget, month)
+        active_jobs = (
+            self.db.scalar(
+                select(func.count())
+                .select_from(JobRow)
+                .where(JobRow.status.in_(["pending", "processing"]))
+            )
+            or 0
+        )
+
+        best = next((r for r in ranking if r.adaptive_rank == 1), None)
+
         return {
             "period": period,
             "empty": empty,
+            "status": status,
+            "status_reasons": status_reasons,
+            "active_jobs": int(active_jobs),
             "cost": {
                 "current": current["cost_usd"],
                 "previous": previous["cost_usd"] if previous else None,
             },
             "requests": current["requests"],
             "success_rate": current["success_rate"],
+            "clean_success_rate": current["clean_success_rate"],
+            "repair_rate": current["repair_rate"],
+            "validation_failure_rate": current["validation_failure_rate"],
+            "technical_failure_rate": current["technical_failure_rate"],
             "tokens": {
                 "input": current["input_tokens"],
                 "output": current["output_tokens"],
@@ -147,9 +290,19 @@ class AiStatsService:
                 "percent_used": budget.percent_used,
                 "allow_manual_override": budget.allow_manual_override,
             },
+            "ai_summary": {
+                "this_month_cost_usd": month["cost_usd"],
+                "this_month_requests": month["requests"],
+                "clean_success_rate": month["clean_success_rate"],
+                "budget_percent_used": budget.percent_used,
+                "best_model_id": best.model_id if best else None,
+                "status": status,
+            },
             "ranking": [
                 {
                     "model_id": r.model_id,
+                    "configured_priority": priority_by_model.get(r.model_id)
+                    or priority_by_model.get(batch_base_model(r.model_id)),
                     "adaptive_rank": r.adaptive_rank,
                     "adaptive_score": r.adaptive_score,
                     "quality_score": r.quality_score,
@@ -158,6 +311,8 @@ class AiStatsService:
                     "reliability_score": r.reliability_score,
                     "clean_success_rate": r.clean_success_rate,
                     "repair_rate": r.repair_rate,
+                    "validation_failure_rate": r.validation_failure_rate,
+                    "technical_failure_rate": r.technical_failure_rate,
                     "average_cost_per_clean_success_usd": r.average_cost_per_clean_success_usd,
                     "average_latency_ms": r.average_latency_ms,
                     "sample_count": r.sample_count,
@@ -177,48 +332,80 @@ class AiStatsService:
         end: datetime | None = None,
     ) -> dict[str, Any]:
         current_start, current_end, _, _ = period_bounds(period, start=start, end=end)
-        rows = list(self.db.scalars(self._filtered(current_start, current_end)).all())
-        by_day: dict[str, int] = {}
-        by_model: dict[str, dict[str, Any]] = {}
-        free_cost = 0
-        paid_cost = 0
-        free_req = 0
-        paid_req = 0
-        for row in rows:
-            day = (row.created_at or utcnow()).strftime("%Y-%m-%d")
-            cost = effective_cost_micro(row)
-            by_day[day] = by_day.get(day, 0) + cost
-            bucket = by_model.setdefault(
-                row.model_id,
-                {"model_id": row.model_id, "requests": 0, "cost_micro_usd": 0, "tokens": 0},
-            )
-            bucket["requests"] += 1
-            bucket["cost_micro_usd"] += cost
-            bucket["tokens"] += row.total_tokens or 0
-            if row.tier == "paid":
-                paid_cost += cost
-                paid_req += 1
-            elif row.tier == "free":
-                free_cost += cost
-                free_req += 1
+        cost_col = _cost_expr()
+        day_expr = func.strftime("%Y-%m-%d", AiUsageRecordRow.created_at)
+        day_q = select(
+            day_expr.label("day"),
+            func.coalesce(func.sum(cost_col), 0),
+            func.count(AiUsageRecordRow.id),
+        ).group_by(day_expr)
+        day_q = self._apply_time(day_q, current_start, current_end)
+        day_rows = self.db.execute(day_q).all()
         series = [
-            {"date": day, "cost_usd": micro_to_usd(micro) or 0.0}
-            for day, micro in sorted(by_day.items())
+            {
+                "date": day,
+                "cost_usd": micro_to_usd(int(micro or 0)) or 0.0,
+                "request_count": int(count or 0),
+            }
+            for day, micro, count in sorted(day_rows, key=lambda r: r[0] or "")
         ]
+
+        model_q = select(
+            AiUsageRecordRow.model_id,
+            func.count(AiUsageRecordRow.id),
+            func.coalesce(func.sum(cost_col), 0),
+            func.coalesce(func.sum(AiUsageRecordRow.total_tokens), 0),
+        ).group_by(AiUsageRecordRow.model_id)
+        model_q = self._apply_time(model_q, current_start, current_end)
+        model_rows = self.db.execute(model_q).all()
         models = sorted(
             [
                 {
-                    **item,
-                    "cost_usd": micro_to_usd(item["cost_micro_usd"]) or 0.0,
+                    "model_id": model_id,
+                    "requests": int(req or 0),
+                    "cost_micro_usd": int(micro or 0),
+                    "cost_usd": micro_to_usd(int(micro or 0)) or 0.0,
+                    "tokens": int(tokens or 0),
                 }
-                for item in by_model.values()
+                for model_id, req, micro, tokens in model_rows
             ],
             key=lambda x: (-x["cost_usd"], -x["requests"]),
         )
+
+        tier_q = select(
+            AiUsageRecordRow.tier,
+            func.count(AiUsageRecordRow.id),
+            func.coalesce(func.sum(cost_col), 0),
+        ).group_by(AiUsageRecordRow.tier)
+        tier_q = self._apply_time(tier_q, current_start, current_end)
+        free_req = paid_req = free_cost = paid_cost = 0
+        for tier, req, micro in self.db.execute(tier_q).all():
+            if tier == "paid":
+                paid_req = int(req or 0)
+                paid_cost = int(micro or 0)
+            elif tier == "free":
+                free_req = int(req or 0)
+                free_cost = int(micro or 0)
+
+        fail_q = select(
+            AiUsageRecordRow.failure_category,
+            func.count(AiUsageRecordRow.id),
+        ).where(
+            AiUsageRecordRow.failure_category.is_not(None),
+            AiUsageRecordRow.status != "success",
+        ).group_by(AiUsageRecordRow.failure_category)
+        fail_q = self._apply_time(fail_q, current_start, current_end)
+        failure_categories = [
+            {"category": cat or "unknown", "count": int(count or 0)}
+            for cat, count in self.db.execute(fail_q).all()
+        ]
+        failure_categories.sort(key=lambda x: -x["count"])
+
         return {
             "period": period,
             "series": series,
             "by_model": models,
+            "failure_categories": failure_categories,
             "free_vs_paid": {
                 "free_requests": free_req,
                 "paid_requests": paid_req,
@@ -297,9 +484,10 @@ class AiStatsService:
                 }
             )
 
+        # by_model respects the same filters as the table (except pagination).
+        filtered_all = list(self.db.scalars(query).all())
         breakdown_map: dict[str, dict[str, Any]] = {}
-        all_rows = list(self.db.scalars(self._filtered(current_start, current_end)).all())
-        for row in all_rows:
+        for row in filtered_all:
             bucket = breakdown_map.setdefault(
                 row.model_id,
                 {

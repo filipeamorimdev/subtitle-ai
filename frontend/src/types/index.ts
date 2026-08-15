@@ -408,6 +408,7 @@ export interface AiPreference {
   sample_count?: number
   clean_success_rate?: number | null
   repair_rate?: number | null
+  average_cost_per_clean_success_usd?: number | null
   average_latency_ms?: number | null
   last_used_at?: string | null
 }
@@ -426,9 +427,16 @@ export interface AiModelsPayload {
 export interface AiOverview {
   period: string
   empty: boolean
+  status?: 'healthy' | 'idle' | 'attention'
+  status_reasons?: string[]
+  active_jobs?: number
   cost: { current: number; previous: number | null }
   requests: number
   success_rate: number | null
+  clean_success_rate?: number | null
+  repair_rate?: number | null
+  validation_failure_rate?: number | null
+  technical_failure_rate?: number | null
   tokens: { input: number; output: number; total: number }
   free_requests: number
   paid_requests: number
@@ -437,7 +445,7 @@ export interface AiOverview {
   paid_cost_usd: number
   average_cost_usd: number | null
   average_latency_ms: number | null
-  cards: Record<string, { cost_usd: number; requests: number }>
+  cards: Record<string, { cost_usd: number; requests: number; clean_success_rate?: number | null }>
   budget: {
     enabled: boolean
     limit: number | null
@@ -447,8 +455,17 @@ export interface AiOverview {
     percent_used: number | null
     allow_manual_override: boolean
   }
+  ai_summary?: {
+    this_month_cost_usd: number
+    this_month_requests: number
+    clean_success_rate: number | null
+    budget_percent_used: number | null
+    best_model_id: string | null
+    status: string
+  }
   ranking: Array<{
     model_id: string
+    configured_priority?: number | null
     adaptive_rank: number | null
     adaptive_score: number | null
     quality_score: number | null
@@ -457,6 +474,8 @@ export interface AiOverview {
     reliability_score: number | null
     clean_success_rate: number | null
     repair_rate: number | null
+    validation_failure_rate?: number | null
+    technical_failure_rate?: number | null
     average_cost_per_clean_success_usd: number | null
     average_latency_ms: number | null
     sample_count: number
@@ -514,12 +533,26 @@ export interface AiUsagePage {
     validation_failure_rate: number
     technical_failure_rate: number
   }>
+  totals?: {
+    requests: number
+    successful_requests: number
+    failed_requests: number
+    success_rate: number | null
+    total_tokens: number
+    cost_usd: number
+    clean_success_rate: number | null
+    repair_rate: number | null
+    validation_failure_rate: number | null
+    technical_failure_rate: number | null
+    average_latency_ms: number | null
+  }
 }
 
 export interface AiCosts {
   period: string
-  series: Array<{ date: string; cost_usd: number }>
+  series: Array<{ date: string; cost_usd: number; request_count?: number }>
   by_model: Array<{ model_id: string; requests: number; cost_usd: number; tokens: number }>
+  failure_categories?: Array<{ category: string; count: number }>
   free_vs_paid: {
     free_requests: number
     paid_requests: number

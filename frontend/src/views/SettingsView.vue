@@ -23,16 +23,12 @@ const saving = ref(false)
 const clearing = ref(false)
 const scanning = ref(false)
 const bazarrTest = ref<string | null>(null)
-const openrouterTest = ref<string | null>(null)
 const automationStatus = ref<AutomationStatus | null>(null)
 
 const form = reactive({
   bazarr_url: '',
   bazarr_api_key: '',
   clear_bazarr_api_key: false,
-  openrouter_api_key: '',
-  clear_openrouter_api_key: false,
-  openrouter_model: 'openai/gpt-4o-mini',
   openrouter_log_full_exchanges: false,
   target_language_code: 'pt-PT',
   target_language_name: 'Portuguese (Portugal)',
@@ -61,7 +57,6 @@ onMounted(async () => {
   const s = store.settings
   if (!s) return
   form.bazarr_url = s.bazarr_url || ''
-  form.openrouter_model = s.openrouter_model
   form.openrouter_log_full_exchanges = s.openrouter_log_full_exchanges ?? false
   form.target_language_code = s.target_language.code
   form.target_language_name = s.target_language.name
@@ -98,9 +93,6 @@ async function save() {
       bazarr_url: form.bazarr_url,
       bazarr_api_key: form.bazarr_api_key || undefined,
       clear_bazarr_api_key: form.clear_bazarr_api_key,
-      openrouter_api_key: form.openrouter_api_key || undefined,
-      clear_openrouter_api_key: form.clear_openrouter_api_key,
-      openrouter_model: form.openrouter_model,
       openrouter_log_full_exchanges: form.openrouter_log_full_exchanges,
       target_language_code: form.target_language_code,
       target_language_name: form.target_language_name,
@@ -116,9 +108,7 @@ async function save() {
       maximum_automatic_retries: Number(form.maximum_automatic_retries) || 0,
     })
     form.bazarr_api_key = ''
-    form.openrouter_api_key = ''
     form.clear_bazarr_api_key = false
-    form.clear_openrouter_api_key = false
     await store.loadSettings()
     await loadAutomationStatus()
     message.value = 'Settings saved.'
@@ -152,12 +142,6 @@ async function testBazarr() {
   bazarrTest.value = null
   const result = await api.testBazarr()
   bazarrTest.value = result.message
-}
-
-async function testOpenRouter() {
-  openrouterTest.value = null
-  const result = await api.testOpenRouter()
-  openrouterTest.value = result.message
 }
 
 async function runClear(action: () => Promise<{ message: string }>, confirmText: string) {
@@ -250,34 +234,11 @@ function clearUsageStats() {
       </fieldset>
 
       <fieldset class="min-w-0 space-y-4 overflow-visible rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <legend class="px-1 font-display text-lg font-semibold">OpenRouter</legend>
-        <label class="block text-sm">
-          <span class="text-ink-500">API key</span>
-          <input v-model="form.openrouter_api_key" type="password" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="Leave blank to keep existing" />
-          <span v-if="store.settings?.openrouter_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
-            Saved: {{ store.settings.openrouter_api_key_masked }}
-          </span>
-        </label>
-        <label class="flex items-center gap-2 text-sm">
-          <input v-model="form.clear_openrouter_api_key" type="checkbox" />
-          Clear saved OpenRouter API key
-        </label>
-        <div class="block text-sm">
-          <span class="text-ink-500">Models</span>
-          <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-            Preferred model: <span class="font-medium">{{ store.settings?.openrouter_model || '—' }}</span>
-            · Strategy: {{ store.settings?.routing_strategy || 'free_first' }}
-          </p>
-          <RouterLink class="mt-2 inline-block text-sm font-semibold text-accent hover:underline" to="/ai/models">
-            Manage AI models, routing, and cost controls
-          </RouterLink>
-        </div>
-        <div class="flex flex-wrap items-center gap-3">
-          <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="testOpenRouter">
-            Test Connection
-          </button>
-          <span v-if="openrouterTest" class="min-w-0 break-words text-sm text-ink-600 dark:text-ink-300">{{ openrouterTest }}</span>
-        </div>
+        <legend class="px-1 font-display text-lg font-semibold">AI configuration</legend>
+        <p class="text-sm text-ink-600 dark:text-ink-300">
+          OpenRouter API key, model pools, routing strategy, and cost/budget controls live under
+          <RouterLink class="font-semibold text-accent hover:underline" to="/ai/models">AI → Models &amp; Routing</RouterLink>.
+        </p>
         <label class="flex items-start gap-2 text-sm">
           <input v-model="form.openrouter_log_full_exchanges" type="checkbox" class="mt-1" />
           <span>

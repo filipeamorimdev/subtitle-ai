@@ -146,7 +146,7 @@ def estimate_request_cost_micro(
     input_price_per_million: float | None,
     output_price_per_million: float | None,
 ) -> int | None:
-    """Upper-bound estimate used for budget / per-job gating. None if unknown pricing."""
+    """Estimate cost from tokens and prices. None if unknown pricing."""
     if input_price_per_million is None or output_price_per_million is None:
         return None
     return estimate_cost_micro_usd(
@@ -155,6 +155,77 @@ def estimate_request_cost_micro(
         input_price_per_million=input_price_per_million,
         output_price_per_million=output_price_per_million,
     ).total_cost_micro_usd
+
+
+# Conservative routing estimate constants (documented in docs/ai-model-routing.md).
+# Reuses the catalog system-prompt budget; adds glossary overhead and a repair allowance.
+SYSTEM_PROMPT_TOKEN_OVERHEAD = 2_000
+GLOSSARY_TOKEN_OVERHEAD = 1_500
+REPAIR_OUTPUT_ALLOWANCE = 0.15  # +15% expected output for repair/recovery
+CONSERVATIVE_COST_MULTIPLIER = Decimal("1.25")
+
+
+@dataclass(frozen=True)
+class ConservativeJobEstimate:
+    """Transparent conservative estimate used for per-job and monthly gating."""
+
+    subtitle_tokens: int
+    input_tokens: int
+    output_tokens: int
+    estimated_cost_micro_usd: int | None
+    conservative_cost_micro_usd: int | None
+
+
+def estimate_conservative_job_tokens(*, char_count: int) -> tuple[int, int, int]:
+    """
+    Return (subtitle_tokens, conservative_input_tokens, conservative_output_tokens).
+
+    subtitle_tokens     = max(1, char_count // 4)
+    input_tokens        = subtitle + system prompt + glossary overhead
+    output_tokens       = subtitle + 15% repair allowance
+    """
+    subtitle = max(1, int(char_count) // 4)
+    input_tokens = subtitle + SYSTEM_PROMPT_TOKEN_OVERHEAD + GLOSSARY_TOKEN_OVERHEAD
+    output_tokens = max(1, int(round(subtitle * (1.0 + REPAIR_OUTPUT_ALLOWANCE))))
+    return subtitle, input_tokens, output_tokens
+
+
+def estimate_conservative_job_cost_micro(
+    *,
+    char_count: int,
+    input_price_per_million: float | None,
+    output_price_per_million: float | None,
+) -> ConservativeJobEstimate:
+    """
+    Conservative per-job cost for routing/budget guards.
+
+    estimated_cost = price(input_tokens, output_tokens)
+    conservative_cost = estimated_cost * 1.25
+
+    Actual billed cost is still recorded after the request from usage/snapshots.
+    Returns None costs when pricing is unknown.
+    """
+    subtitle, input_tokens, output_tokens = estimate_conservative_job_tokens(char_count=char_count)
+    raw = estimate_request_cost_micro(
+        estimated_input_tokens=input_tokens,
+        estimated_output_tokens=output_tokens,
+        input_price_per_million=input_price_per_million,
+        output_price_per_million=output_price_per_million,
+    )
+    conservative = None
+    if raw is not None:
+        conservative = int(
+            (Decimal(raw) * CONSERVATIVE_COST_MULTIPLIER).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+    return ConservativeJobEstimate(
+        subtitle_tokens=subtitle,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_cost_micro_usd=raw,
+        conservative_cost_micro_usd=conservative,
+    )
 
 
 def effective_cost_micro(row: Any) -> int:

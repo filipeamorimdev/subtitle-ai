@@ -67,7 +67,8 @@ from app.subtitles.filenames import (
 from app.subtitles.parsers.srt import parse_srt
 from app.subtitles.validation import validate_source
 from app.subtitles.writer.srt import write_srt_atomic
-from app.jobs.usage import ModelPricing, aggregate_usage, estimate_cost_usd, parse_exchanges
+from app.jobs.usage import aggregate_usage, parse_exchanges
+from app.services.ai_cost import effective_cost_micro, micro_price_to_per_million, micro_to_usd
 from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.openrouter.service import (
@@ -254,7 +255,12 @@ class JobService:
         )
 
     async def get_job_usage(self, job_id: int) -> JobUsageOut | None:
-        """Aggregate token/cost stats from the job OpenRouter exchange log."""
+        """Compose job AI cost from ai_usage_records (authoritative snapshots).
+
+        Exchange-log rows remain available for debug detail, but costs come from
+        usage records — never from a live OpenRouter catalog reprice. Old jobs
+        without usage rows fall back to the exchange log without live pricing.
+        """
         row = self.db.get(JobRow, job_id)
         if row is None:
             return None
@@ -263,47 +269,199 @@ class JobService:
         assert log is not None
         entries = log.entries or []
 
-        pricing_by_model: dict[str, ModelPricing] = {}
-        try:
-            key, _ = self.settings.get_openrouter_credentials()
-            models = await OpenRouterClient.list_models(api_key=key or None)
-            for model in models:
-                pricing_by_model[model.id] = ModelPricing(
-                    name=model.name,
-                    prompt_price_per_million=model.prompt_price_per_million,
-                    completion_price_per_million=model.completion_price_per_million,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not load OpenRouter pricing for job usage: %s", exc)
-
-        exchanges = parse_exchanges(
-            entries,
-            fallback_model=row.model,
-            pricing_by_model=pricing_by_model,
+        usage_rows = list(
+            self.db.scalars(
+                select(AiUsageRecordRow)
+                .where(AiUsageRecordRow.job_id == job_id)
+                .order_by(AiUsageRecordRow.created_at.asc(), AiUsageRecordRow.id.asc())
+            ).all()
         )
-        agg = aggregate_usage(exchanges)
 
-        by_model: list[JobUsageModelOut] = []
-        for item in agg["by_model"]:
-            pricing = pricing_by_model.get(item["model"])
-            by_model.append(
+        related_actions: list[JobUsageRelatedOut] = []
+        actions = self.list_job_actions(job_id) or []
+        for action in actions:
+            related = self.db.get(JobRow, action.id)
+            if related is None:
+                continue
+            related_cost = None
+            if related.id != job_id:
+                related_usage = list(
+                    self.db.scalars(
+                        select(AiUsageRecordRow).where(AiUsageRecordRow.job_id == related.id)
+                    ).all()
+                )
+                if related_usage:
+                    related_cost = micro_to_usd(
+                        sum(effective_cost_micro(r) for r in related_usage)
+                    )
+            related_actions.append(
+                JobUsageRelatedOut(
+                    id=related.id,
+                    action=action.action,
+                    status=related.status,
+                    model=related.model,
+                    datetime=action.datetime,
+                    input_tokens=related.input_tokens,
+                    output_tokens=related.output_tokens,
+                    total_tokens=related.total_tokens,
+                    cost_usd=related_cost,
+                    current=action.current,
+                )
+            )
+
+        if usage_rows:
+            by_model_map: dict[str, dict] = {}
+            by_action_map: dict[str, dict] = {}
+            sources: set[str] = set()
+            exchange_outs: list[JobUsageExchangeOut] = []
+            for index, ur in enumerate(usage_rows, start=1):
+                cost = effective_cost_micro(ur)
+                cost_usd = micro_to_usd(cost)
+                sources.add(ur.pricing_source or "none")
+                action = ur.operation_type
+                # Map ranking ops to legacy Job Stats action labels.
+                if action == "translation_repair":
+                    action_label = "repair"
+                elif action == "translation" or action == "translation_retry":
+                    action_label = "translate"
+                else:
+                    action_label = action
+
+                for bucket, key in (
+                    (by_model_map, ur.model_id),
+                    (by_action_map, action_label),
+                ):
+                    item = bucket.setdefault(
+                        key,
+                        {
+                            "key": key,
+                            "requests": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "cost_micro": 0,
+                            "in_price": ur.input_price_micro_usd_per_million,
+                            "out_price": ur.output_price_micro_usd_per_million,
+                        },
+                    )
+                    item["requests"] += 1
+                    item["input_tokens"] += ur.input_tokens or 0
+                    item["output_tokens"] += ur.output_tokens or 0
+                    item["total_tokens"] += ur.total_tokens or 0
+                    item["cost_micro"] += cost
+
+                exchange_outs.append(
+                    JobUsageExchangeOut(
+                        index=index,
+                        ts=ur.created_at.isoformat() if ur.created_at else None,
+                        model=ur.model_id,
+                        action=action_label,
+                        attempt=None,
+                        input_tokens=ur.input_tokens or 0,
+                        output_tokens=ur.output_tokens or 0,
+                        total_tokens=ur.total_tokens or 0,
+                        cost_usd=cost_usd,
+                        cost_estimated=ur.actual_cost_micro_usd is None
+                        and ur.estimated_cost_micro_usd is not None,
+                        status_code=200 if ur.status == "success" else None,
+                        ok=ur.status == "success",
+                        error=ur.failure_category,
+                    )
+                )
+
+            by_model = [
                 JobUsageModelOut(
-                    model=item["model"],
-                    name=pricing.name if pricing else None,
+                    model=item["key"],
+                    name=None,
                     requests=item["requests"],
                     input_tokens=item["input_tokens"],
                     output_tokens=item["output_tokens"],
                     total_tokens=item["total_tokens"],
-                    cost_usd=item["cost_usd"],
-                    prompt_price_per_million=(
-                        pricing.prompt_price_per_million if pricing else None
-                    ),
-                    completion_price_per_million=(
-                        pricing.completion_price_per_million if pricing else None
-                    ),
+                    cost_usd=micro_to_usd(item["cost_micro"]),
+                    prompt_price_per_million=micro_price_to_per_million(item["in_price"]),
+                    completion_price_per_million=micro_price_to_per_million(item["out_price"]),
                 )
+                for item in sorted(
+                    by_model_map.values(),
+                    key=lambda x: (-(x["cost_micro"] or 0), -x["total_tokens"], x["key"]),
+                )
+            ]
+            by_action = [
+                JobUsageActionOut(
+                    action=item["key"],
+                    requests=item["requests"],
+                    input_tokens=item["input_tokens"],
+                    output_tokens=item["output_tokens"],
+                    total_tokens=item["total_tokens"],
+                    cost_usd=micro_to_usd(item["cost_micro"]),
+                )
+                for item in sorted(
+                    by_action_map.values(),
+                    key=lambda x: (-(x["cost_micro"] or 0), -x["total_tokens"], x["key"]),
+                )
+            ]
+
+            total_cost = sum(effective_cost_micro(r) for r in usage_rows)
+            total_tokens = sum(r.total_tokens or 0 for r in usage_rows)
+            blended = None
+            if total_cost and total_tokens > 0:
+                blended = ((micro_to_usd(total_cost) or 0.0) / total_tokens) * 1_000_000
+
+            if sources <= {"openrouter"}:
+                pricing_source = "openrouter"
+            elif sources <= {"estimated"}:
+                pricing_source = "estimated"
+            elif "openrouter" in sources and "estimated" in sources:
+                pricing_source = "mixed"
+            elif sources & {"openrouter", "estimated"}:
+                pricing_source = next(iter(sources & {"openrouter", "estimated"}))
+            else:
+                pricing_source = "none"
+
+            totals = JobUsageTotalsOut(
+                requests=len(usage_rows),
+                input_tokens=sum(r.input_tokens or 0 for r in usage_rows),
+                output_tokens=sum(r.output_tokens or 0 for r in usage_rows),
+                total_tokens=total_tokens,
+                cost_usd=micro_to_usd(total_cost),
+                blended_cost_per_million=blended,
+            )
+            return JobUsageOut(
+                job_id=row.id,
+                media_title=row.media_title,
+                job_kind=getattr(row, "job_kind", None) or "translate",
+                model=row.model,
+                status=row.status,
+                log_exists=log.exists,
+                pricing_source=pricing_source,
+                totals=totals,
+                by_model=by_model,
+                by_action=by_action,
+                exchanges=exchange_outs,
+                related_actions=related_actions,
             )
 
+        # Legacy fallback: exchange log without live catalog reprice.
+        exchanges = parse_exchanges(
+            entries,
+            fallback_model=row.model,
+            pricing_by_model={},
+        )
+        agg = aggregate_usage(exchanges)
+        by_model = [
+            JobUsageModelOut(
+                model=item["model"],
+                name=None,
+                requests=item["requests"],
+                input_tokens=item["input_tokens"],
+                output_tokens=item["output_tokens"],
+                total_tokens=item["total_tokens"],
+                cost_usd=item["cost_usd"],
+                prompt_price_per_million=None,
+                completion_price_per_million=None,
+            )
+            for item in agg["by_model"]
+        ]
         by_action = [
             JobUsageActionOut(
                 action=item["action"],
@@ -315,7 +473,6 @@ class JobService:
             )
             for item in agg["by_action"]
         ]
-
         exchange_outs = [
             JobUsageExchangeOut(
                 index=item["index"],
@@ -335,35 +492,6 @@ class JobService:
             for item in exchanges
         ]
 
-        related_actions: list[JobUsageRelatedOut] = []
-        actions = self.list_job_actions(job_id) or []
-        for action in actions:
-            related = self.db.get(JobRow, action.id)
-            if related is None:
-                continue
-            related_cost = None
-            if related.input_tokens is not None or related.output_tokens is not None:
-                related_cost = estimate_cost_usd(
-                    input_tokens=related.input_tokens or 0,
-                    output_tokens=related.output_tokens or 0,
-                    pricing=pricing_by_model.get(related.model),
-                )
-            related_actions.append(
-                JobUsageRelatedOut(
-                    id=related.id,
-                    action=action.action,
-                    status=related.status,
-                    model=related.model,
-                    datetime=action.datetime,
-                    input_tokens=related.input_tokens,
-                    output_tokens=related.output_tokens,
-                    total_tokens=related.total_tokens,
-                    cost_usd=related_cost,
-                    current=action.current,
-                )
-            )
-
-        # Prefer live log totals; fall back to persisted job token columns when log is empty
         if agg["requests"] > 0:
             totals = JobUsageTotalsOut(
                 requests=agg["requests"],
@@ -384,18 +512,6 @@ class JobService:
                 blended_cost_per_million=None,
             )
             pricing_source = "none"
-            if totals.input_tokens or totals.output_tokens:
-                totals.cost_usd = estimate_cost_usd(
-                    input_tokens=totals.input_tokens,
-                    output_tokens=totals.output_tokens,
-                    pricing=pricing_by_model.get(row.model),
-                )
-                if totals.cost_usd is not None and totals.total_tokens > 0:
-                    totals.blended_cost_per_million = (
-                        totals.cost_usd / totals.total_tokens
-                    ) * 1_000_000
-                if totals.cost_usd is not None:
-                    pricing_source = "estimated"
 
         return JobUsageOut(
             job_id=row.id,
@@ -1538,14 +1654,18 @@ class JobService:
                 raise ValueError(source_validation.error_message)
 
             chars = sum(len(block.text) for block in document.blocks)
-            estimated_input = max(1, chars // 4 + 2000)
-            estimated_output = max(1, chars // 4)
+            from app.services.ai_cost import estimate_conservative_job_tokens
+
+            _, estimated_input, estimated_output = estimate_conservative_job_tokens(
+                char_count=chars
+            )
             trigger = getattr(row, "trigger_type", None) or "manual"
             routing = router.select_models(
                 job=row,
                 estimated_input_tokens=estimated_input,
                 estimated_output_tokens=estimated_output,
                 trigger_type=trigger,
+                char_count=chars,
             )
             if not routing.candidates:
                 reason = routing.blocked_reason or "no_compatible_model"
@@ -1608,7 +1728,6 @@ class JobService:
                         trigger_type=trigger,
                         tier=candidate.tier,
                     )
-                    self.db.commit()
                 except BudgetBlockedError as exc:
                     router.record_fallback(
                         job_id=job_id,
@@ -1691,7 +1810,6 @@ class JobService:
                     winning_model = candidate.model_id
                     repair_used = bool(outcome.repair_used)
                     budget.release(reservation)
-                    self.db.commit()
                     last_error = None
                     break
                 except RetryableTranslationError as exc:
@@ -1718,7 +1836,6 @@ class JobService:
                 except OpenRouterError as exc:
                     category = classify_openrouter_failure(exc)
                     budget.release(reservation)
-                    self.db.commit()
                     if is_technical_failure(category) and index + 1 < len(routing.candidates):
                         router.record_fallback(
                             job_id=job_id,
@@ -1728,11 +1845,11 @@ class JobService:
                             strategy=routing.strategy,
                         )
                         last_error = exc
+                        self.db.commit()
                         continue
                     raise
                 except Exception:
                     budget.release(reservation)
-                    self.db.commit()
                     raise
             else:
                 if last_error is not None:
@@ -1754,7 +1871,7 @@ class JobService:
 
             current = self.db.get(JobRow, job_id)
             if not current or current.status == "cancelled":
-                usage_service.set_job_outcome(job_id, "cancelled")
+                usage_service.set_translation_outcomes(job_id, "cancelled")
                 exchange_log.record({"event": "job_end", "status": "cancelled"})
                 self.db.commit()
                 return
@@ -1793,7 +1910,7 @@ class JobService:
                     job_id=current.id,
                 )
             )
-            usage_service.set_job_outcome(
+            usage_service.set_translation_outcomes(
                 job_id, "success_with_repair" if repair_used else "perfect_success"
             )
 
@@ -1845,13 +1962,13 @@ class JobService:
                 current.completed_at = utcnow()
                 self.db.add(current)
             if reason == "validation_failed":
-                usage_service.set_job_outcome(job_id, "validation_failure")
+                usage_service.set_translation_outcomes(job_id, "validation_failure")
             elif reason in {"blocked_by_cost_policy"}:
-                usage_service.set_job_outcome(job_id, "budget_blocked")
+                usage_service.set_translation_outcomes(job_id, "budget_blocked")
             elif reason == "cancelled":
-                usage_service.set_job_outcome(job_id, "cancelled")
+                usage_service.set_translation_outcomes(job_id, "cancelled")
             else:
-                usage_service.set_job_outcome(job_id, "technical_failure")
+                usage_service.set_translation_outcomes(job_id, "technical_failure")
             self.db.commit()
             if exchange_log is not None:
                 exchange_log.record(

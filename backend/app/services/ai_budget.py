@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -13,6 +14,11 @@ from app.db.models import AiBudgetReservationRow, AiUsageRecordRow, SettingsRow
 from app.services.ai_cost import effective_cost_micro, micro_to_usd
 
 logger = get_logger("ai_budget")
+
+# Process-wide lock so concurrent worker/API sessions serialize check+insert+commit.
+# Combined with committing inside the lock this enforces:
+# sum(active reservations) <= remaining budget.
+_BUDGET_LOCK = threading.Lock()
 
 
 def utcnow() -> datetime:
@@ -133,57 +139,78 @@ class AiBudgetService:
         tier: str = "paid",
     ) -> AiBudgetReservationRow | None:
         """
-        Reserve budget for a paid request. Returns None when reservation is not needed
-        (budget disabled, free tier, or manual override).
-        Raises BudgetBlockedError when blocked.
+        Atomically reserve budget for a paid request.
+
+        Returns None when reservation is not needed (budget disabled, free tier,
+        or manual override). Raises BudgetBlockedError when blocked.
+
+        Commits the reservation before returning so callers cannot await between
+        insert and commit. Serialized with a process-wide lock appropriate for the
+        single-service SQLite deployment.
         """
         if tier != "paid" or amount_micro_usd <= 0:
             return None
 
-        settings = self._settings()
-        if not bool(getattr(settings, "monthly_budget_enabled", False)):
-            return None
-        if self.can_bypass(trigger_type=trigger_type):
-            return None
+        with _BUDGET_LOCK:
+            settings = self._settings()
+            if not bool(getattr(settings, "monthly_budget_enabled", False)):
+                return None
+            if self.can_bypass(trigger_type=trigger_type):
+                return None
 
-        limit = getattr(settings, "monthly_budget_amount_micro_usd", None)
-        if limit is None:
-            return None
+            limit = getattr(settings, "monthly_budget_amount_micro_usd", None)
+            if limit is None:
+                return None
 
-        mk = month_key()
-        # Lock-ish: compute under a single transaction; SQLite WAL + busy_timeout helps.
-        used = self.spent_micro_usd(key=mk)
-        reserved = self.reserved_micro_usd(key=mk)
-        remaining = int(limit) - used - reserved
-        if amount_micro_usd > remaining:
-            logger.info(
-                "Budget blocked job=%s remaining=%s needed=%s",
-                job_id,
-                remaining,
-                amount_micro_usd,
-            )
-            raise BudgetBlockedError(
-                f"Monthly AI budget exceeded (remaining ${remaining / 1_000_000:.4f}, "
-                f"needed ${amount_micro_usd / 1_000_000:.4f}).",
-                reason="monthly_budget",
-            )
+            mk = month_key()
+            try:
+                used = self.spent_micro_usd(key=mk)
+                reserved = self.reserved_micro_usd(key=mk)
+                remaining = int(limit) - used - reserved
+                if amount_micro_usd > remaining:
+                    logger.info(
+                        "Budget blocked job=%s remaining=%s needed=%s",
+                        job_id,
+                        remaining,
+                        amount_micro_usd,
+                    )
+                    self.db.rollback()
+                    raise BudgetBlockedError(
+                        f"Monthly AI budget exceeded (remaining ${remaining / 1_000_000:.4f}, "
+                        f"needed ${amount_micro_usd / 1_000_000:.4f}).",
+                        reason="monthly_budget",
+                    )
 
-        row = AiBudgetReservationRow(
-            job_id=job_id,
-            month_key=mk,
-            amount_micro_usd=amount_micro_usd,
-        )
-        self.db.add(row)
-        self.db.flush()
-        return row
+                row = AiBudgetReservationRow(
+                    job_id=job_id,
+                    month_key=mk,
+                    amount_micro_usd=amount_micro_usd,
+                )
+                self.db.add(row)
+                self.db.commit()
+                self.db.refresh(row)
+                return row
+            except BudgetBlockedError:
+                raise
+            except Exception:
+                self.db.rollback()
+                raise
 
     def release(self, reservation: AiBudgetReservationRow | None) -> None:
         if reservation is None:
             return
-        if reservation.released_at is None:
-            reservation.released_at = utcnow()
-            self.db.add(reservation)
-            self.db.flush()
+        with _BUDGET_LOCK:
+            try:
+                row = self.db.get(AiBudgetReservationRow, reservation.id)
+                if row is None or row.released_at is not None:
+                    return
+                row.released_at = utcnow()
+                self.db.add(row)
+                self.db.commit()
+                reservation.released_at = row.released_at
+            except Exception:
+                self.db.rollback()
+                raise
 
     def fits_per_job_limit(self, estimated_micro: int | None) -> bool:
         settings = self._settings()

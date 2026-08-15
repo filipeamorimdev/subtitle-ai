@@ -10,17 +10,17 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 
 ## Workflow
 
-1. Configure Bazarr, OpenRouter, languages, batch size, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
+1. Configure Bazarr, languages, batch size, automation, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
 2. Optionally enable **Automatic Subtitle Fallback** under Settings (off by default). When enabled, Subtitle AI periodically scans Bazarr wanted items, waits a configurable grace period, then automatically request/extract/translate missing target subtitles. This can incur OpenRouter API costs.
-3. Open **AI → Models** to configure free/paid OpenRouter pools, routing strategy, per-job cost caps, and a monthly budget. Paid fallback stays off unless you enable it.
-4. Open **Home** (logo) for pipeline and job status, or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
+3. Open **AI → Models & Routing** to set the OpenRouter API key, free/paid pools, routing strategy, per-job cost caps, and a monthly budget. Paid fallback stays off unless you enable it.
+4. Open **Dashboard** for current activity (automation, jobs, candidate health, compact AI summary), or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
 5. For each item, use the action that matches its state (manual workflow still works even when automatic fallback is enabled):
    - **Request EN** (or your source language) — ask Bazarr to search for a source SRT; if none is found and an embedded text track exists, Subtitle AI falls back to ffmpeg extract.
    - **Extract** — pull an embedded text subtitle track to a sidecar SRT via ffmpeg, then rescan Bazarr.
    - **Translate** — enqueue a translation job from the source SRT to your target language.
 6. Use the batch toolbar (**Request all** / **Extract all** / **Translate all**) when you want to process the list in bulk.
 7. The worker runs jobs in the background: glossary prep → routed OpenRouter translation (with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
-8. Track progress under **Jobs** and **AI** (overview, models, usage). Review suggested terms under **Glossaries**.
+8. Track progress under **Jobs** and **AI** (overview, models & routing, usage). Review suggested terms under **Glossary**.
 
 When automatic fallback is **off**, nothing is scheduled — only clicks create jobs.
 
@@ -28,14 +28,20 @@ When automatic fallback is **off**, nothing is scheduled — only clicks create 
 
 | Page | Purpose |
 | --- | --- |
-| **Home** | Ops dashboard: pipeline counts, job status, failed/running lists, system health |
+| **Dashboard** | Current activity: automation, jobs, candidate health, compact AI summary |
 | **Candidates** | Bazarr wanted list; Request / Extract / Translate (per-row and batch); embedded-track badges |
 | **Jobs** | Job history for `translate`, `extract`, and `request`; status filters |
 | **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
-| **Usage stats** | Token and cost breakdown by model and action |
-| **AI** | Overview (cost, budget, ranking), Models (pools + routing + caps), Usage (paginated history) |
-| **Glossaries** | Universe / series / movie term scopes; lock terms; review suggested terms |
-| **Settings** | Bazarr, OpenRouter API key, languages, batch size, automatic fallback, path mappings |
+| **Usage stats** | Per-job token/cost breakdown (from `ai_usage_records` snapshots) |
+| **AI** | Control center: Overview (status, budget, ranking), Models & Routing, Usage analytics |
+| **Glossary** | Universe / series / movie term scopes; lock terms; review suggested terms |
+| **Settings** | Bazarr, languages, batch size, automatic fallback, path mappings, diagnostics |
+
+Semantic split:
+
+- **Dashboard** → what is happening?
+- **AI** → how is AI behaving and how do I control it?
+- **Settings** → how is Subtitle AI configured?
 
 ## Architecture
 

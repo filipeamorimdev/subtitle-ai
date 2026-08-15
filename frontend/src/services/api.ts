@@ -177,8 +177,12 @@ export const api = {
     const suffix = search.toString() ? `?${search}` : ''
     return request<AiUsagePage>(`/api/ai/usage${suffix}`)
   },
-  getAiCosts: (period = '30d') =>
-    request<AiCosts>(`/api/ai/costs?period=${encodeURIComponent(period)}`),
+  getAiCosts: (period = '30d', extra: { start?: string; end?: string } = {}) => {
+    const search = new URLSearchParams({ period })
+    if (extra.start) search.set('start', extra.start)
+    if (extra.end) search.set('end', extra.end)
+    return request<AiCosts>(`/api/ai/costs?${search}`)
+  },
   getAiModels: () => request<AiModelsPayload>('/api/ai/models'),
   refreshAiModels: () => request<{ ok: boolean; stale: boolean; message?: string; count: number }>('/api/ai/models/refresh', { method: 'POST' }),
   testAiModel: (model_id: string) =>
@@ -200,7 +204,12 @@ export const api = {
       body: JSON.stringify({ tier, ordered_ids }),
     }),
   getAiRouting: () => request<AiRouting>('/api/ai/routing'),
-  updateAiRouting: (payload: Partial<AiRouting> & { clear_maximum_cost_per_job?: boolean; clear_monthly_budget_amount?: boolean }) =>
+  updateAiRouting: (payload: Partial<AiRouting> & {
+    clear_maximum_cost_per_job?: boolean
+    clear_monthly_budget_amount?: boolean
+    openrouter_api_key?: string
+    clear_openrouter_api_key?: boolean
+  }) =>
     request<AiRouting>('/api/ai/routing', { method: 'PUT', body: JSON.stringify(payload) }),
   getAiBudget: () => request<AiOverview['budget']>('/api/ai/budget'),
 }

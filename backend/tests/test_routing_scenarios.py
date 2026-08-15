@@ -280,10 +280,18 @@ async def test_scenario_f_monthly_budget(routing_env):
 
 
 def test_scenario_g_concurrent_budget(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'g.db'}")
+    """Two sessions racing for the same remaining budget: exactly one succeeds."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'g.db'}",
+        connect_args={"check_same_thread": False},
+    )
     Base.metadata.create_all(engine)
-    db = sessionmaker(bind=engine)()
-    db.add(
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    seed = Session()
+    seed.add(
         SettingsRow(
             id=1,
             openrouter_model="x",
@@ -292,13 +300,39 @@ def test_scenario_g_concurrent_budget(tmp_path):
             allow_manual_budget_override=False,
         )
     )
-    db.commit()
-    svc = AiBudgetService(db)
-    a = svc.reserve(amount_micro_usd=40_000, job_id=1, trigger_type="automatic", tier="paid")
-    db.commit()
-    assert a is not None
-    with pytest.raises(BudgetBlockedError):
-        svc.reserve(amount_micro_usd=40_000, job_id=2, trigger_type="automatic", tier="paid")
+    seed.commit()
+    seed.close()
+
+    barrier = threading.Barrier(2)
+    results: list[object] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def attempt(job_id: int) -> None:
+        db = Session()
+        try:
+            barrier.wait(timeout=5)
+            row = AiBudgetService(db).reserve(
+                amount_micro_usd=40_000,
+                job_id=job_id,
+                trigger_type="automatic",
+                tier="paid",
+            )
+            with lock:
+                results.append(row)
+        except BudgetBlockedError as exc:
+            with lock:
+                errors.append(exc)
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for fut in (pool.submit(attempt, 1), pool.submit(attempt, 2)):
+            fut.result(timeout=10)
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], BudgetBlockedError)
 
 
 @pytest.mark.asyncio

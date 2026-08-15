@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from app.services.ai_cost import estimate_cost_micro_usd, micro_to_usd
+from app.services.ai_cost import (
+    estimate_conservative_job_cost_micro,
+    estimate_cost_micro_usd,
+    estimate_request_cost_micro,
+    micro_to_usd,
+)
 
 
 def test_zero_and_paid_cost():
@@ -39,3 +44,33 @@ def test_actual_cost_snapshot():
     )
     assert breakdown.pricing_source == "openrouter"
     assert micro_to_usd(breakdown.total_cost_micro_usd) == 0.001
+
+
+def test_conservative_estimate_exceeds_naive_subtitle_only():
+    chars = 40_000  # 10_000 subtitle tokens
+    naive = estimate_request_cost_micro(
+        estimated_input_tokens=max(1, chars // 4),
+        estimated_output_tokens=max(1, chars // 4),
+        input_price_per_million=1.0,
+        output_price_per_million=2.0,
+    )
+    cons = estimate_conservative_job_cost_micro(
+        char_count=chars,
+        input_price_per_million=1.0,
+        output_price_per_million=2.0,
+    )
+    assert cons.conservative_cost_micro_usd is not None
+    assert naive is not None
+    assert cons.conservative_cost_micro_usd > naive
+    assert cons.input_tokens > chars // 4
+    assert cons.output_tokens > chars // 4
+
+
+def test_conservative_unknown_pricing():
+    cons = estimate_conservative_job_cost_micro(
+        char_count=1000,
+        input_price_per_million=None,
+        output_price_per_million=None,
+    )
+    assert cons.estimated_cost_micro_usd is None
+    assert cons.conservative_cost_micro_usd is None
