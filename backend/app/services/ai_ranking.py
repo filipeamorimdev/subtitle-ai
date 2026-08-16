@@ -1,4 +1,7 @@
-"""Display-only adaptive model ranking (never used for routing in v0.2)."""
+"""Display-only adaptive model ranking (never used for routing).
+
+Ranks by (provider_id, model_id).
+"""
 
 from __future__ import annotations
 
@@ -9,6 +12,7 @@ from statistics import median
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID
 from app.db.models import AiUsageRecordRow
 from app.services.ai_cost import effective_cost_micro, micro_to_usd
 
@@ -20,6 +24,7 @@ TRANSLATION_RANKING_OPS = frozenset(
 
 @dataclass
 class ModelRank:
+    provider_id: str
     model_id: str
     request_count: int
     successful_request_count: int
@@ -67,6 +72,10 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
 
 
+def _identity_key(provider_id: str, model_id: str) -> str:
+    return f"{provider_id}\0{model_id}"
+
+
 class AiRankingService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -88,13 +97,15 @@ class AiRankingService:
 
         by_model: dict[str, list[AiUsageRecordRow]] = {}
         for row in rows:
-            by_model.setdefault(row.model_id, []).append(row)
+            provider_id = getattr(row, "provider_id", None) or OPENROUTER_PROVIDER_ID
+            by_model.setdefault(_identity_key(provider_id, row.model_id), []).append(row)
 
         raw: list[ModelRank] = []
         cost_for_score: dict[str, float] = {}
         speed_for_score: dict[str, float] = {}
 
-        for model_id, items in by_model.items():
+        for key, items in by_model.items():
+            provider_id, model_id = key.split("\0", 1)
             n = len(items)
             successes = [r for r in items if r.status == "success"]
             perfect = [r for r in items if r.outcome == "perfect_success"]
@@ -116,7 +127,6 @@ class AiRankingService:
             p50 = float(median(latencies)) if len(latencies) >= 10 else None
             last_used = max((r.created_at for r in items if r.created_at), default=None)
 
-            # quality = clean% − 25×repair_rate − 50×validation_failure_rate
             quality = None
             if clean_rate is not None:
                 quality = _clamp(
@@ -130,13 +140,14 @@ class AiRankingService:
                 reliability = _clamp((1.0 - tech_rate) * 100.0)
 
             if avg_clean_cost is not None:
-                cost_for_score[model_id] = float(avg_clean_cost)
+                cost_for_score[key] = float(avg_clean_cost)
             speed_val = p50 if p50 is not None else avg_lat
             if speed_val is not None:
-                speed_for_score[model_id] = float(speed_val)
+                speed_for_score[key] = float(speed_val)
 
             raw.append(
                 ModelRank(
+                    provider_id=provider_id,
                     model_id=model_id,
                     request_count=n,
                     successful_request_count=len(successes),
@@ -164,8 +175,9 @@ class AiRankingService:
         cost_scores = _norm_invert(cost_for_score)
         speed_scores = _norm_invert(speed_for_score)
         for item in raw:
-            item.cost_score = cost_scores.get(item.model_id)
-            item.speed_score = speed_scores.get(item.model_id)
+            key = _identity_key(item.provider_id, item.model_id)
+            item.cost_score = cost_scores.get(key)
+            item.speed_score = speed_scores.get(key)
             if item.confidence == "insufficient":
                 continue
             q = item.quality_score if item.quality_score is not None else 50.0
@@ -176,11 +188,16 @@ class AiRankingService:
 
         ranked = sorted(
             [x for x in raw if x.adaptive_score is not None],
-            key=lambda x: (-(x.adaptive_score or 0), -x.sample_count, x.model_id),
+            key=lambda x: (
+                -(x.adaptive_score or 0),
+                -x.sample_count,
+                x.provider_id,
+                x.model_id,
+            ),
         )
         for index, item in enumerate(ranked, start=1):
             item.adaptive_rank = index
 
         rest = [x for x in raw if x.adaptive_score is None]
-        rest.sort(key=lambda x: (-x.sample_count, x.model_id))
+        rest.sort(key=lambda x: (-x.sample_count, x.provider_id, x.model_id))
         return ranked + rest

@@ -181,6 +181,13 @@ class AiStatsService:
             settings and getattr(settings, "openrouter_api_key_encrypted", None)
         )
         if not openrouter_configured:
+            try:
+                from app.ai.credentials import ProviderAccountService
+
+                openrouter_configured = ProviderAccountService(self.db).is_configured("openrouter")
+            except Exception:  # noqa: BLE001
+                pass
+        if not openrouter_configured:
             reasons.append("OpenRouter not configured")
 
         prefs = list_preferences(self.db, enabled_only=False)
@@ -230,6 +237,8 @@ class AiStatsService:
         for pref in prefs:
             priority_by_model[pref.model_id] = pref.priority
             priority_by_model[batch_base_model(pref.model_id)] = pref.priority
+            pid = getattr(pref, "provider_id", None) or "openrouter"
+            priority_by_model[f"{pid}|{pref.model_id}"] = pref.priority
 
         routing = self.recent_routing(limit=20)
         empty = current["requests"] == 0
@@ -296,12 +305,16 @@ class AiStatsService:
                 "clean_success_rate": month["clean_success_rate"],
                 "budget_percent_used": budget.percent_used,
                 "best_model_id": best.model_id if best else None,
+                "best_provider_id": best.provider_id if best else None,
                 "status": status,
             },
             "ranking": [
                 {
+                    "provider_id": r.provider_id,
+                    "provider_name": "OpenRouter" if r.provider_id == "openrouter" else r.provider_id.title(),
                     "model_id": r.model_id,
-                    "configured_priority": priority_by_model.get(r.model_id)
+                    "configured_priority": priority_by_model.get(f"{r.provider_id}|{r.model_id}")
+                    or priority_by_model.get(r.model_id)
                     or priority_by_model.get(batch_base_model(r.model_id)),
                     "adaptive_rank": r.adaptive_rank,
                     "adaptive_score": r.adaptive_score,
@@ -429,11 +442,14 @@ class AiStatsService:
         offset: int = 0,
         limit: int = 50,
         sort: str = "cost",
+        provider_id: str | None = None,
     ) -> dict[str, Any]:
         current_start, current_end, _, _ = period_bounds(period, start=start, end=end)
         query = self._filtered(current_start, current_end)
         if model:
             query = query.where(AiUsageRecordRow.model_id == model)
+        if provider_id:
+            query = query.where(AiUsageRecordRow.provider_id == provider_id)
         if tier:
             query = query.where(AiUsageRecordRow.tier == tier)
         if operation:
@@ -470,6 +486,7 @@ class AiStatsService:
                     "job_id": row.job_id,
                     "media_title": job.media_title if job else None,
                     "operation_type": row.operation_type,
+                    "provider_id": getattr(row, "provider_id", None) or "openrouter",
                     "model_id": row.model_id,
                     "tier": row.tier,
                     "trigger_type": row.trigger_type,
@@ -477,6 +494,8 @@ class AiStatsService:
                     "output_tokens": row.output_tokens,
                     "total_tokens": row.total_tokens,
                     "cost_usd": micro_to_usd(cost),
+                    "cost_source": getattr(row, "cost_source", None),
+                    "request_id": getattr(row, "request_id", None),
                     "status": row.status,
                     "failure_category": row.failure_category,
                     "outcome": row.outcome,
@@ -579,7 +598,9 @@ class AiStatsService:
                 "job_id": row.job_id,
                 "event": row.event,
                 "strategy": row.strategy,
+                "provider_id": getattr(row, "provider_id", None) or "openrouter",
                 "model_id": row.model_id,
+                "next_provider_id": getattr(row, "next_provider_id", None),
                 "next_model_id": row.next_model_id,
                 "failure_category": row.failure_category,
                 "detail": row.detail,

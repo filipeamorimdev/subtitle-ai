@@ -244,6 +244,22 @@ class SettingsService:
             row.allow_manual_budget_override = payload.allow_manual_budget_override
         self.db.add(row)
         self.db.commit()
+        # Mirror OpenRouter credentials into ai_provider_accounts (same ciphertext).
+        if payload.clear_openrouter_api_key or payload.openrouter_api_key:
+            try:
+                from app.ai.credentials import ProviderAccountService
+                from app.ai.providers.registry import get_provider_registry
+
+                accounts = ProviderAccountService(self.db, self.fernet)
+                account = accounts.ensure_account("openrouter")
+                account.api_key_encrypted = row.openrouter_api_key_encrypted
+                self.db.add(account)
+                self.db.commit()
+                provider = get_provider_registry().get_optional("openrouter")
+                if provider is not None:
+                    provider.invalidate_health_cache()
+            except Exception:  # noqa: BLE001
+                self.db.rollback()
         from app.services.model_preferences import seed_legacy_model_preference
 
         seed_legacy_model_preference(self.db)
@@ -256,5 +272,13 @@ class SettingsService:
 
     def get_openrouter_credentials(self) -> tuple[str | None, str]:
         row = self.get_or_create_row()
-        key = decrypt_secret(self.fernet, row.openrouter_api_key_encrypted)
+        # Prefer generic provider account; fall back to legacy settings column.
+        try:
+            from app.ai.credentials import ProviderAccountService
+
+            key = ProviderAccountService(self.db, self.fernet).get_api_key("openrouter")
+        except Exception:  # noqa: BLE001
+            key = decrypt_secret(self.fernet, row.openrouter_api_key_encrypted)
+        if key is None:
+            key = decrypt_secret(self.fernet, row.openrouter_api_key_encrypted)
         return key, row.openrouter_model

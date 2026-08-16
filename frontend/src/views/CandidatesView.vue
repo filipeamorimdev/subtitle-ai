@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
 import { useAppStore } from '../stores/app'
-import type { BatchJobsResult, Candidate } from '../types'
+import type { BatchJobsResult, Candidate, MediaRef } from '../types'
 
 type CandidateFilter = 'ready' | 'extract' | 'need-source' | 'target-exists'
 
@@ -19,6 +20,37 @@ const actionError = ref<string | null>(null)
 const actionInfo = ref<string | null>(null)
 const selectedKeys = ref<Set<string>>(new Set())
 const categoryFilter = ref<CandidateFilter | null>(null)
+const requestModalOpen = ref(false)
+const requestModalMedia = ref<MediaRef | null>(null)
+const requestModalLanguage = ref<string | null>(null)
+
+function candidateToMediaRef(item: Candidate): MediaRef {
+  const isMovie = item.media_type === 'movie'
+  return {
+    provider_id: 'bazarr',
+    external_id: isMovie
+      ? `movie:${item.bazarr_movie_id}`
+      : `episode:${item.bazarr_episode_id}`,
+    media_type: item.media_type,
+    title: item.title,
+    year: null,
+    season: null,
+    episode: null,
+    episode_title: null,
+    path: item.media_path,
+    parent_external_id:
+      !isMovie && item.bazarr_series_id != null ? `series:${item.bazarr_series_id}` : null,
+    bazarr_movie_id: item.bazarr_movie_id,
+    bazarr_series_id: item.bazarr_series_id,
+    bazarr_episode_id: item.bazarr_episode_id,
+  }
+}
+
+function openRequestSubtitles(item: Candidate) {
+  requestModalMedia.value = candidateToMediaRef(item)
+  requestModalLanguage.value = item.target_language
+  requestModalOpen.value = true
+}
 
 function isTargetDone(item: Candidate) {
   return item.reason_code === 'target_exists'
@@ -637,6 +669,13 @@ function statusText(item: Candidate) {
 
         <div class="mt-4 flex flex-wrap gap-2">
           <button
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+            type="button"
+            @click="openRequestSubtitles(item)"
+          >
+            Request subtitles
+          </button>
+          <button
             v-if="item.latest_job_id != null"
             class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
             type="button"
@@ -760,6 +799,13 @@ function statusText(item: Candidate) {
               class="sticky right-0 bg-white/95 px-4 py-3 align-top shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] dark:bg-ink-900/95"
             >
               <div class="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                  type="button"
+                  @click="openRequestSubtitles(item)"
+                >
+                  Request subtitles
+                </button>
                 <button
                   v-if="item.latest_job_id != null"
                   class="rounded-md border border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-800 hover:bg-ink-100 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
@@ -951,5 +997,12 @@ function statusText(item: Candidate) {
         </table>
       </div>
     </details>
+
+    <RequestSubtitlesModal
+      :open="requestModalOpen"
+      :initial-media="requestModalMedia"
+      :initial-language="requestModalLanguage"
+      @close="requestModalOpen = false"
+    />
   </section>
 </template>

@@ -16,6 +16,11 @@ import type {
   JobAction,
   JobLog,
   JobUsage,
+  LanguageCatalogItem,
+  LocalizationTask,
+  MediaItem,
+  MediaLocalization,
+  MediaRef,
   OpenRouterModelsResult,
   Settings,
   SettingsUpdate,
@@ -25,6 +30,7 @@ import type {
   AiUsagePage,
   AiCosts,
   AiRouting,
+  AiProviderInfo,
 } from '../types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -184,7 +190,11 @@ export const api = {
     return request<AiCosts>(`/api/ai/costs?${search}`)
   },
   getAiModels: () => request<AiModelsPayload>('/api/ai/models'),
-  refreshAiModels: () => request<{ ok: boolean; stale: boolean; message?: string; count: number }>('/api/ai/models/refresh', { method: 'POST' }),
+  refreshAiModels: (provider_id = 'openrouter') =>
+    request<{ ok: boolean; stale: boolean; message?: string; count: number; pricing_freshness?: string }>(
+      `/api/ai/models/refresh?provider_id=${encodeURIComponent(provider_id)}`,
+      { method: 'POST' },
+    ),
   testAiModel: (model_id: string) =>
     request<ConnectionTestResult>('/api/ai/models/test', {
       method: 'POST',
@@ -213,4 +223,90 @@ export const api = {
   }) =>
     request<AiRouting>('/api/ai/routing', { method: 'PUT', body: JSON.stringify(payload) }),
   getAiBudget: () => request<AiOverview['budget']>('/api/ai/budget'),
+  getAiProviders: () => request<{ providers: AiProviderInfo[] }>('/api/ai/providers'),
+  updateAiProvider: (
+    provider_id: string,
+    payload: {
+      api_key?: string
+      clear_api_key?: boolean
+      base_url?: string
+      clear_base_url?: boolean
+      enabled?: boolean
+      openrouter_log_full_exchanges?: boolean
+    },
+  ) =>
+    request(`/api/ai/providers/${encodeURIComponent(provider_id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteAiProvider: (provider_id: string) =>
+    request(`/api/ai/providers/${encodeURIComponent(provider_id)}`, { method: 'DELETE' }),
+  testAiProvider: (provider_id: string, opts: { fresh?: boolean; model_id?: string } = {}) => {
+    const search = new URLSearchParams()
+    if (opts.fresh) search.set('fresh', 'true')
+    if (opts.model_id) search.set('model_id', opts.model_id)
+    const q = search.toString()
+    return request<ConnectionTestResult>(
+      `/api/ai/providers/${encodeURIComponent(provider_id)}/test${q ? `?${q}` : ''}`,
+      { method: 'POST' },
+    )
+  },
+
+  getLanguages: () => request<LanguageCatalogItem[]>('/api/languages'),
+  searchMedia: (q: string) =>
+    request<MediaRef[]>(`/api/media/search?q=${encodeURIComponent(q)}`),
+  listMedia: (limit = 100) => request<MediaItem[]>(`/api/media?limit=${limit}`),
+  ensureMedia: (payload: Partial<MediaRef> & { external_id?: string }) =>
+    request<MediaItem>('/api/media', { method: 'POST', body: JSON.stringify(payload) }),
+  getMedia: (id: number) => request<MediaItem>(`/api/media/${id}`),
+  getMediaLocalization: (id: number) =>
+    request<MediaLocalization>(`/api/media/${id}/localization`),
+  createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {
+    const response = await fetch(`/api/media/${mediaId}/localization-tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (response.status === 409 && body?.error === 'active_task_exists') {
+      const err = new Error(body.detail || 'Active task already exists') as Error & {
+        code?: string
+        taskId?: number
+      }
+      err.code = 'active_task_exists'
+      err.taskId = body.task_id
+      throw err
+    }
+    if (!response.ok) {
+      const detail = body.detail || response.statusText
+      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    }
+    return body as LocalizationTask
+  },
+  getLocalizationTasks: (params?: {
+    status?: string
+    origin?: string
+    capability?: string
+    language?: string
+    media_type?: string
+    active_only?: boolean
+    limit?: number
+  }) => {
+    const query = new URLSearchParams()
+    if (params?.status) query.set('status', params.status)
+    if (params?.origin) query.set('origin', params.origin)
+    if (params?.capability) query.set('capability', params.capability)
+    if (params?.language) query.set('language', params.language)
+    if (params?.media_type) query.set('media_type', params.media_type)
+    if (params?.active_only) query.set('active_only', 'true')
+    if (params?.limit != null) query.set('limit', String(params.limit))
+    const suffix = query.toString() ? `?${query}` : ''
+    return request<LocalizationTask[]>(`/api/localization-tasks${suffix}`)
+  },
+  getLocalizationTask: (id: number) =>
+    request<LocalizationTask>(`/api/localization-tasks/${id}`),
+  retryLocalizationTask: (id: number) =>
+    request<LocalizationTask>(`/api/localization-tasks/${id}/retry`, { method: 'POST' }),
+  cancelLocalizationTask: (id: number) =>
+    request<LocalizationTask>(`/api/localization-tasks/${id}/cancel`, { method: 'POST' }),
 }

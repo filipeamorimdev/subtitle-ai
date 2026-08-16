@@ -1,4 +1,4 @@
-"""Deterministic OpenRouter model routing (policy + priority + budget)."""
+"""Deterministic provider-neutral model routing (policy + priority + budget)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,11 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
+from app.ai.errors import AIProviderError
+from app.ai.models import AIModelCandidate
+from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID
 from app.core.logging import get_logger
-from app.db.models import AiRoutingEventRow, JobRow, OpenRouterModelPreferenceRow, SettingsRow
+from app.db.models import AiModelPreferenceRow, AiRoutingEventRow, JobRow, SettingsRow
 from app.services.ai_budget import AiBudgetService
 from app.services.ai_cost import (
     CONSERVATIVE_COST_MULTIPLIER,
@@ -18,6 +21,7 @@ from app.services.model_catalog import ModelCatalogService
 from app.services.model_preferences import list_preferences
 
 logger = get_logger("model_router")
+
 
 class RoutingBlockedError(Exception):
     def __init__(self, message: str, *, reason_code: str) -> None:
@@ -35,6 +39,7 @@ FAILURE_UNKNOWN_PRICING = "unknown_pricing"
 FAILURE_INCOMPATIBLE = "incompatible"
 FAILURE_CANCELLED = "cancelled"
 FAILURE_CONTEXT = "context_overflow"
+FAILURE_AUTH = "auth_error"
 
 TECHNICAL_FAILURES = frozenset(
     {
@@ -57,20 +62,13 @@ class RoutingPolicy:
     batch_size: int = 25
 
 
-@dataclass
-class ModelCandidate:
-    model_id: str
-    tier: str  # free | paid | unknown
-    priority: int
-    preference_id: int | None = None
-    estimated_cost_micro_usd: int | None = None
-    context_length: int | None = None
-    skip_reason: str | None = None
+# Backward-compatible alias.
+ModelCandidate = AIModelCandidate
 
 
 @dataclass
 class RoutingResult:
-    candidates: list[ModelCandidate] = field(default_factory=list)
+    candidates: list[AIModelCandidate] = field(default_factory=list)
     blocked_reason: str | None = None
     strategy: str = "free_first"
 
@@ -86,31 +84,51 @@ def policy_from_settings(row: SettingsRow) -> RoutingPolicy:
     )
 
 
-def classify_openrouter_failure(exc: Exception) -> str:
-    from app.translation.openrouter.client import OpenRouterError
-
-    if isinstance(exc, OpenRouterError):
-        status = getattr(exc, "status_code", None)
-        message = str(exc).lower()
-        if status == 429 or "rate limited" in message:
-            return FAILURE_RATE_LIMIT
-        if status == 408 or "timed out" in message or "timeout" in message:
-            return FAILURE_TIMEOUT
-        if status is not None and status >= 500:
-            return FAILURE_PROVIDER
-        if "connection" in message:
-            return FAILURE_TIMEOUT
-        if "malformed" in message or "invalid" in message:
-            return FAILURE_INVALID
-        if "validation" in message:
-            return FAILURE_VALIDATION
-        if "context" in message:
-            return FAILURE_CONTEXT
-        if getattr(exc, "retryable", False):
-            return FAILURE_PROVIDER
-        if "validation" in message:
-            return FAILURE_VALIDATION
+def classify_provider_failure(exc: Exception) -> str:
+    """Map provider/translation exceptions to router failure categories."""
+    if isinstance(exc, AIProviderError):
+        category = getattr(exc, "category", None) or FAILURE_PROVIDER
+        if category in TECHNICAL_FAILURES or category in (
+            FAILURE_AUTH,
+            FAILURE_VALIDATION,
+            FAILURE_BUDGET,
+            FAILURE_UNKNOWN_PRICING,
+            FAILURE_INCOMPATIBLE,
+            FAILURE_CANCELLED,
+        ):
+            return category
+        # Normalize known aliases.
+        if category == "auth_error":
+            return FAILURE_AUTH
         return FAILURE_PROVIDER
+
+    # Legacy OpenRouterError (HTTP client) — keep mapping for transitional paths.
+    try:
+        from app.translation.openrouter.client import OpenRouterError
+
+        if isinstance(exc, OpenRouterError):
+            status = getattr(exc, "status_code", None)
+            message = str(exc).lower()
+            if status == 429 or "rate limited" in message:
+                return FAILURE_RATE_LIMIT
+            if status == 408 or "timed out" in message or "timeout" in message:
+                return FAILURE_TIMEOUT
+            if status is not None and status >= 500:
+                return FAILURE_PROVIDER
+            if "connection" in message:
+                return FAILURE_TIMEOUT
+            if "malformed" in message or "invalid" in message:
+                return FAILURE_INVALID
+            if "validation" in message:
+                return FAILURE_VALIDATION
+            if "context" in message:
+                return FAILURE_CONTEXT
+            if getattr(exc, "retryable", False):
+                return FAILURE_PROVIDER
+            return FAILURE_PROVIDER
+    except ImportError:
+        pass
+
     message = str(exc).lower()
     if "cancel" in message:
         return FAILURE_CANCELLED
@@ -119,6 +137,10 @@ def classify_openrouter_failure(exc: Exception) -> str:
     if "validation" in message:
         return FAILURE_VALIDATION
     return FAILURE_PROVIDER
+
+
+# Backward-compatible alias used by existing tests/call sites.
+classify_openrouter_failure = classify_provider_failure
 
 
 def is_technical_failure(category: str) -> bool:
@@ -136,7 +158,7 @@ class ModelRouter:
         *,
         job: JobRow | None = None,
         policy: RoutingPolicy | None = None,
-        preferences: list[OpenRouterModelPreferenceRow] | None = None,
+        preferences: list[AiModelPreferenceRow] | None = None,
         estimated_input_tokens: int = 0,
         estimated_output_tokens: int = 0,
         trigger_type: str = "manual",
@@ -151,7 +173,7 @@ class ModelRouter:
         free = sorted([p for p in prefs if p.tier == "free" and p.enabled], key=lambda p: p.priority)
         paid = sorted([p for p in prefs if p.tier == "paid" and p.enabled], key=lambda p: p.priority)
 
-        ordered: list[OpenRouterModelPreferenceRow] = []
+        ordered: list[AiModelPreferenceRow] = []
         strategy = pol.strategy
         if strategy == "free_only":
             ordered = free
@@ -166,25 +188,38 @@ class ModelRouter:
             if pol.allow_paid_fallback:
                 ordered.extend(paid)
 
-        seen: set[str] = set()
-        candidates: list[ModelCandidate] = []
+        seen: set[tuple[str, str]] = set()
+        candidates: list[AIModelCandidate] = []
         budget_status = self.budget.status()
         remaining = budget_status.remaining_micro_usd
         bypass = self.budget.can_bypass(trigger_type=trigger_type)
         skipped_by_cost = False
 
         for pref in ordered:
-            if pref.model_id in seen:
+            provider_id = getattr(pref, "provider_id", None) or OPENROUTER_PROVIDER_ID
+            identity = (provider_id, pref.model_id)
+            if identity in seen:
                 continue
-            seen.add(pref.model_id)
+            seen.add(identity)
 
-            meta = self.catalog.annotate_model(pref.model_id, batch_size=pol.batch_size)
+            meta = self.catalog.annotate_model(
+                pref.model_id, batch_size=pol.batch_size, provider_id=provider_id
+            )
             pricing_tier = meta.get("pricing_tier") or "unknown"
-            # Prefer preference pool tier for free/paid routing, but honor unknown pricing.
             pool_tier = pref.tier
-            info = self.catalog.get_model(pref.model_id)
+            info = self.catalog.get_model(provider_id, pref.model_id)
+
+            # Skip models past hard sunset (warn-only for announced deprecation).
+            if info is not None and info.is_past_sunset():
+                logger.info(
+                    "provider=%s model=%s skipped past_sunset replacement=%s",
+                    provider_id,
+                    pref.model_id,
+                    info.replacement_model_id,
+                )
+                continue
+
             if info is None:
-                # Catalog miss must not block a configured v0.1/v0.2 model.
                 effective_tier = pool_tier
             elif pricing_tier == "unknown":
                 effective_tier = "unknown"
@@ -209,7 +244,6 @@ class ModelRouter:
                 )
                 est = cons.conservative_cost_micro_usd
             elif estimated_input_tokens or estimated_output_tokens:
-                # Same conservative 1.25 multiplier as estimate_conservative_job_cost_micro.
                 raw = estimate_request_cost_micro(
                     estimated_input_tokens=max(estimated_input_tokens, 1),
                     estimated_output_tokens=max(estimated_output_tokens, 1),
@@ -225,14 +259,12 @@ class ModelRouter:
                         )
                     )
 
-            # Per-job cap: skip paid models that cannot fit.
             if effective_tier == "paid" and est is not None:
                 cap = pol.maximum_cost_per_job_micro_usd
                 if cap is not None and est > int(cap):
                     skipped_by_cost = True
                     continue
 
-            # Monthly budget: skip paid models that cannot fit remaining.
             if (
                 effective_tier == "paid"
                 and budget_status.enabled
@@ -244,14 +276,20 @@ class ModelRouter:
                 skipped_by_cost = True
                 continue
 
+            caps = set(meta.get("capabilities") or [])
+            if info is not None:
+                caps = set(info.capabilities)
+
             candidates.append(
-                ModelCandidate(
+                AIModelCandidate(
+                    provider_id=provider_id,
                     model_id=pref.model_id,
                     tier=effective_tier if effective_tier != "unknown" else pool_tier,
                     priority=pref.priority,
                     preference_id=pref.id,
                     estimated_cost_micro_usd=est,
                     context_length=meta.get("context_length"),
+                    capabilities=caps,
                 )
             )
 
@@ -264,28 +302,33 @@ class ModelRouter:
 
         result = RoutingResult(candidates=candidates, blocked_reason=blocked, strategy=strategy)
         job_id = job.id if job else None
+        selected = candidates[0] if candidates else None
         logger.info(
-            "job=%s strategy=%s candidates=%s selected=%s blocked=%s",
+            "job=%s strategy=%s candidates=%s selected_provider=%s selected_model=%s blocked=%s",
             job_id,
             strategy,
-            [c.model_id for c in candidates],
-            candidates[0].model_id if candidates else None,
+            [f"{c.provider_id}/{c.model_id}" for c in candidates],
+            selected.provider_id if selected else None,
+            selected.model_id if selected else None,
             blocked,
         )
-        if candidates:
+        if selected:
             self.record_event(
                 job_id=job_id,
                 event="selected",
                 strategy=strategy,
-                model_id=candidates[0].model_id,
-                detail=f"candidates={[c.model_id for c in candidates]}",
+                provider_id=selected.provider_id,
+                model_id=selected.model_id,
+                detail=f"candidates={[f'{c.provider_id}/{c.model_id}' for c in candidates]}",
             )
         elif blocked:
             self.record_event(
                 job_id=job_id,
                 event="blocked",
                 strategy=strategy,
-                failure_category=FAILURE_BUDGET if blocked == "blocked_by_cost_policy" else FAILURE_INCOMPATIBLE,
+                failure_category=FAILURE_BUDGET
+                if blocked == "blocked_by_cost_policy"
+                else FAILURE_INCOMPATIBLE,
                 detail=blocked,
             )
         return result
@@ -296,7 +339,9 @@ class ModelRouter:
         job_id: int | None,
         event: str,
         strategy: str | None = None,
+        provider_id: str | None = None,
         model_id: str | None = None,
+        next_provider_id: str | None = None,
         next_model_id: str | None = None,
         failure_category: str | None = None,
         detail: str | None = None,
@@ -305,7 +350,10 @@ class ModelRouter:
             job_id=job_id,
             event=event,
             strategy=strategy,
+            provider_id=provider_id or (OPENROUTER_PROVIDER_ID if model_id else None),
             model_id=model_id,
+            next_provider_id=next_provider_id
+            or (OPENROUTER_PROVIDER_ID if next_model_id else None),
             next_model_id=next_model_id,
             failure_category=failure_category,
             detail=(detail or "")[:512] or None,
@@ -321,19 +369,26 @@ class ModelRouter:
         next_model_id: str | None,
         failure_category: str,
         strategy: str | None = None,
+        provider_id: str = OPENROUTER_PROVIDER_ID,
+        next_provider_id: str | None = None,
     ) -> None:
+        next_pid = next_provider_id or (provider_id if next_model_id else None)
         logger.info(
-            "job=%s model=%s failure=%s fallback=%s",
+            "job=%s provider=%s model=%s failure=%s next_provider=%s next_model=%s",
             job_id,
+            provider_id,
             model_id,
             failure_category,
+            next_pid,
             next_model_id,
         )
         self.record_event(
             job_id=job_id,
             event="fallback" if next_model_id else "blocked",
             strategy=strategy,
+            provider_id=provider_id,
             model_id=model_id,
+            next_provider_id=next_pid,
             next_model_id=next_model_id,
             failure_category=failure_category,
         )

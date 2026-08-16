@@ -183,6 +183,7 @@ onMounted(load)
                 <tr>
                   <th class="py-2 pr-3">Priority</th>
                   <th class="py-2 pr-3">Adaptive</th>
+                  <th class="py-2 pr-3">Provider</th>
                   <th class="py-2 pr-3">Model</th>
                   <th class="py-2 pr-3">Clean</th>
                   <th class="py-2 pr-3">Cost</th>
@@ -191,7 +192,7 @@ onMounted(load)
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in overview.ranking" :key="row.model_id" class="border-t border-ink-100 dark:border-ink-800">
+                <tr v-for="row in overview.ranking" :key="`${row.provider_id || 'openrouter'}:${row.model_id}`" class="border-t border-ink-100 dark:border-ink-800">
                   <td class="py-2 pr-3">
                     <span v-if="row.configured_priority != null" class="rounded bg-ink-100 px-1.5 py-0.5 text-xs font-semibold dark:bg-ink-800">
                       Priority #{{ row.configured_priority }}
@@ -207,6 +208,7 @@ onMounted(load)
                     </span>
                     <span v-else class="text-xs text-ink-500">insufficient data</span>
                   </td>
+                  <td class="py-2 pr-3">{{ row.provider_name || row.provider_id || 'OpenRouter' }}</td>
                   <td class="py-2 pr-3 font-medium">{{ row.model_id }}</td>
                   <td class="py-2 pr-3">{{ formatPct(row.clean_success_rate) }}</td>
                   <td class="py-2 pr-3">{{ formatUsd(row.average_cost_per_clean_success_usd, 4) }}</td>
@@ -252,9 +254,11 @@ onMounted(load)
             <ul v-if="overview.routing.length" class="mt-3 space-y-2 text-sm">
               <li v-for="event in overview.routing" :key="event.id" class="flex flex-wrap gap-2">
                 <span class="text-ink-500">{{ event.created_at ? formatDateTime(event.created_at) : '—' }}</span>
-                <span class="font-medium">{{ event.model_id || '—' }}</span>
+                <span class="font-medium">{{ event.provider_id || 'openrouter' }} / {{ event.model_id || '—' }}</span>
                 <span>{{ event.event }}</span>
-                <span v-if="event.next_model_id" class="text-ink-500">→ {{ event.next_model_id }}</span>
+                <span v-if="event.next_model_id" class="text-ink-500">
+                  → {{ event.next_provider_id || event.provider_id || 'openrouter' }} / {{ event.next_model_id }}
+                </span>
                 <span v-if="event.failure_category" class="text-amber-700 dark:text-amber-300">{{ event.failure_category }}</span>
               </li>
             </ul>

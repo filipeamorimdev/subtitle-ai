@@ -199,6 +199,7 @@ class RequestSubtitleResult(BaseModel):
 class JobOut(BaseModel):
     id: int
     candidate_key: str | None
+    task_id: int | None = None
     job_kind: str = "translate"
     trigger_type: str = "manual"
     media_type: str
@@ -211,6 +212,7 @@ class JobOut(BaseModel):
     target_subtitle_path: str
     source_language: str
     target_language: str
+    provider_id: str = "openrouter"
     model: str
     status: str
     progress: float
@@ -501,3 +503,118 @@ class AiBudgetOut(BaseModel):
     reserved: float = 0
     percent_used: float | None = None
     allow_manual_override: bool = False
+
+
+# --- Localization / media (v0.3) ---
+
+
+class LanguageCatalogOut(BaseModel):
+    code: str
+    display_name: str
+    aliases: list[str] = Field(default_factory=list)
+
+
+class MediaRefOut(BaseModel):
+    id: int | None = None
+    provider_id: str
+    external_id: str
+    media_type: Literal["movie", "series", "episode"]
+    title: str
+    year: int | None = None
+    season: int | None = None
+    episode: int | None = None
+    episode_title: str | None = None
+    path: str | None = None
+    parent_external_id: str | None = None
+    bazarr_movie_id: int | None = None
+    bazarr_series_id: int | None = None
+    bazarr_episode_id: int | None = None
+
+
+class MediaItemOut(BaseModel):
+    id: int
+    provider_id: str
+    external_id: str
+    media_type: str
+    title: str
+    year: int | None = None
+    path: str | None = None
+    season: int | None = None
+    episode: int | None = None
+    episode_title: str | None = None
+    bazarr_movie_id: int | None = None
+    bazarr_series_id: int | None = None
+    bazarr_episode_id: int | None = None
+    parent_media_id: int | None = None
+    created_at: DateTimeOut
+    updated_at: DateTimeOut
+
+
+class LanguageAvailabilityOut(BaseModel):
+    language_code: str
+    language_name: str | None = None
+    available: bool = False
+    task_status: str | None = None
+    task_id: int | None = None
+
+
+class MediaLocalizationOut(BaseModel):
+    media_id: int
+    capability: str = "subtitles"
+    languages: list[LanguageAvailabilityOut] = Field(default_factory=list)
+
+
+class LocalizationTaskCreate(BaseModel):
+    target_language: str
+    capability: str = "subtitles"
+
+
+class MediaEnsureIn(BaseModel):
+    """Upsert a media item from a search hit or candidate IDs."""
+
+    provider_id: str = "bazarr"
+    external_id: str | None = None
+    media_type: Literal["movie", "series", "episode"] | None = None
+    title: str | None = None
+    year: int | None = None
+    path: str | None = None
+    season: int | None = None
+    episode: int | None = None
+    episode_title: str | None = None
+    bazarr_movie_id: int | None = None
+    bazarr_series_id: int | None = None
+    bazarr_episode_id: int | None = None
+    parent_external_id: str | None = None
+
+
+class TaskAiSummaryOut(BaseModel):
+    requests: int = 0
+    tokens: int = 0
+    cost_usd: float = 0.0
+    provider_id: str | None = None
+    model_id: str | None = None
+
+
+class LocalizationTaskOut(BaseModel):
+    id: int
+    media_item_id: int
+    media_title: str | None = None
+    media_type: str | None = None
+    media_year: int | None = None
+    target_language_code: str
+    target_language_name: str
+    capability: str
+    status: str
+    substate: str | None = None
+    origin: str
+    priority: str
+    requested_by: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: DateTimeOut
+    started_at: DateTimeOut
+    completed_at: DateTimeOut
+    updated_at: DateTimeOut
+    executions: list[JobOut] = Field(default_factory=list)
+    ai: TaskAiSummaryOut | None = None
+    progress_steps: list[dict[str, str]] = Field(default_factory=list)

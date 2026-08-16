@@ -76,6 +76,34 @@ def init_db() -> None:
             conn.execute(
                 text("ALTER TABLE jobs ADD COLUMN trigger_type VARCHAR(16) NOT NULL DEFAULT 'manual'")
             )
+        if "provider_id" not in job_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE jobs ADD COLUMN provider_id VARCHAR(64) NOT NULL DEFAULT 'openrouter'"
+                )
+            )
+        if "task_id" not in job_columns:
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN task_id INTEGER"))
+
+        # Active-task uniqueness (partial unique index) for deployments using create_all.
+        task_indexes = {
+            row[1]
+            for row in conn.execute(text("PRAGMA index_list(localization_tasks)")).fetchall()
+        }
+        if "localization_tasks" in {
+            r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
+        } and "uq_localization_tasks_active" not in task_indexes:
+            conn.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX uq_localization_tasks_active
+                    ON localization_tasks (media_item_id, target_language_code, capability)
+                    WHERE status IN (
+                        'requested', 'planning', 'waiting_for_source', 'processing', 'verifying'
+                    )
+                    """
+                )
+            )
 
         settings_rows = conn.execute(text("PRAGMA table_info(settings)")).fetchall()
         settings_columns = {row[1] for row in settings_rows}
@@ -101,12 +129,60 @@ def init_db() -> None:
             if column not in settings_columns:
                 conn.execute(text(ddl))
 
-    # Seed legacy openrouter_model into preferences if pools are empty.
+        # Provider-aware columns on existing AI / cache tables.
+        usage_cols = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(ai_usage_records)")).fetchall()
+        }
+        if usage_cols:
+            for column, ddl in (
+                (
+                    "provider_id",
+                    "ALTER TABLE ai_usage_records ADD COLUMN provider_id VARCHAR(64) NOT NULL DEFAULT 'openrouter'",
+                ),
+                ("request_id", "ALTER TABLE ai_usage_records ADD COLUMN request_id VARCHAR(64)"),
+                (
+                    "attempt_number",
+                    "ALTER TABLE ai_usage_records ADD COLUMN attempt_number INTEGER",
+                ),
+                ("cost_source", "ALTER TABLE ai_usage_records ADD COLUMN cost_source VARCHAR(32)"),
+            ):
+                if column not in usage_cols:
+                    conn.execute(text(ddl))
+
+        routing_cols = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(ai_routing_events)")).fetchall()
+        }
+        if routing_cols:
+            for column, ddl in (
+                ("provider_id", "ALTER TABLE ai_routing_events ADD COLUMN provider_id VARCHAR(64)"),
+                (
+                    "next_provider_id",
+                    "ALTER TABLE ai_routing_events ADD COLUMN next_provider_id VARCHAR(64)",
+                ),
+            ):
+                if column not in routing_cols:
+                    conn.execute(text(ddl))
+
+        cache_cols = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(translation_cache)")).fetchall()
+        }
+        if cache_cols and "provider_id" not in cache_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE translation_cache ADD COLUMN provider_id VARCHAR(64) NOT NULL DEFAULT 'openrouter'"
+                )
+            )
+
+    # Seed legacy openrouter_model into preferences if pools are empty,
+    # then migrate into provider-aware tables.
+    from app.ai.migration import migrate_legacy_openrouter
     from app.services.model_preferences import seed_legacy_model_preference
 
     session = get_session_factory()()
     try:
         seed_legacy_model_preference(session)
+        session.flush()
+        migrate_legacy_openrouter(session)
         session.commit()
     except Exception:  # noqa: BLE001
         session.rollback()

@@ -5,20 +5,31 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from app.ai.errors import AIProviderError
 from app.core.logging import get_logger
 from app.db.models import GlossaryScopeRow, GlossaryTermRow
 from app.services.glossary_universes import UniverseDef, match_universe, universe_keys
 from app.subtitles.models import SubtitleDocument
-from app.translation.openrouter.client import (
-    ChatResult,
-    OpenRouterClient,
-    OpenRouterError,
-    batch_base_model,
-)
+from app.translation.openrouter.client import ChatResult, batch_base_model
+
+# Alias for transitional catch blocks.
+OpenRouterError = AIProviderError
+
+
+async def _provider_chat(
+    client: Any, *, model: str, messages: list[dict[str, str]], **kwargs: Any
+) -> Any:
+    """Call chat_completion with model_id= (AIProvider) or model= (legacy client)."""
+    try:
+        return await client.chat_completion(model_id=model, messages=messages, **kwargs)
+    except TypeError:
+        return await client.chat_completion(model=model, messages=messages, **kwargs)
+
 
 logger = get_logger("glossary")
 
@@ -716,7 +727,7 @@ class GlossaryService:
         self,
         *,
         media_title: str | None,
-        client: OpenRouterClient | None,
+        client: Any | None,
         model: str | None,
     ) -> tuple[UniverseDef | None, str | None, int, int, int]:
         """Return (curated universe, custom key/name via LLM), plus token usage."""
@@ -726,7 +737,8 @@ class GlossaryService:
         if not client or not model or not media_title:
             return None, None, 0, 0, 0
         try:
-            result = await client.chat_completion(
+            result = await _provider_chat(
+                client,
                 model=batch_base_model(model),
                 messages=[
                     {"role": "system", "content": UNIVERSE_CLASSIFY_SYSTEM},
@@ -734,7 +746,7 @@ class GlossaryService:
                 ],
                 temperature=0,
             )
-        except OpenRouterError as exc:
+        except (AIProviderError, Exception) as exc:
             logger.warning("Universe classification failed: %s", exc)
             return None, None, 0, 0, 0
         key, other_name, _ = parse_universe_json(result.content)
@@ -754,15 +766,16 @@ class GlossaryService:
     async def extract_terms(
         self,
         *,
-        client: OpenRouterClient,
+        client: Any,
         model: str,
         media_title: str | None,
         target_language_code: str,
         target_language_name: str,
         document: SubtitleDocument,
-    ) -> tuple[list[dict], ChatResult]:
+    ) -> tuple[list[dict], Any]:
         sample = sample_document_text(document)
-        result = await client.chat_completion(
+        result = await _provider_chat(
+            client,
             model=batch_base_model(model),
             messages=[
                 {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
@@ -783,7 +796,7 @@ class GlossaryService:
     async def prepare_for_translation(
         self,
         *,
-        client: OpenRouterClient,
+        client: Any,
         model: str,
         media_type: str,
         media_title: str | None,

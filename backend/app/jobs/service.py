@@ -39,14 +39,19 @@ from app.integrations.bazarr.paths import (
     is_under_roots,
     mappings_from_settings,
 )
+from app.ai.bootstrap import bootstrap_providers
+from app.ai.credentials import ProviderAccountService
+from app.ai.errors import AIProviderError
+from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID, OpenRouterProvider
+from app.ai.providers.registry import get_provider_registry
 from app.services.ai_budget import AiBudgetService, BudgetBlockedError
-from app.services.ai_usage import AiUsageService, RecordingOpenRouterClient
-from app.services.candidates import CandidateService, to_bazarr_code2
+from app.services.ai_usage import AiUsageService, RecordingAIProvider
+from app.services.candidates import CandidateService, candidate_key, to_bazarr_code2
 from app.services.glossary import GlossaryService
 from app.services.model_router import (
     ModelRouter,
     RoutingBlockedError,
-    classify_openrouter_failure,
+    classify_provider_failure,
     is_technical_failure,
 )
 from app.services.settings import SettingsService
@@ -69,13 +74,18 @@ from app.subtitles.validation import validate_source
 from app.subtitles.writer.srt import write_srt_atomic
 from app.jobs.usage import aggregate_usage, parse_exchanges
 from app.services.ai_cost import effective_cost_micro, micro_price_to_per_million, micro_to_usd
-from app.translation.openrouter.client import OpenRouterClient, OpenRouterError
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
-from app.translation.openrouter.service import (
-    OpenRouterTranslationService,
+from app.translation.service import (
     RetryableTranslationError,
     TranslationCheckpoint,
+    TranslationService,
 )
+
+# Backward-compatible aliases.
+OpenRouterError = AIProviderError
+classify_openrouter_failure = classify_provider_failure
+RecordingOpenRouterClient = RecordingAIProvider
+OpenRouterTranslationService = TranslationService
 
 logger = get_logger("jobs")
 
@@ -97,8 +107,14 @@ def content_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def dedupe_key(source_hash: str, target_language: str, model: str) -> str:
-    raw = f"{source_hash}|{target_language}|{model}"
+def dedupe_key(
+    source_hash: str,
+    target_language: str,
+    model: str,
+    *,
+    provider_id: str = OPENROUTER_PROVIDER_ID,
+) -> str:
+    raw = f"{source_hash}|{target_language}|{provider_id}|{model}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -106,6 +122,7 @@ def job_to_out(row: JobRow) -> JobOut:
     return JobOut(
         id=row.id,
         candidate_key=row.candidate_key,
+        task_id=getattr(row, "task_id", None),
         job_kind=getattr(row, "job_kind", None) or "translate",
         trigger_type=getattr(row, "trigger_type", None) or "manual",
         media_type=row.media_type,
@@ -118,6 +135,7 @@ def job_to_out(row: JobRow) -> JobOut:
         target_subtitle_path=row.target_subtitle_path,
         source_language=row.source_language,
         target_language=row.target_language,
+        provider_id=getattr(row, "provider_id", None) or OPENROUTER_PROVIDER_ID,
         model=row.model,
         status=row.status,
         progress=row.progress,
@@ -133,6 +151,19 @@ def job_to_out(row: JobRow) -> JobOut:
         started_at=row.started_at,
         completed_at=row.completed_at,
     )
+
+
+def _bind_task_id(db, row: JobRow, task_id: int | None) -> JobRow:
+    """Attach localization task_id to a job when provided."""
+    if task_id is None or row is None:
+        return row
+    if getattr(row, "task_id", None) == task_id:
+        return row
+    row.task_id = task_id
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -654,12 +685,19 @@ class JobService:
         *,
         candidate: CandidateOut | None = None,
         trigger_type: str = "manual",
+        task_id: int | None = None,
     ) -> JobOut:
         public = self.settings.get_public()
+        accounts = ProviderAccountService(self.db)
+        openrouter_key = accounts.get_api_key(OPENROUTER_PROVIDER_ID)
         _, model = self.settings.get_openrouter_credentials()
-        openrouter_key, _ = self.settings.get_openrouter_credentials()
         if not openrouter_key:
-            raise OpenRouterError("OpenRouter API key is not configured")
+            raise AIProviderError(
+                "OpenRouter API key is not configured",
+                category="auth_error",
+                is_retryable=False,
+                provider_id=OPENROUTER_PROVIDER_ID,
+            )
 
         trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
         candidate_key = payload.candidate_key
@@ -733,6 +771,7 @@ class JobService:
             self.db.add(row)
             self.db.commit()
             self.db.refresh(row)
+            row = _bind_task_id(self.db, row, task_id)
             return job_to_out(row)
 
         # Prevent duplicate active jobs for same candidate/target
@@ -754,6 +793,7 @@ class JobService:
                 )
             )
         if existing:
+            existing = _bind_task_id(self.db, existing, task_id)
             return job_to_out(existing)
 
         src_hash = content_hash(source)
@@ -761,14 +801,34 @@ class JobService:
         routing = router.select_models(trigger_type=trigger)
         candidate_models = [c.model_id for c in routing.candidates] or [model]
         completed = None
-        dkey = dedupe_key(src_hash, target_language, candidate_models[0])
+        dkey = dedupe_key(
+            src_hash, target_language, candidate_models[0], provider_id=OPENROUTER_PROVIDER_ID
+        )
         cache_model = candidate_models[0]
         for candidate_model in candidate_models:
-            maybe_key = dedupe_key(src_hash, target_language, candidate_model)
+            maybe_key = dedupe_key(
+                src_hash, target_language, candidate_model, provider_id=OPENROUTER_PROVIDER_ID
+            )
             hit = self.db.scalar(
                 select(JobRow).where(
                     JobRow.job_kind == "translate",
                     JobRow.dedupe_key == maybe_key,
+                    JobRow.status == "completed",
+                )
+            )
+            if hit and Path(hit.target_subtitle_path).exists():
+                completed = hit
+                dkey = maybe_key
+                cache_model = candidate_model
+                break
+            # Legacy cache identity (pre-provider): still treat as OpenRouter hit.
+            legacy_key = hashlib.sha256(
+                f"{src_hash}|{target_language}|{candidate_model}".encode("utf-8")
+            ).hexdigest()
+            hit = self.db.scalar(
+                select(JobRow).where(
+                    JobRow.job_kind == "translate",
+                    JobRow.dedupe_key == legacy_key,
                     JobRow.status == "completed",
                 )
             )
@@ -792,6 +852,7 @@ class JobService:
                 target_subtitle_path=str(target),
                 source_language=source_language,
                 target_language=target_language,
+                provider_id=OPENROUTER_PROVIDER_ID,
                 model=cache_model,
                 status="skipped",
                 progress=100,
@@ -804,6 +865,7 @@ class JobService:
             self.db.add(row)
             self.db.commit()
             self.db.refresh(row)
+            row = _bind_task_id(self.db, row, task_id)
             return job_to_out(row)
 
         row = JobRow(
@@ -820,15 +882,19 @@ class JobService:
             target_subtitle_path=str(target),
             source_language=source_language,
             target_language=target_language,
+            provider_id=OPENROUTER_PROVIDER_ID,
             model=candidate_models[0],
             status="pending",
             progress=0,
-            dedupe_key=dedupe_key(src_hash, target_language, candidate_models[0]),
+            dedupe_key=dedupe_key(
+                src_hash, target_language, candidate_models[0], provider_id=OPENROUTER_PROVIDER_ID
+            ),
             source_hash=src_hash,
         )
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
+        row = _bind_task_id(self.db, row, task_id)
         return job_to_out(row)
 
     async def create_extract_job(
@@ -837,6 +903,7 @@ class JobService:
         *,
         candidate: CandidateOut | None = None,
         trigger_type: str = "manual",
+        task_id: int | None = None,
     ) -> JobOut:
         public = self.settings.get_public()
         trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
@@ -883,6 +950,7 @@ class JobService:
             self.db.add(row)
             self.db.commit()
             self.db.refresh(row)
+            row = _bind_task_id(self.db, row, task_id)
             return job_to_out(row)
 
         existing = self.db.scalar(
@@ -901,6 +969,7 @@ class JobService:
                 )
             )
         if existing:
+            existing = _bind_task_id(self.db, existing, task_id)
             return job_to_out(existing)
 
         dkey = hashlib.sha256(
@@ -930,6 +999,7 @@ class JobService:
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
+        row = _bind_task_id(self.db, row, task_id)
         return job_to_out(row)
 
     async def create_request_subtitle_job(
@@ -939,6 +1009,7 @@ class JobService:
         *,
         candidate: CandidateOut | None = None,
         trigger_type: str = "manual",
+        task_id: int | None = None,
     ) -> JobOut:
         public = self.settings.get_public()
         trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
@@ -967,6 +1038,7 @@ class JobService:
             )
         )
         if existing:
+            existing = _bind_task_id(self.db, existing, task_id)
             return job_to_out(existing)
 
         dkey = hashlib.sha256(
@@ -983,6 +1055,72 @@ class JobService:
             bazarr_episode_id=match.bazarr_episode_id,
             bazarr_series_id=match.bazarr_series_id,
             source_subtitle_path=match.media_path,
+            target_subtitle_path=str(expected),
+            source_language=code2,
+            target_language=code2,
+            model="bazarr-search",
+            status="pending",
+            progress=0,
+            progress_detail=f"Queued Bazarr search for {code2.upper()}",
+            dedupe_key=dkey,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        row = _bind_task_id(self.db, row, task_id)
+        return job_to_out(row)
+
+    async def create_request_subtitle_job_for_media(
+        self,
+        *,
+        media_type: str,
+        media_path: str,
+        media_title: str | None,
+        bazarr_movie_id: int | None,
+        bazarr_episode_id: int | None,
+        bazarr_series_id: int | None,
+        target_language: str,
+        language: str | None = None,
+        trigger_type: str = "manual",
+        task_id: int | None = None,
+    ) -> JobOut:
+        """Create a Bazarr source-request job without a wanted-list candidate."""
+        public = self.settings.get_public()
+        trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
+        requested = language or (public.source_languages[0] if public.source_languages else "en")
+        code2 = to_bazarr_code2(requested)
+        if media_type == "movie" and bazarr_movie_id is None:
+            raise ValueError("Media is missing Bazarr movie ID.")
+        if media_type == "episode" and (bazarr_episode_id is None or bazarr_series_id is None):
+            raise ValueError("Media is missing Bazarr series/episode IDs.")
+        path = media_path or ""
+        expected = build_external_subtitle_path(path, code2) if path else Path(f"./{code2}.srt")
+        ckey = candidate_key(media_type, path or f"bazarr:{bazarr_movie_id or bazarr_episode_id}", target_language)
+        existing = self.db.scalar(
+            select(JobRow).where(
+                JobRow.job_kind == "request",
+                JobRow.candidate_key == ckey,
+                JobRow.status.in_(["pending", "processing"]),
+            )
+        )
+        if existing:
+            existing = _bind_task_id(self.db, existing, task_id)
+            return job_to_out(existing)
+        dkey = hashlib.sha256(
+            f"request|{media_type}|{path}|{code2}".encode()
+        ).hexdigest()
+        row = JobRow(
+            candidate_key=ckey,
+            task_id=task_id,
+            job_kind="request",
+            trigger_type=trigger,
+            media_type=media_type,
+            media_path=path or str(expected),
+            media_title=media_title,
+            bazarr_movie_id=bazarr_movie_id,
+            bazarr_episode_id=bazarr_episode_id,
+            bazarr_series_id=bazarr_series_id,
+            source_subtitle_path=path or str(expected),
             target_subtitle_path=str(expected),
             source_language=code2,
             target_language=code2,
@@ -1290,13 +1428,15 @@ class JobService:
         if not row or row.status != "processing":
             return
         kind = getattr(row, "job_kind", None) or "translate"
-        if kind == "extract":
-            await self._process_extract_job(job_id)
-            return
-        if kind == "request":
-            await self._process_request_subtitle_job(job_id)
-            return
-        await self._process_translate_job(job_id)
+        try:
+            if kind == "extract":
+                await self._process_extract_job(job_id)
+            elif kind == "request":
+                await self._process_request_subtitle_job(job_id)
+            else:
+                await self._process_translate_job(job_id)
+        finally:
+            await self._notify_task_planner(job_id)
 
     async def _process_request_subtitle_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
@@ -1602,9 +1742,27 @@ class JobService:
                 self.db.add(current)
                 self.db.commit()
 
+    async def _notify_task_planner(self, job_id: int) -> None:
+        row = self.db.get(JobRow, job_id)
+        if row is None or not getattr(row, "task_id", None):
+            return
+        from app.localization.planner import TaskPlanner
+
+        try:
+            await TaskPlanner(self.db).on_job_finished(job_id)
+        except Exception as exc:  # noqa: BLE001
+            get_logger("jobs").warning(
+                "Task planner notify failed job_id=%s error=%s",
+                job_id,
+                exc,
+            )
+
     async def _maybe_chain_automatic_translate(self, job_id: int, source_path: str) -> None:
         row = self.db.get(JobRow, job_id)
         if not row or (getattr(row, "trigger_type", None) or "manual") != "automatic":
+            return
+        # Task-backed jobs continue via TaskPlanner — do not double-chain.
+        if getattr(row, "task_id", None):
             return
         if not row.candidate_key:
             return
@@ -1642,9 +1800,16 @@ class JobService:
         router = ModelRouter(self.db)
         try:
             public = self.settings.get_public()
-            openrouter_key, fallback_model = self.settings.get_openrouter_credentials()
-            if not openrouter_key:
-                raise OpenRouterError("OpenRouter API key is not configured")
+            accounts = ProviderAccountService(self.db)
+            api_key = accounts.get_api_key(OPENROUTER_PROVIDER_ID)
+            if not api_key:
+                # Legacy fallback already handled inside ProviderAccountService.
+                raise AIProviderError(
+                    "OpenRouter API key is not configured",
+                    category="auth_error",
+                    is_retryable=False,
+                    provider_id=OPENROUTER_PROVIDER_ID,
+                )
 
             source_path = Path(row.source_subtitle_path)
             content = source_path.read_text(encoding="utf-8")
@@ -1670,7 +1835,7 @@ class JobService:
             if not routing.candidates:
                 reason = routing.blocked_reason or "no_compatible_model"
                 raise RoutingBlockedError(
-                    "No eligible OpenRouter model for this translation. "
+                    "No eligible model for this translation. "
                     + (
                         "Blocked by cost or monthly budget."
                         if reason == "blocked_by_cost_policy"
@@ -1679,7 +1844,9 @@ class JobService:
                     reason_code=reason,
                 )
 
-            resolved_model = routing.candidates[0].model_id
+            resolved = routing.candidates[0]
+            resolved_model = resolved.model_id
+            resolved_provider = resolved.provider_id
             config = get_app_config()
             exchange_log = JobOpenRouterExchangeLog(
                 job_openrouter_log_path(config.config_dir, job_id),
@@ -1688,8 +1855,11 @@ class JobService:
             exchange_log.record(
                 {
                     "event": "job_start",
+                    "provider": resolved_provider,
                     "model": resolved_model,
-                    "candidates": [c.model_id for c in routing.candidates],
+                    "candidates": [
+                        f"{c.provider_id}/{c.model_id}" for c in routing.candidates
+                    ],
                     "strategy": routing.strategy,
                     "media_title": row.media_title,
                     "media_path": row.media_path,
@@ -1702,13 +1872,14 @@ class JobService:
                     "log_path": str(exchange_log.path),
                 }
             )
-            log.info("OpenRouter exchange log job_id=%s path=%s", job_id, exchange_log.path)
+            log.info("AI exchange log job_id=%s path=%s", job_id, exchange_log.path)
 
             current = self.db.get(JobRow, job_id)
             if current:
                 current.progress = 5
                 current.progress_detail = "Building glossary"
                 current.model = resolved_model
+                current.provider_id = resolved_provider
                 self.db.add(current)
                 self.db.commit()
 
@@ -1717,7 +1888,11 @@ class JobService:
             outcome = None
             last_error: Exception | None = None
             winning_model = resolved_model
+            winning_provider = resolved_provider
             repair_used = False
+
+            bootstrap_providers(self.db)
+            registry = get_provider_registry()
 
             for index, candidate in enumerate(routing.candidates):
                 reservation = None
@@ -1735,35 +1910,43 @@ class JobService:
                         next_model_id=None,
                         failure_category="budget_blocked",
                         strategy=routing.strategy,
+                        provider_id=candidate.provider_id,
                     )
                     last_error = RoutingBlockedError(str(exc), reason_code="blocked_by_cost_policy")
                     continue
 
-                inner = OpenRouterClient(
-                    openrouter_key,
-                    exchange_log=exchange_log,
-                    log_full_exchanges=bool(public.openrouter_log_full_exchanges),
-                )
-                client = RecordingOpenRouterClient(
-                    inner,
+                base_provider = registry.get(candidate.provider_id)
+                if isinstance(base_provider, OpenRouterProvider):
+                    provider = base_provider.with_exchange_log(
+                        exchange_log,
+                        log_full_exchanges=bool(public.openrouter_log_full_exchanges),
+                    )
+                else:
+                    provider = base_provider
+
+                recording = RecordingAIProvider(
+                    provider,
                     usage_service,
                     job_id=job_id,
                     trigger_type=trigger,
                     tier=candidate.tier,
+                    attempt_number=index + 1,
+                    provider_id=candidate.provider_id,
                 )
-                service = OpenRouterTranslationService(client)
+                service = TranslationService(recording)
 
                 current = self.db.get(JobRow, job_id)
                 if current:
                     current.model = candidate.model_id
-                    current.progress_detail = f"Using {candidate.model_id}"
+                    current.provider_id = candidate.provider_id
+                    current.progress_detail = f"Using {candidate.provider_id}/{candidate.model_id}"
                     self.db.add(current)
                     self.db.commit()
 
                 try:
                     if glossary is None:
                         glossary = await GlossaryService(self.db).prepare_for_translation(
-                            client=client,
+                            client=recording,
                             model=candidate.model_id,
                             media_type=row.media_type,
                             media_title=row.media_title,
@@ -1806,43 +1989,50 @@ class JobService:
                         progress_callback=on_progress,
                         glossary_terms=glossary.terms,
                         checkpoint=checkpoint,
+                        provider_id=candidate.provider_id,
                     )
                     winning_model = candidate.model_id
+                    winning_provider = candidate.provider_id
                     repair_used = bool(outcome.repair_used)
                     budget.release(reservation)
                     last_error = None
                     break
                 except RetryableTranslationError as exc:
                     checkpoint = exc.checkpoint
-                    category = classify_openrouter_failure(exc)
-                    next_model = (
-                        routing.candidates[index + 1].model_id
+                    category = classify_provider_failure(exc)
+                    next_cand = (
+                        routing.candidates[index + 1]
                         if index + 1 < len(routing.candidates)
                         else None
                     )
                     router.record_fallback(
                         job_id=job_id,
                         model_id=candidate.model_id,
-                        next_model_id=next_model,
+                        next_model_id=next_cand.model_id if next_cand else None,
                         failure_category=category,
                         strategy=routing.strategy,
+                        provider_id=candidate.provider_id,
+                        next_provider_id=next_cand.provider_id if next_cand else None,
                     )
                     last_error = exc
                     budget.release(reservation)
                     self.db.commit()
-                    if next_model is None:
+                    if next_cand is None:
                         raise
                     continue
-                except OpenRouterError as exc:
-                    category = classify_openrouter_failure(exc)
+                except AIProviderError as exc:
+                    category = classify_provider_failure(exc)
                     budget.release(reservation)
                     if is_technical_failure(category) and index + 1 < len(routing.candidates):
+                        next_cand = routing.candidates[index + 1]
                         router.record_fallback(
                             job_id=job_id,
                             model_id=candidate.model_id,
-                            next_model_id=routing.candidates[index + 1].model_id,
+                            next_model_id=next_cand.model_id,
                             failure_category=category,
                             strategy=routing.strategy,
+                            provider_id=candidate.provider_id,
+                            next_provider_id=next_cand.provider_id,
                         )
                         last_error = exc
                         self.db.commit()
@@ -1855,7 +2045,7 @@ class JobService:
                 if last_error is not None:
                     raise last_error
                 raise RoutingBlockedError(
-                    "No eligible OpenRouter model for this translation.",
+                    "No eligible model for this translation.",
                     reason_code="no_compatible_model",
                 )
 
@@ -1880,8 +2070,12 @@ class JobService:
             write_srt_atomic(target_path, outcome.document, overwrite=False)
 
             current.model = winning_model
+            current.provider_id = winning_provider
             current.dedupe_key = dedupe_key(
-                current.source_hash or "", current.target_language, winning_model
+                current.source_hash or "",
+                current.target_language,
+                winning_model,
+                provider_id=winning_provider,
             )
             current.input_tokens = outcome.usage.input_tokens
             current.output_tokens = outcome.usage.output_tokens
@@ -1905,6 +2099,7 @@ class JobService:
                 TranslationCacheRow(
                     source_hash=current.source_hash or "",
                     target_language=current.target_language,
+                    provider_id=winning_provider,
                     model=current.model,
                     target_subtitle_path=current.target_subtitle_path,
                     job_id=current.id,

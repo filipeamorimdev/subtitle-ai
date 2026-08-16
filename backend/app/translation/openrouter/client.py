@@ -23,10 +23,18 @@ BATCH_TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "cancelle
 
 
 class OpenRouterError(Exception):
-    def __init__(self, message: str, *, status_code: int | None = None, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+        retry_after_seconds: float | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 @dataclass
@@ -439,6 +447,7 @@ class OpenRouterClient:
                         f"OpenRouter {label}.",
                         status_code=response.status_code,
                         retryable=True,
+                        retry_after_seconds=wait_s if response.status_code == 429 else None,
                     )
                     await asyncio.sleep(wait_s)
                     continue

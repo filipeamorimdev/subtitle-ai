@@ -12,15 +12,15 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 
 1. Configure Bazarr, languages, batch size, automation, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
 2. Optionally enable **Automatic Subtitle Fallback** under Settings (off by default). When enabled, Subtitle AI periodically scans Bazarr wanted items, waits a configurable grace period, then automatically request/extract/translate missing target subtitles. This can incur OpenRouter API costs.
-3. Open **AI → Models & Routing** to set the OpenRouter API key, free/paid pools, routing strategy, per-job cost caps, a monthly budget, and OpenRouter diagnostic exchange logging. Paid fallback stays off unless you enable it.
+3. Open **AI → Providers** to set the OpenRouter API key (and test connection / refresh models). Then open **AI → Models & Routing** for free/paid pools, routing strategy, per-job cost caps, a monthly budget, and diagnostic exchange logging. Paid fallback stays off unless you enable it.
 4. Open **Dashboard** for current activity (automation, jobs, candidate health, compact AI summary), or **Candidates** and click **Refresh** (loads Bazarr wanted movies/episodes).
 5. For each item, use the action that matches its state (manual workflow still works even when automatic fallback is enabled):
    - **Request EN** (or your source language) — ask Bazarr to search for a source SRT; if none is found and an embedded text track exists, Subtitle AI falls back to ffmpeg extract.
    - **Extract** — pull an embedded text subtitle track to a sidecar SRT via ffmpeg, then rescan Bazarr.
    - **Translate** — enqueue a translation job from the source SRT to your target language.
 6. Use the batch toolbar (**Request all** / **Extract all** / **Translate all**) when you want to process the list in bulk.
-7. The worker runs jobs in the background: glossary prep → routed OpenRouter translation (with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
-8. Track progress under **Jobs** and **AI** (overview, models & routing, usage). Review suggested terms under **Glossary**.
+7. The worker runs jobs in the background: glossary prep → routed translation via the AI provider layer (OpenRouter in v0.3-alpha1, with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
+8. Track progress under **Jobs** and **AI** (overview, providers, models & routing, usage). Review suggested terms under **Glossary**.
 
 When automatic fallback is **off**, nothing is scheduled — only clicks create jobs.
 
@@ -28,14 +28,18 @@ When automatic fallback is **off**, nothing is scheduled — only clicks create 
 
 | Page | Purpose |
 | --- | --- |
-| **Dashboard** | Current activity: automation, jobs, candidate health, compact AI summary |
-| **Candidates** | Bazarr wanted list; Request / Extract / Translate (per-row and batch); embedded-track badges |
-| **Jobs** | Job history for `translate`, `extract`, and `request`; status filters |
+| **Dashboard** | Current localization tasks, candidate health, compact AI summary |
+| **Tasks** | Localization goals (media + language + status); Request subtitles |
+| **Media detail** | Per-media subtitle availability matrix and related tasks |
+| **Candidates** | Bazarr wanted list; Request subtitles + advanced Request/Extract/Translate |
+| **Jobs** | Low-level execution history (`translate`, `extract`, `request`) |
 | **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
 | **Usage stats** | Per-job token/cost breakdown (from `ai_usage_records` snapshots) |
-| **AI** | Control Center: Overview (status, budget, ranking), Models & Routing (complete AI configuration), Usage analytics |
+| **AI** | Control Center: Overview, Providers, Models & Routing, Usage |
 | **Glossary** | Universe / series / movie term scopes; lock terms; review suggested terms |
 | **Settings** | Bazarr, languages, batch size, automatic fallback, media/path mappings, job concurrency, advanced cleanup |
+
+See [docs/localization-tasks.md](docs/localization-tasks.md) for the media-centric task architecture.
 
 Semantic split:
 
@@ -43,7 +47,7 @@ Semantic split:
 - **AI** → how is AI behaving and how do I control it?
 - **Settings** → how is Subtitle AI configured?
 
-Generic Settings does **not** contain OpenRouter keys, model pools, routing, cost/budget controls, or AI exchange logging. Those live only under **AI → Models & Routing**.
+Generic Settings does **not** contain OpenRouter keys, model pools, routing, cost/budget controls, or AI exchange logging. Credentials live under **AI → Providers**; pools and budgets under **AI → Models & Routing**.
 
 ## Architecture
 
@@ -54,12 +58,14 @@ Vue UI  →  FastAPI
         →  JobService / Worker
              · request  → Bazarr search (+ optional ffmpeg extract fallback)
              · extract  → ffmpeg → sidecar SRT → Bazarr rescan
-             · translate → ModelRouter → glossary prep → OpenRouter batches → validate → atomic write → rescan → verify
+             · translate → ModelRouter → ProviderRegistry → TranslationService → validate → atomic write → rescan → verify
         →  GlossaryService (scopes, terms, suggested review)
         →  AI usage / budget / catalog cache
 SQLite under /config
 ffmpeg / ffprobe in the Docker image
 ```
+
+v0.3-alpha1 adds a provider-agnostic AI layer (`(provider_id, model_id)` identity). Only OpenRouter is implemented; see [docs/ai-providers.md](docs/ai-providers.md).
 
 The application owns subtitle structure (IDs, timing, markup). The model only translates dialogue text. Glossaries keep character names and recurring terms consistent across a series or universe.
 

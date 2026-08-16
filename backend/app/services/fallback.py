@@ -257,8 +257,15 @@ class FallbackPlanner:
         *,
         now: datetime | None = None,
     ) -> tuple[JobOut | None, str]:
-        """Enqueue at most one automatic job. Returns (job_or_none, outcome)."""
+        """Ensure a LocalizationTask and plan the next execution.
+
+        Grace period, retry cooldown, and next_action gates remain intact.
+        """
         from app.jobs.service import JobService
+        from app.languages import normalize_language
+        from app.localization.planner import TaskPlanner
+        from app.localization.service import LocalizationTaskService
+        from app.media.service import MediaItemService
 
         now = now or utcnow()
         if not self.settings.is_automatic_fallback_enabled():
@@ -268,11 +275,54 @@ class FallbackPlanner:
         action = self.next_action(candidate, observed, now=now)
 
         if action == "wait_grace":
+            # Still ensure a task exists so UI shows waiting, but do not enqueue jobs.
+            try:
+                media = MediaItemService(self.db).upsert_from_candidate_fields(
+                    media_type=candidate.media_type,
+                    title=candidate.title,
+                    path=candidate.media_path,
+                    bazarr_movie_id=candidate.bazarr_movie_id,
+                    bazarr_series_id=candidate.bazarr_series_id,
+                    bazarr_episode_id=candidate.bazarr_episode_id,
+                )
+                language = normalize_language(candidate.target_language)
+                task_svc = LocalizationTaskService(self.db)
+                task, _ = task_svc.ensure_task(
+                    media_item=media,
+                    language=language,
+                    capability="subtitles",
+                    origin="automatic",
+                )
+                task = task_svc.get(task.id)
+                if task and task.status in {"requested", "planning", "waiting_for_source"}:
+                    task.substate = "grace_period"
+                    self.db.add(task)
+                    self.db.commit()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Grace-period task ensure failed: %s", exc)
             observed.last_outcome = "wait_grace"
             self.db.add(observed)
             self.db.commit()
             return None, "wait_grace"
         if action == "none":
+            # Target exists / nothing to do — complete any active automatic task.
+            if candidate.reason_code == "target_exists":
+                try:
+                    media = MediaItemService(self.db).upsert_from_candidate_fields(
+                        media_type=candidate.media_type,
+                        title=candidate.title,
+                        path=candidate.media_path,
+                        bazarr_movie_id=candidate.bazarr_movie_id,
+                        bazarr_series_id=candidate.bazarr_series_id,
+                        bazarr_episode_id=candidate.bazarr_episode_id,
+                    )
+                    language = normalize_language(candidate.target_language)
+                    task_svc = LocalizationTaskService(self.db)
+                    active = task_svc.find_active(media.id, language.code, "subtitles")
+                    if active is not None:
+                        await TaskPlanner(self.db).plan(active.id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Target-exists reconcile failed: %s", exc)
             observed.last_outcome = "none"
             if candidate.reason_code:
                 observed.last_reason_code = candidate.reason_code
@@ -280,7 +330,32 @@ class FallbackPlanner:
             self.db.commit()
             return None, "none"
 
+        # Ensure LocalizationTask, then enqueue via existing job paths (preserves
+        # grace/retry/verify semantics) and attach task_id.
+        try:
+            media = MediaItemService(self.db).upsert_from_candidate_fields(
+                media_type=candidate.media_type,
+                title=candidate.title,
+                path=candidate.media_path,
+                bazarr_movie_id=candidate.bazarr_movie_id,
+                bazarr_series_id=candidate.bazarr_series_id,
+                bazarr_episode_id=candidate.bazarr_episode_id,
+            )
+            language = normalize_language(candidate.target_language)
+            task_svc = LocalizationTaskService(self.db)
+            task, _ = task_svc.ensure_task(
+                media_item=media,
+                language=language,
+                capability="subtitles",
+                origin="automatic",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Automatic task ensure failed: %s", exc)
+            task = None
+
         jobs = JobService(self.db)
+        task_id = task.id if task is not None else None
+
         if action == "verify":
             latest = self._latest_verify_failed_translate(candidate.key)
             if latest is None:
@@ -288,7 +363,16 @@ class FallbackPlanner:
                 self.db.add(observed)
                 self.db.commit()
                 return None, "none"
+            if task_id is not None and not getattr(latest, "task_id", None):
+                latest.task_id = task_id
+                self.db.add(latest)
+                self.db.commit()
             job = await jobs.retry_bazarr_sync(latest.id)
+            if task_id is not None:
+                try:
+                    await TaskPlanner(self.db).plan(task_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Verify task plan failed: %s", exc)
             observed.last_outcome = "verify"
             observed.last_reason_code = job.reason_code
             observed.last_automatic_attempt_at = now
@@ -309,6 +393,7 @@ class FallbackPlanner:
                     JobCreate(candidate_key=candidate.key),
                     candidate=candidate,
                     trigger_type="automatic",
+                    task_id=task_id,
                 )
                 reused = existing is not None and existing.id == job.id
             elif action == "extract":
@@ -317,6 +402,7 @@ class FallbackPlanner:
                     ExtractCreate(candidate_key=candidate.key),
                     candidate=candidate,
                     trigger_type="automatic",
+                    task_id=task_id,
                 )
                 reused = existing is not None and existing.id == job.id
             else:
@@ -325,6 +411,7 @@ class FallbackPlanner:
                     candidate.key,
                     candidate=candidate,
                     trigger_type="automatic",
+                    task_id=task_id,
                 )
                 reused = existing is not None and existing.id == job.id
         except (ValueError, OpenRouterError, BazarrError, EmbeddedError) as exc:
@@ -334,6 +421,29 @@ class FallbackPlanner:
             self.db.commit()
             raise ValueError(str(exc)) from exc
 
+        if task_id is not None:
+            row = self.db.get(JobRow, job.id)
+            if row is not None and getattr(row, "task_id", None) != task_id:
+                LocalizationTaskService(self.db).attach_job(row, task_id)
+            try:
+                current = LocalizationTaskService(self.db).get(task_id)
+                if current and job.status in {"pending", "processing"}:
+                    if current.status in {"requested", "planning", "waiting_for_source"}:
+                        LocalizationTaskService(self.db).transition(
+                            current,
+                            "processing",
+                            substate=(
+                                "translating"
+                                if action == "translate"
+                                else "extracting_source"
+                                if action == "extract"
+                                else "discovering_source"
+                            ),
+                            clear_error=True,
+                        )
+            except Exception:  # noqa: BLE001
+                pass
+
         if job.status in {"pending", "processing"} and not reused:
             observed.automatic_attempts = int(observed.automatic_attempts or 0) + 1
             observed.last_automatic_attempt_at = now
@@ -342,6 +452,12 @@ class FallbackPlanner:
         self.db.add(observed)
         self.db.commit()
         return job, ("reused" if reused else "created")
+
+    async def reconcile_active_tasks(self) -> int:
+        """Re-plan active tasks (target appeared, source available, resume)."""
+        from app.localization.planner import TaskPlanner
+
+        return await TaskPlanner(self.db).plan_all_active()
 
     async def maybe_chain_translate(self, *, candidate_key: str, source_path: str) -> JobOut | None:
         """After automatic extract/request success, enqueue translate if still enabled."""
@@ -434,6 +550,28 @@ class FallbackPlanner:
 
         present_keys = {c.key for c in candidates}
         self.mark_not_wanted(present_keys, now=now)
+
+        # Soft reconcile only: complete tasks whose target already exists.
+        # Job enqueue remains exclusively in enqueue_for_candidate (grace/retry).
+        try:
+            from app.localization.planner import TaskPlanner
+            from app.localization.service import LocalizationTaskService
+            from app.media.service import MediaItemService
+
+            planner = TaskPlanner(self.db)
+            media_svc = MediaItemService(self.db)
+            task_svc = LocalizationTaskService(self.db)
+            for task in task_svc.list_active():
+                media = media_svc.get(task.media_item_id)
+                if media is None:
+                    continue
+                try:
+                    if await planner._target_satisfied(media, task.target_language_code):
+                        task_svc.transition(task, "completed", clear_error=True)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Task reconcile failed task=%s error=%s", task.id, exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Active task reconcile failed: %s", exc)
 
         for candidate in candidates:
             try:

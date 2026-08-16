@@ -1,8 +1,12 @@
 # AI model routing
 
-Subtitle AI v0.2.1 routes translation jobs across **configured OpenRouter models** using explicit pools and cost policy. Adaptive ranking on the AI Overview page is **display-only** and never used for routing.
+Subtitle AI v0.3-alpha1 routes translation jobs across **configured provider models** using explicit pools and cost policy. Adaptive ranking on the AI Overview page is **display-only** and never used for routing.
 
-Configure this under **AI → Models & Routing** (OpenRouter API key, pools, strategy, budgets, and diagnostic exchange logging). Generic Settings contains only application options (Bazarr, languages, automation, media paths, concurrency). `openrouter_model` remains a compatibility field (first enabled preference).
+Canonical model identity is **`(provider_id, model_id)`**. In this milestone only **OpenRouter** is registered.
+
+Configure credentials under **AI → Providers**. Configure pools, strategy, budgets, and diagnostic exchange logging under **AI → Models & Routing**. Generic Settings contains only application options (Bazarr, languages, automation, media paths, concurrency). `openrouter_model` remains a compatibility field (first enabled preference).
+
+See also [ai-providers.md](ai-providers.md).
 
 ## Pools and priority
 

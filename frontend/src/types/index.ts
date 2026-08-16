@@ -114,6 +114,7 @@ export interface Candidate {
 export interface Job {
   id: number
   candidate_key: string | null
+  task_id?: number | null
   job_kind: 'translate' | 'extract' | string
   trigger_type?: 'manual' | 'automatic' | string
   media_type: string
@@ -123,6 +124,7 @@ export interface Job {
   target_subtitle_path: string
   source_language: string
   target_language: string
+  provider_id?: string
   model: string
   status: string
   progress: number
@@ -137,6 +139,107 @@ export interface Job {
   created_at: string | null
   started_at: string | null
   completed_at: string | null
+}
+
+export interface LanguageCatalogItem {
+  code: string
+  display_name: string
+  aliases: string[]
+}
+
+export interface MediaRef {
+  id?: number | null
+  provider_id: string
+  external_id: string
+  media_type: 'movie' | 'series' | 'episode'
+  title: string
+  year: number | null
+  season: number | null
+  episode: number | null
+  episode_title: string | null
+  path: string | null
+  parent_external_id: string | null
+  bazarr_movie_id: number | null
+  bazarr_series_id: number | null
+  bazarr_episode_id: number | null
+}
+
+export interface MediaItem {
+  id: number
+  provider_id: string
+  external_id: string
+  media_type: string
+  title: string
+  year: number | null
+  path: string | null
+  season: number | null
+  episode: number | null
+  episode_title: string | null
+  bazarr_movie_id: number | null
+  bazarr_series_id: number | null
+  bazarr_episode_id: number | null
+  parent_media_id: number | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface LanguageAvailability {
+  language_code: string
+  language_name: string | null
+  available: boolean
+  task_status: string | null
+  task_id: number | null
+}
+
+export interface MediaLocalization {
+  media_id: number
+  capability: string
+  languages: LanguageAvailability[]
+}
+
+export interface TaskAiSummary {
+  requests: number
+  tokens: number
+  cost_usd: number
+  provider_id: string | null
+  model_id: string | null
+}
+
+export interface ProgressStep {
+  id: string
+  label: string
+  state: string
+}
+
+export interface LocalizationTask {
+  id: number
+  media_item_id: number
+  media_title: string | null
+  media_type: string | null
+  media_year: number | null
+  target_language_code: string
+  target_language_name: string
+  capability: string
+  status: string
+  substate: string | null
+  origin: string
+  priority: string
+  requested_by: string | null
+  error_code: string | null
+  error_message: string | null
+  created_at: string | null
+  started_at: string | null
+  completed_at: string | null
+  updated_at: string | null
+  executions: Job[]
+  ai: TaskAiSummary | null
+  progress_steps: ProgressStep[]
+}
+
+export interface ActiveTaskExistsError {
+  error: 'active_task_exists'
+  task_id: number
+  detail?: string
 }
 
 export interface JobAction {
@@ -291,6 +394,9 @@ export interface ClearDataResult {
 
 export interface OpenRouterModel {
   id: string
+  model_id?: string
+  provider_id?: string
+  provider_name?: string
   name: string
   prompt_price_per_million: number | null
   completion_price_per_million: number | null
@@ -301,6 +407,7 @@ export interface OpenRouterModel {
   compatibility_reason?: string | null
   stale?: boolean | null
   unavailable?: boolean | null
+  pricing_freshness?: string | null
   input_modalities?: string[] | null
   output_modalities?: string[] | null
 }
@@ -388,6 +495,8 @@ export interface AiRouting {
 
 export interface AiPreference {
   id: number
+  provider_id?: string
+  provider_name?: string
   model_id: string
   tier: string
   priority: number
@@ -402,6 +511,9 @@ export interface AiPreference {
   available?: boolean
   unavailable?: boolean
   stale?: boolean
+  pricing_freshness?: string
+  deprecated?: boolean
+  replacement_model_id?: string | null
   configured_priority?: number
   adaptive_rank?: number | null
   adaptive_score?: number | null
@@ -414,12 +526,23 @@ export interface AiPreference {
   last_used_at?: string | null
 }
 
+export interface AiProviderInfo {
+  provider_id: string
+  display_name: string
+  enabled: boolean
+  configured: boolean
+  api_key_masked: string | null
+  base_url: string | null
+  status: string
+}
+
 export interface AiModelsPayload {
   openrouter_configured: boolean
   openrouter_api_key_masked: string | null
   catalog_fetched_at: string | null
   catalog_stale: boolean
   catalog_age_seconds: number | null
+  pricing_freshness?: string
   preferences: AiPreference[]
   catalog: OpenRouterModel[]
   routing: AiRouting
@@ -462,9 +585,12 @@ export interface AiOverview {
     clean_success_rate: number | null
     budget_percent_used: number | null
     best_model_id: string | null
+    best_provider_id?: string | null
     status: string
   }
   ranking: Array<{
+    provider_id?: string
+    provider_name?: string
     model_id: string
     configured_priority?: number | null
     adaptive_rank: number | null
@@ -489,7 +615,9 @@ export interface AiOverview {
     job_id: number | null
     event: string
     strategy: string | null
+    provider_id?: string | null
     model_id: string | null
+    next_provider_id?: string | null
     next_model_id: string | null
     failure_category: string | null
     detail: string | null

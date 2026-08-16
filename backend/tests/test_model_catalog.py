@@ -83,7 +83,7 @@ async def test_catalog_refresh_and_stale(tmp_path, monkeypatch):
     assert len(snap.models) == 1
     assert snap.stale is False
     cached = svc.get_cached()
-    assert cached and cached.models[0].id == "free/a"
+    assert cached and cached.models[0].model_id == "free/a"
 
     async def fail(**kwargs):
         raise OpenRouterError("unavailable")
@@ -91,7 +91,7 @@ async def test_catalog_refresh_and_stale(tmp_path, monkeypatch):
     monkeypatch.setattr(OpenRouterClient, "list_models", staticmethod(fail))
     snap2 = await svc.get_models(force_refresh=True, api_key="test")
     assert snap2.stale is True
-    assert snap2.models[0].id == "free/a"
+    assert snap2.models[0].model_id == "free/a"
 
 
 @pytest.mark.asyncio

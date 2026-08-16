@@ -21,8 +21,8 @@ watch(
 
 const links = [
   { to: '/', label: 'Dashboard' },
+  { to: '/tasks', label: 'Tasks' },
   { to: '/candidates', label: 'Candidates' },
-  { to: '/jobs', label: 'Jobs' },
   { to: '/ai', label: 'AI' },
   { to: '/glossaries', label: 'Glossary' },
   { to: '/settings', label: 'Settings' },
@@ -42,7 +42,7 @@ const links = [
               Subtitle AI
             </RouterLink>
             <p class="hidden text-sm text-ink-500 sm:block dark:text-ink-300">
-              Translate missing Bazarr subtitles with OpenRouter
+              Media-centric subtitle localization
             </p>
           </div>
 

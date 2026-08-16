@@ -9,7 +9,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.config import get_app_config
-from app.db.models import JobRow, OpenRouterModelPreferenceRow, SettingsRow
+from app.db.models import (
+    AiModelPreferenceRow,
+    AiProviderAccountRow,
+    JobRow,
+    OpenRouterModelPreferenceRow,
+    SettingsRow,
+)
 from app.db import get_db, init_db
 from app.main import create_app
 from app.services.model_preferences import seed_legacy_model_preference
@@ -277,6 +283,18 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
         assert jobs[0].media_title == "Example Movie"
         assert jobs[0].status == "completed"
         assert jobs[0].total_tokens == 2000
+        assert jobs[0].provider_id == "openrouter"
+
+        ai_prefs = list(session.scalars(select(AiModelPreferenceRow)).all())
+        assert len(ai_prefs) == 1
+        assert ai_prefs[0].provider_id == "openrouter"
+        assert ai_prefs[0].model_id == "openai/gpt-4o-mini"
+
+        # Account row is always seeded for the Providers UI (may have no key yet).
+        accounts = list(session.scalars(select(AiProviderAccountRow)).all())
+        assert len(accounts) == 1
+        assert accounts[0].provider_id == "openrouter"
+        assert accounts[0].api_key_encrypted is None
 
         assert seed_legacy_model_preference(session) is None
     finally:
@@ -296,7 +314,7 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
     with TestClient(app) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        assert health.json()["version"] == "0.2.1"
+        assert health.json()["version"] == "0.3.0a2"
 
         settings = client.get("/api/settings")
         assert settings.status_code == 200
@@ -324,6 +342,11 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
         assert payload["routing"]["allow_paid_fallback"] is False
         assert payload["routing"]["openrouter_log_full_exchanges"] is False
         assert any(p["model_id"] == "openai/gpt-4o-mini" for p in payload["preferences"])
+        assert any(p.get("provider_id") == "openrouter" for p in payload["preferences"])
+
+        providers = client.get("/api/ai/providers")
+        assert providers.status_code == 200
+        assert any(p["provider_id"] == "openrouter" for p in providers.json()["providers"])
 
         usage = client.get("/api/ai/usage")
         assert usage.status_code == 200

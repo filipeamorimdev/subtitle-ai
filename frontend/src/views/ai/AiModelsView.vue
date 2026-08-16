@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { api } from '../../services/api'
 import type { AiModelsPayload, AiPreference, OpenRouterModel } from '../../types'
 
@@ -11,8 +12,6 @@ const pickerOpen = ref(false)
 const pickerQuery = ref('')
 const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid'>('compatible')
 const testResult = ref<Record<number, string>>({})
-const apiKey = ref('')
-const clearApiKey = ref(false)
 
 const routing = reactive({
   routing_strategy: 'free_first',
@@ -23,7 +22,6 @@ const routing = reactive({
   monthly_budget_enabled: false,
   monthly_budget_amount_usd: 5 as number | null,
   allow_manual_budget_override: false,
-  openrouter_log_full_exchanges: false,
 })
 
 function formatPrice(value: number | null | undefined): string {
@@ -95,11 +93,7 @@ async function saveRouting() {
       ...routing,
       clear_maximum_cost_per_job: routing.maximum_cost_per_job_usd == null,
       clear_monthly_budget_amount: routing.monthly_budget_amount_usd == null,
-      openrouter_api_key: apiKey.value || undefined,
-      clear_openrouter_api_key: clearApiKey.value,
     })
-    apiKey.value = ''
-    clearApiKey.value = false
     message.value = 'Routing and cost controls saved.'
     await load()
   } catch (err) {
@@ -178,31 +172,41 @@ onMounted(load)
     <p v-if="loading" class="text-ink-500">Loading models…</p>
 
     <template v-else-if="data">
+      <section
+        v-if="!data.openrouter_configured"
+        class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
+      >
+        OpenRouter is not configured.
+        <RouterLink class="font-semibold underline" to="/ai/providers">Configure providers</RouterLink>
+        before translating.
+      </section>
+
       <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <h2 class="font-display text-lg font-semibold">OpenRouter</h2>
-        <label class="mt-3 block text-sm">
-          <span class="text-ink-500">API key</span>
-          <input v-model="apiKey" type="password" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="Leave blank to keep existing" />
-          <span v-if="data.openrouter_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
-            Saved: {{ data.openrouter_api_key_masked }}
-          </span>
-        </label>
-        <label class="mt-2 flex items-center gap-2 text-sm">
-          <input v-model="clearApiKey" type="checkbox" />
-          Clear saved OpenRouter API key
-        </label>
-        <p class="mt-2 text-sm text-ink-600 dark:text-ink-300">
-          Connection: {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
-          · Catalog: {{ catalogAge(data.catalog_age_seconds) }}
-          <span v-if="data.catalog_stale" class="text-amber-700"> (stale)</span>
-        </p>
-        <div class="mt-3 flex flex-wrap gap-2">
-          <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="refresh">
-            Refresh models
-          </button>
-          <button class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white" type="button" @click="saveRouting">
-            Save OpenRouter &amp; routing
-          </button>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 class="font-display text-lg font-semibold">Catalog</h2>
+            <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+              Connection: {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
+              · Catalog: {{ catalogAge(data.catalog_age_seconds) }}
+              <span v-if="data.catalog_stale || data.pricing_freshness === 'stale'" class="text-amber-700">
+                (stale pricing)
+              </span>
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <RouterLink
+              class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+              to="/ai/providers"
+            >
+              Manage providers
+            </RouterLink>
+            <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="refresh">
+              Refresh models
+            </button>
+            <button class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white" type="button" @click="saveRouting">
+              Save routing
+            </button>
+          </div>
         </div>
       </section>
 
@@ -250,17 +254,6 @@ onMounted(load)
             Allow manual jobs to bypass budget
           </label>
         </div>
-        <h3 class="mt-5 font-display font-semibold">Diagnostics</h3>
-        <label class="mt-3 flex items-start gap-2 text-sm">
-          <input v-model="routing.openrouter_log_full_exchanges" type="checkbox" class="mt-1" />
-          <span>
-            <span class="font-medium">Log full OpenRouter exchanges</span>
-            <span class="mt-1 block text-xs text-ink-500">
-              Off by default. When enabled, job logs may contain full subtitle prompts and responses.
-              Only enable this when actively debugging. API keys and secrets are never written.
-            </span>
-          </span>
-        </label>
       </section>
 
       <div class="grid gap-4 lg:grid-cols-2">
@@ -275,6 +268,7 @@ onMounted(load)
                 <div>
                   <div class="font-medium">{{ pref.name || pref.model_id }}</div>
                   <div class="mt-1 flex flex-wrap gap-1.5 text-xs">
+                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">{{ pref.provider_name || pref.provider_id || 'OpenRouter' }}</span>
                     <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">Priority #{{ pref.priority }}</span>
                     <span
                       v-if="pref.adaptive_rank"
@@ -324,6 +318,7 @@ onMounted(load)
                 <div>
                   <div class="font-medium">{{ pref.name || pref.model_id }}</div>
                   <div class="mt-1 flex flex-wrap gap-1.5 text-xs">
+                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">{{ pref.provider_name || pref.provider_id || 'OpenRouter' }}</span>
                     <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">Priority #{{ pref.priority }}</span>
                     <span
                       v-if="pref.adaptive_rank"

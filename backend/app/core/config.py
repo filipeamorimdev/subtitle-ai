@@ -38,7 +38,7 @@ def _parse_media_roots_override(value: object) -> list[str] | None:
 class AppConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SUBTITLE_AI_", extra="ignore")
 
-    version: str = "0.2.1"
+    version: str = "0.3.0a2"
     host: str = "0.0.0.0"
     port: int = 6768
     config_dir: Path = Path("/config")

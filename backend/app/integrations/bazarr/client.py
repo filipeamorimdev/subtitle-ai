@@ -114,6 +114,20 @@ class BazarrClient:
         data = await self._request("GET", "/api/episodes/wanted")
         return self._extract_list(data)
 
+    async def list_movies(self) -> list[dict[str, Any]]:
+        """Full movie library (used for media search; filter in-process)."""
+        data = await self._request("GET", "/api/movies")
+        return self._extract_list(data)
+
+    async def list_series(self) -> list[dict[str, Any]]:
+        """Full series library (used for media search; filter in-process)."""
+        data = await self._request("GET", "/api/series")
+        return self._extract_list(data)
+
+    async def get_episodes_by_series_ids(self, series_ids: list[int]) -> list[dict[str, Any]]:
+        """Fetch episodes for the given Sonarr series IDs."""
+        return await self._get_by_ids("/api/episodes", "seriesid[]", series_ids)
+
     async def get_movies_by_ids(self, radarr_ids: list[int]) -> list[dict[str, Any]]:
         """Fetch full movie metadata (includes path + subtitles)."""
         return await self._get_by_ids("/api/movies", "radarrid[]", radarr_ids)
@@ -255,7 +269,7 @@ class BazarrClient:
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
         if isinstance(data, dict):
-            for key in ("data", "movies", "episodes", "wanted"):
+            for key in ("data", "movies", "episodes", "wanted", "series"):
                 value = data.get(key)
                 if isinstance(value, list):
                     return [item for item in value if isinstance(item, dict)]

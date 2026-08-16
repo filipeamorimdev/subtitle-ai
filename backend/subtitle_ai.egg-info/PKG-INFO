@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: subtitle-ai
-Version: 0.2.0
+Version: 0.3.0a1
 Summary: AI subtitle translation fallback for Bazarr
 Requires-Python: >=3.12
 Requires-Dist: fastapi>=0.115.0
