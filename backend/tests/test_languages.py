@@ -28,6 +28,7 @@ def test_normalize_pt_pt_aliases():
 def test_pt_br_remains_distinct():
     assert normalize_language("pt-BR").code == "pt-BR"
     assert normalize_language("Portuguese (Brazil)").code == "pt-BR"
+    assert normalize_language("Português do Brasil").code == "pt-BR"
     assert normalize_language("pt-PT").code != normalize_language("pt-BR").code
 
 

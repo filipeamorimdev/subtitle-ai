@@ -96,15 +96,21 @@ function formatPct(n: number | null | undefined): string {
   return `${(n * 100).toFixed(1)}%`
 }
 
-function statusLabel(status: string) {
+function statusLabel(status: string, substate?: string | null) {
+  if (status === 'processing') {
+    if (substate === 'extracting_source') return 'Extracting'
+    if (substate === 'discovering_source') return 'Finding source'
+    return 'Translating'
+  }
   const map: Record<string, string> = {
     requested: 'Requested',
     planning: 'Planning',
     waiting_for_source: 'Waiting for source',
-    processing: 'Translating',
     verifying: 'Verifying',
     completed: 'Completed',
     failed: 'Failed',
+    blocked: 'Blocked',
+    cancelled: 'Cancelled',
   }
   return map[status] || status.replaceAll('_', ' ')
 }
@@ -255,7 +261,7 @@ onUnmounted(() => {
               </RouterLink>
               <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
                 <span>{{ task.target_language_name }}</span>
-                <span>{{ statusIcon(task.status) }} {{ statusLabel(task.status) }}</span>
+                <span>{{ statusIcon(task.status) }} {{ statusLabel(task.status, task.substate) }}</span>
                 <span class="capitalize">{{ task.origin }}</span>
               </div>
             </li>

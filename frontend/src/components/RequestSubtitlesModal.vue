@@ -158,7 +158,7 @@ async function submit() {
       if (e.code === 'active_task_exists' && e.taskId) {
         existingTaskId.value = e.taskId
         submitError.value =
-          'A localization task for this media/language is already running.'
+          'A localization task for this media and language is already running.'
         return
       }
       throw err
@@ -275,11 +275,12 @@ onMounted(() => {
               {{ lang.display_name }}
             </option>
           </select>
+          <p class="mt-2 text-xs font-medium text-ink-500">or type:</p>
           <input
             v-model="customLanguage"
             type="text"
-            class="mt-2 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
-            placeholder="Or type a language / code (e.g. Japanese, ja-JP)"
+            class="mt-1.5 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
+            placeholder="ja-JP"
           />
           <p v-if="!languages.length" class="mt-1 text-xs text-ink-500">
             No recognized languages. You can type a language name or code.

@@ -46,6 +46,18 @@ function statusMark(lang: LanguageAvailability) {
   return '—'
 }
 
+function statusText(lang: LanguageAvailability) {
+  if (lang.task_status === 'processing' || lang.task_status === 'verifying' || lang.task_status === 'planning') {
+    return 'Translating'
+  }
+  if (lang.task_status === 'waiting_for_source' || lang.task_status === 'requested') {
+    return 'Waiting for source'
+  }
+  if (lang.available || lang.task_status === 'completed') return 'Available'
+  if (lang.task_status === 'failed') return 'Failed'
+  return '—'
+}
+
 async function load() {
   if (!Number.isFinite(mediaId.value)) {
     error.value = 'Invalid media id'
@@ -120,6 +132,7 @@ onMounted(() => {
             </div>
             <div class="flex items-center gap-2">
               <span class="font-semibold">{{ statusMark(lang) }}</span>
+              <span class="text-ink-600 dark:text-ink-300">{{ statusText(lang) }}</span>
               <RouterLink
                 v-if="lang.task_id"
                 class="text-xs text-accent hover:underline"

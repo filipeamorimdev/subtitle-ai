@@ -205,3 +205,96 @@ async def test_mock_provider_completes_translation_and_persists_identity(mock_jo
     assert cache is not None
     assert cache.provider_id == "mock"
     assert cache.model == "mock-free"
+
+
+@pytest.mark.asyncio
+async def test_mock_provider_full_localization_task_path(mock_job_env, monkeypatch):
+    """LocalizationTask → TaskPlanner → JobService → ModelRouter → MockAIProvider."""
+    from app.db.models import LocalizationTaskRow, SettingsRow
+    from app.localization.checkpoints import read_checkpoints
+    from app.localization.planner import TaskPlanner
+    from app.localization.service import LocalizationTaskService
+    from app.media.service import MediaItemService
+
+    db = mock_job_env["db"]
+    mock = mock_job_env["mock"]
+    media_path = mock_job_env["media"] / "Example.mkv"
+    source = mock_job_env["source"]
+
+    present = {"ok": False}
+
+    async def fake_rescan(self, row):
+        return None
+
+    async def fake_verify(self, row):
+        return True
+
+    async def fake_present(self, media_row, target_language):
+        return present["ok"]
+
+    monkeypatch.setattr(JobService, "_rescan", fake_rescan)
+    monkeypatch.setattr(JobService, "_verify_target_with_backoff", fake_verify)
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="Example Movie",
+        path=str(media_path),
+        bazarr_movie_id=10,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, created = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    assert created
+    assert read_checkpoints(task.metadata_json)["source"] == "pending"
+
+    settings_row = db.get(SettingsRow, 1)
+    assert settings_row is not None
+    assert not getattr(settings_row, "openrouter_api_key_encrypted", None)
+
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id)).all())
+    assert len(jobs) == 1
+    queued = jobs[0]
+    assert queued.status == "pending"
+    assert queued.provider_id is None
+    assert queued.model == ""
+
+    present["ok"] = True
+    claimed = JobService(db).claim_next_job()
+    assert claimed is not None
+    await JobService(db).process_job(claimed.id)
+
+    done = db.get(JobRow, claimed.id)
+    assert done is not None
+    assert done.status == "completed"
+    assert done.provider_id == "mock"
+    assert done.model == "mock-free"
+
+    target = mock_job_env["media"] / "Example.pt-PT.srt"
+    assert target.exists()
+    assert target.stat().st_size > 0
+    assert "Olá" in target.read_text(encoding="utf-8")
+
+    usage = list(db.scalars(select(AiUsageRecordRow).where(AiUsageRecordRow.job_id == done.id)).all())
+    assert usage
+    assert all(u.provider_id == "mock" for u in usage)
+    assert all(u.model_id == "mock-free" for u in usage)
+    request_ids = [u.request_id for u in usage if u.request_id]
+    assert request_ids
+    assert len(request_ids) == len(set(request_ids))
+    assert len(usage) == len({u.request_id for u in usage})
+
+    events = list(db.scalars(select(AiRoutingEventRow).where(AiRoutingEventRow.job_id == done.id)).all())
+    assert events
+    assert any(e.provider_id == "mock" and e.model_id == "mock-free" for e in events)
+    assert any(c.method == "chat_completion" for c in mock.call_history)
+
+    finished = db.get(LocalizationTaskRow, task.id)
+    assert finished is not None
+    assert finished.status == "completed"
+    cps = read_checkpoints(finished.metadata_json)
+    assert cps["verify"] == "done"
+    assert cps["translate"] == "done"

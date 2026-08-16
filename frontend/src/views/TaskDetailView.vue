@@ -107,7 +107,7 @@ onUnmounted(() => {
             <RouterLink class="hover:text-accent" :to="`/media/${task.media_item_id}`">
               {{ task.media_title || `Media #${task.media_item_id}` }}
             </RouterLink>
-            → {{ task.target_language_code }}
+            → {{ task.target_language_name }}
           </h1>
           <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
             {{ task.target_language_name }} ·

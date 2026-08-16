@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import JobRow, LocalizationTaskRow, MediaItemRow
 from app.languages import Language, LanguageNormalizationError, normalize_language
+from app.localization.checkpoints import default_checkpoints
 from app.localization.state import (
     ACTIVE_STATUSES,
     InvalidTaskTransition,
@@ -26,11 +27,11 @@ EXECUTABLE_CAPABILITIES = frozenset({"subtitles"})
 class UnsupportedCapabilityError(ValueError):
     def __init__(self, capability: str) -> None:
         if capability == "audio":
-            msg = "Audio localization is not available in this version."
+            msg = "This localization capability is not available."
         elif capability == "metadata":
-            msg = "Metadata localization is not available in this version."
+            msg = "This localization capability is not available."
         else:
-            msg = f"Unsupported localization capability: {capability}"
+            msg = "This localization capability is not available."
         super().__init__(msg)
         self.capability = capability
         self.code = "unsupported_capability"
@@ -137,6 +138,7 @@ class LocalizationTaskService:
             origin=origin_norm,
             priority=priority,
             requested_by=requested_by,
+            metadata_json={"checkpoints": default_checkpoints()},
         )
         self.db.add(task)
         try:

@@ -371,12 +371,16 @@ class FallbackPlanner:
                 latest.task_id = task_id
                 self.db.add(latest)
                 self.db.commit()
-            job = await jobs.retry_bazarr_sync(latest.id)
             if task_id is not None:
-                try:
-                    await TaskPlanner(self.db).plan(task_id)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Verify task plan failed: %s", exc)
+                # Task-backed verify retries are owned by TaskPlanner.
+                from app.jobs.service import job_to_out
+
+                await TaskPlanner(self.db).plan(task_id)
+                self.db.refresh(latest)
+                job = job_to_out(latest)
+            else:
+                # Legacy path for jobs that are not task-backed.
+                job = await jobs.retry_bazarr_sync(latest.id)
             observed.last_outcome = "verify"
             observed.last_reason_code = job.reason_code
             observed.last_automatic_attempt_at = now
@@ -571,7 +575,7 @@ class FallbackPlanner:
                     continue
                 try:
                     if await planner._target_satisfied(media, task.target_language_code):
-                        task_svc.transition(task, "completed", clear_error=True)
+                        await planner.plan(task.id)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Task reconcile failed task=%s error=%s", task.id, exc)
         except Exception as exc:  # noqa: BLE001

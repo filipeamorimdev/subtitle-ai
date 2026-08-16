@@ -1395,26 +1395,24 @@ class JobService:
         return await self.create_job(payload, task_id=getattr(row, "task_id", None))
 
     async def retry_bazarr_sync(self, job_id: int) -> JobOut:
+        """Job-level Bazarr retry for the jobs UI and legacy non-task-backed jobs.
+
+        Task-backed verification retries belong to TaskPlanner + BazarrVerificationService.
+        """
         row = self.db.get(JobRow, job_id)
         if not row:
             raise ValueError("Job not found")
         if row.status != "completed":
             raise ValueError("Bazarr sync retry is only available for completed jobs")
-        try:
-            await self._rescan(row)
-            verified = await self._verify_target_with_backoff(row)
-            if verified:
-                row.warning = None
-                row.reason_code = None
-            else:
-                row.warning = (
-                    "Bazarr rescan succeeded but the target subtitle was still "
-                    "reported missing after verification retries."
-                )
-                row.reason_code = "bazarr_verify_failed"
-        except Exception as exc:  # noqa: BLE001
-            row.warning = str(exc)
-            row.reason_code = "bazarr_rescan_failed"
+        from app.localization.verification import BazarrVerificationService
+
+        result = await BazarrVerificationService(self.db).rescan_and_verify_job(row)
+        if result.ok:
+            row.warning = None
+            row.reason_code = None
+        else:
+            row.warning = result.message
+            row.reason_code = result.reason_code
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
@@ -1586,6 +1584,7 @@ class JobService:
         row.reason_code = None
         self.db.add(row)
         self.db.commit()
+        self._set_task_checkpoints(getattr(row, "task_id", None), source="done")
         get_logger("jobs").info("Request job completed job_id=%s path=%s", job_id, found_path)
 
     async def _trigger_bazarr_download(
@@ -1726,6 +1725,9 @@ class JobService:
             current.progress_detail = "Done"
             self.db.add(current)
             self.db.commit()
+            self._set_task_checkpoints(
+                getattr(current, "task_id", None), source="done", extract="done"
+            )
             log.info("Extract job completed job_id=%s path=%s", job_id, current.target_subtitle_path)
             await self._maybe_chain_automatic_translate(job_id, current.target_subtitle_path)
         except Exception as exc:  # noqa: BLE001
@@ -1738,6 +1740,7 @@ class JobService:
                 current.completed_at = utcnow()
                 self.db.add(current)
                 self.db.commit()
+                self._set_task_checkpoints(getattr(current, "task_id", None), extract="failed")
 
     async def _notify_task_planner(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)

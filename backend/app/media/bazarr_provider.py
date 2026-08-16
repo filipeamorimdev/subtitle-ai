@@ -164,7 +164,7 @@ class BazarrMediaProvider:
         q = (query or "").strip()
         if len(q) < 2:
             return []
-        cache_key = f"{self.client.base_url}|{q.lower()}"
+        cache_key = f"{self.provider_id}|{q.lower()}"
         cached = _SEARCH_CACHE.get(cache_key)
         now = time.monotonic()
         if cached and now - cached[0] < _SEARCH_CACHE_TTL_SECONDS:

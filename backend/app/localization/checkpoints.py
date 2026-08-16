@@ -86,3 +86,27 @@ def mark_pipeline_ready_for_translate(*, extracted: bool) -> dict[str, str]:
         "sync": "pending",
         "verify": "pending",
     }
+
+
+def mark_existing_target_complete() -> dict[str, str]:
+    """Target already present — no AI work; verification succeeded."""
+    return {
+        "source": "skipped",
+        "extract": "skipped",
+        "translate": "skipped",
+        "validate": "skipped",
+        "write": "skipped",
+        "sync": "done",
+        "verify": "done",
+    }
+
+
+def mark_write_complete() -> dict[str, str]:
+    """Translation/validation/write succeeded; Bazarr sync/verify in progress."""
+    return {
+        "translate": "done",
+        "validate": "done",
+        "write": "done",
+        "sync": "active",
+        "verify": "active",
+    }
