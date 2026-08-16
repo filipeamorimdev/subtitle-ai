@@ -25,8 +25,21 @@ const selected = ref<MediaRef | null>(null)
 const languages = ref<LanguageCatalogItem[]>([])
 const languageChoice = ref('')
 const customLanguage = ref('')
+const languageFilter = ref('')
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
+const existingTaskId = ref<number | null>(null)
+
+const filteredLanguages = computed(() => {
+  const q = languageFilter.value.trim().toLowerCase()
+  if (!q) return languages.value
+  return languages.value.filter(
+    (l) =>
+      l.display_name.toLowerCase().includes(q) ||
+      l.code.toLowerCase().includes(q) ||
+      l.aliases.some((a) => a.toLowerCase().includes(q)),
+  )
+})
 
 const targetLanguage = computed(() => {
   const custom = customLanguage.value.trim()
@@ -40,9 +53,11 @@ watch(
     if (!open) return
     searchError.value = null
     submitError.value = null
+    existingTaskId.value = null
     results.value = []
     query.value = ''
     customLanguage.value = ''
+    languageFilter.value = ''
     selected.value = props.initialMedia ?? null
     if (!languages.value.length) {
       try {
@@ -141,8 +156,9 @@ async function submit() {
     } catch (err) {
       const e = err as Error & { code?: string; taskId?: number }
       if (e.code === 'active_task_exists' && e.taskId) {
-        emit('close')
-        await router.push(`/tasks/${e.taskId}`)
+        existingTaskId.value = e.taskId
+        submitError.value =
+          'A localization task for this media/language is already running.'
         return
       }
       throw err
@@ -243,12 +259,19 @@ onMounted(() => {
           <label class="block text-sm font-medium text-ink-700 dark:text-ink-200">
             Target language
           </label>
+          <input
+            v-model="languageFilter"
+            type="search"
+            class="mt-1.5 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
+            placeholder="Search languages…"
+            :disabled="!!customLanguage.trim()"
+          />
           <select
             v-model="languageChoice"
-            class="mt-1.5 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
+            class="mt-2 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
             :disabled="!!customLanguage.trim()"
           >
-            <option v-for="lang in languages" :key="lang.code" :value="lang.code">
+            <option v-for="lang in filteredLanguages" :key="lang.code" :value="lang.code">
               {{ lang.display_name }}
             </option>
           </select>
@@ -256,7 +279,7 @@ onMounted(() => {
             v-model="customLanguage"
             type="text"
             class="mt-2 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
-            placeholder="Or type a language / code (e.g. pt-PT)"
+            placeholder="Or type a language / code (e.g. Japanese, ja-JP)"
           />
           <p v-if="!languages.length" class="mt-1 text-xs text-ink-500">
             No recognized languages. You can type a language name or code.
@@ -264,6 +287,14 @@ onMounted(() => {
         </div>
 
         <p v-if="submitError" class="text-sm text-red-600">{{ submitError }}</p>
+        <button
+          v-if="existingTaskId"
+          type="button"
+          class="text-sm font-semibold text-accent hover:underline"
+          @click="router.push(`/tasks/${existingTaskId}`)"
+        >
+          View existing task
+        </button>
 
         <div class="flex justify-end gap-2 pt-1">
           <button

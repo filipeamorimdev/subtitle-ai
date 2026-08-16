@@ -19,16 +19,19 @@ from app.api.schemas import (
 from app.core.logging import get_logger
 from app.db.models import JobRow, ObservedCandidateRow
 from app.integrations.bazarr.client import BazarrError
+from app.ai.errors import AIProviderError
 from app.services.candidates import CandidateService
 from app.services.settings import SettingsService
 from app.subtitles.embedded import EmbeddedError
-from app.translation.openrouter.client import OpenRouterError
 
 logger = get_logger("fallback")
 
 RETRYABLE_REASON_CODES = {
     "bazarr_error",
     "openrouter_error",
+    "provider_error",
+    "provider_timeout",
+    "rate_limit",
     "failed",
     "bazarr_rescan_failed",
     "bazarr_verify_failed",
@@ -38,6 +41,7 @@ NON_RETRYABLE_REASON_CODES = {
     "target_exists",
     "cache_hit",
     "openrouter_auth",
+    "provider_auth",
     "validation_failed",
     "not_found",
     "extract_failed",
@@ -414,7 +418,7 @@ class FallbackPlanner:
                     task_id=task_id,
                 )
                 reused = existing is not None and existing.id == job.id
-        except (ValueError, OpenRouterError, BazarrError, EmbeddedError) as exc:
+        except (ValueError, AIProviderError, BazarrError, EmbeddedError) as exc:
             observed.last_outcome = "error"
             observed.last_reason_code = "enqueue_failed"
             self.db.add(observed)

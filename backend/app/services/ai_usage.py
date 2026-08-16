@@ -368,5 +368,5 @@ class RecordingAIProvider:
         return results
 
 
-# Backward-compatible alias.
+# Transitional alias for legacy imports.
 RecordingOpenRouterClient = RecordingAIProvider

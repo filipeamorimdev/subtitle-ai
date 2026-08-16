@@ -7,14 +7,15 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.schemas import JobCreate, PathMappingIn, SettingsUpdate
 from app.core.config import get_app_config
 from app.core.secrets import load_or_create_fernet
 from app.db import Base
-from app.db.models import JobRow, LocalizationTaskRow, MediaItemRow
+from app.db.models import AiUsageRecordRow, JobRow, LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrClient
 from app.languages import normalize_language
 from app.localization.planner import TaskPlanner
@@ -421,3 +422,448 @@ async def test_api_languages_and_tasks(loc_env, monkeypatch):
     retry = client.post(f"/api/localization-tasks/{task_id}/retry")
     assert retry.status_code == 200
     assert retry.json()["status"] in {"planning", "waiting_for_source", "processing", "completed"}
+
+
+def test_media_upsert_idempotent(loc_env):
+    db, *_ = loc_env
+    svc = MediaItemService(db)
+    first = svc.upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    second = svc.upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    assert first.id == second.id
+    assert db.scalar(select(func.count()).select_from(MediaItemRow)) == 1
+
+
+def test_media_parent_child(loc_env):
+    db, *_ = loc_env
+    svc = MediaItemService(db)
+    from app.media import MediaRef
+
+    series = svc.upsert_from_ref(
+        MediaRef(
+            provider_id="bazarr",
+            external_id="series:10",
+            media_type="series",
+            title="Breaking Bad",
+            bazarr_series_id=10,
+        )
+    )
+    episode = svc.upsert_from_ref(
+        MediaRef(
+            provider_id="bazarr",
+            external_id="episode:100",
+            media_type="episode",
+            title="Breaking Bad - S02E03",
+            parent_external_id="series:10",
+            bazarr_series_id=10,
+            bazarr_episode_id=100,
+            season=2,
+            episode=3,
+        )
+    )
+    assert episode.parent_media_id == series.id
+
+
+@pytest.mark.asyncio
+async def test_search_cache_ttl(monkeypatch):
+    clear_search_cache()
+    calls = {"movies": 0}
+
+    async def fake_request(self, method, path, *, params=None, json_body=None):
+        if path == "/api/movies":
+            calls["movies"] += 1
+            return [{"radarrId": 1, "title": "The Matrix", "year": 1999}]
+        if path == "/api/series":
+            return []
+        if path == "/api/episodes":
+            return []
+        raise AssertionError(path)
+
+    monkeypatch.setattr(BazarrClient, "_request", fake_request)
+    provider = BazarrMediaProvider(BazarrClient("http://bazarr.test", "key"))
+    first = await provider.search_media("Matrix")
+    second = await provider.search_media("Matrix")
+    assert first[0].title == "The Matrix"
+    assert second[0].title == first[0].title
+    assert calls["movies"] == 1
+    clear_search_cache()
+    await provider.search_media("Matrix")
+    assert calls["movies"] == 2
+
+
+@pytest.mark.asyncio
+async def test_planner_plan_is_idempotent(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def fake_snapshot(self, media_row, target_language):
+        return {
+            "candidate_key": "k",
+            "can_translate": True,
+            "can_extract": False,
+            "can_request": False,
+            "source_path": str(source),
+            "source_language": "en",
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", fake_snapshot)
+
+    planner = TaskPlanner(db)
+    await planner.plan(task.id)
+    await planner.plan(task.id)
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id)).all())
+    active = [j for j in jobs if j.status in {"pending", "processing"}]
+    assert len(active) == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_completed_creates_no_work(loc_env, monkeypatch):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/x.mkv",
+        bazarr_movie_id=1,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "completed")
+    await TaskPlanner(db).plan(task.id)
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id)).all())
+    assert jobs == []
+
+
+@pytest.mark.asyncio
+async def test_planner_cancel_prevents_future_work(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.cancel(task.id)
+
+    async def fake_snapshot(self, media_row, target_language):
+        raise AssertionError("cancelled task must not resolve sources")
+
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", fake_snapshot)
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "cancelled"
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id)).all())
+    assert jobs == []
+
+
+@pytest.mark.asyncio
+async def test_verification_failure_does_not_complete(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media_path = media_dir / "The Matrix.mkv"
+    target = media_dir / "The Matrix.pt-PT.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_path),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+
+    job = JobRow(
+        task_id=task.id,
+        job_kind="translate",
+        media_type="movie",
+        media_path=str(media_path),
+        source_subtitle_path=str(source),
+        target_subtitle_path=str(target),
+        model="test",
+        status="completed",
+        reason_code="bazarr_verify_failed",
+        warning="still missing",
+    )
+    db.add(job)
+    db.commit()
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def fake_sync(self, job_id):
+        from app.jobs.service import job_to_out
+
+        row = self.db.get(JobRow, job_id)
+        return job_to_out(row)
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr("app.jobs.service.JobService.retry_bazarr_sync", fake_sync)
+
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "verifying"
+    assert planned.status != "completed"
+
+
+@pytest.mark.asyncio
+async def test_typed_japanese_creates_task(loc_env, monkeypatch):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/x.mkv",
+        bazarr_movie_id=1,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, created = svc.create_manual_task(media_item=media, target_language="ja-JP")
+    assert created
+    assert task.target_language_code == "ja-JP"
+    assert "Japanese" in task.target_language_name
+
+
+def test_active_task_unique_constraint(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    db.add(
+        LocalizationTaskRow(
+            media_item_id=media.id,
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            capability="subtitles",
+            status="processing",
+            origin="manual",
+            priority="high",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()
+    assert db.scalar(select(func.count()).select_from(LocalizationTaskRow)) == 1
+    assert svc.find_active(media.id, "pt-PT").id == task.id
+
+
+@pytest.mark.asyncio
+async def test_waiting_task_resumes_when_source_appears(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    calls = {"n": 0}
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def fake_snapshot(self, media_row, target_language):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "candidate_key": "k",
+                "can_translate": False,
+                "can_extract": False,
+                "can_request": False,
+                "source_path": None,
+                "source_language": None,
+                "extract_stream_index": None,
+                "target_exists": False,
+            }
+        return {
+            "candidate_key": "k",
+            "can_translate": True,
+            "can_extract": False,
+            "can_request": False,
+            "source_path": str(source),
+            "source_language": "en",
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", fake_snapshot)
+
+    planner = TaskPlanner(db)
+    waiting = await planner.plan(task.id)
+    assert waiting is not None
+    assert waiting.status == "waiting_for_source"
+
+    resumed = await planner.plan(task.id)
+    assert resumed is not None
+    assert resumed.status == "processing"
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id)).all())
+    assert len(jobs) == 1
+    assert jobs[0].job_kind == "translate"
+
+
+@pytest.mark.asyncio
+async def test_retry_verification_does_not_retranslate(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media_path = media_dir / "The Matrix.mkv"
+    target = media_dir / "The Matrix.pt-PT.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_path),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+
+    job = JobRow(
+        task_id=task.id,
+        job_kind="translate",
+        media_type="movie",
+        media_path=str(media_path),
+        source_subtitle_path=str(source),
+        target_subtitle_path=str(target),
+        model="test",
+        status="completed",
+        reason_code="bazarr_verify_failed",
+        warning="still missing",
+    )
+    db.add(job)
+    db.commit()
+
+    created: list[object] = []
+
+    async def fake_create_job(self, payload, **kwargs):
+        created.append(payload)
+        raise AssertionError("verification retry must not enqueue translation")
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def fake_sync(self, job_id):
+        from app.jobs.service import job_to_out
+
+        row = self.db.get(JobRow, job_id)
+        return job_to_out(row)
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr("app.jobs.service.JobService.create_job", fake_create_job)
+    monkeypatch.setattr("app.jobs.service.JobService.retry_bazarr_sync", fake_sync)
+
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "verifying"
+    assert created == []
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id)).all())
+    assert len(jobs) == 1
+    assert jobs[0].job_kind == "translate"
+
+
+def test_task_cost_aggregates_retries(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    job = JobRow(
+        task_id=task.id,
+        job_kind="translate",
+        media_type="movie",
+        media_path=media.path or "",
+        source_subtitle_path=media.path or "",
+        target_subtitle_path=(media.path or "") + ".pt-PT.srt",
+        model="mock-free",
+        provider_id="mock",
+        status="failed",
+    )
+    db.add(job)
+    db.commit()
+    db.add(
+        AiUsageRecordRow(
+            job_id=job.id,
+            operation_type="translation",
+            provider_id="mock",
+            model_id="mock-free",
+            request_id="req-1",
+            actual_cost_micro_usd=2000,
+            total_tokens=100,
+        )
+    )
+    db.add(
+        AiUsageRecordRow(
+            job_id=job.id,
+            operation_type="translation",
+            provider_id="mock",
+            model_id="mock-free",
+            request_id="req-2",
+            actual_cost_micro_usd=3000,
+            total_tokens=150,
+        )
+    )
+    db.commit()
+    summary = svc.ai_summary(task.id)
+    assert summary["requests"] == 2
+    assert summary["tokens"] == 250
+    assert summary["cost_usd"] == pytest.approx(0.005)
+    assert summary["provider_id"] == "mock"
+    assert summary["model_id"] == "mock-free"

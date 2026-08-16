@@ -55,8 +55,10 @@ async function load() {
     media.value = await api.getMedia(mediaId.value)
     const loc = await api.getMediaLocalization(mediaId.value)
     localization.value = loc.languages
-    const all = await api.getLocalizationTasks({ limit: 100 })
-    tasks.value = all.filter((t) => t.media_item_id === mediaId.value)
+    tasks.value = await api.getLocalizationTasks({
+      media_item_id: mediaId.value,
+      limit: 50,
+    })
     error.value = null
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)

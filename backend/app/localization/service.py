@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import JobRow, LocalizationTaskRow, MediaItemRow
@@ -174,13 +174,16 @@ class LocalizationTaskService:
                 return existing, False
             raise ActiveTaskExistsError(existing.id)
 
-        return self.ensure_task(
+        task, created = self.ensure_task(
             media_item=media_item,
             language=language,
             capability=capability,
             origin="manual",
             requested_by=requested_by,
         )
+        if not created and not reuse_active:
+            raise ActiveTaskExistsError(task.id)
+        return task, created
 
     def list_tasks(
         self,
@@ -190,7 +193,9 @@ class LocalizationTaskService:
         capability: str | None = None,
         language: str | None = None,
         media_type: str | None = None,
+        media_item_id: int | None = None,
         limit: int = 100,
+        offset: int = 0,
         active_only: bool = False,
     ) -> list[LocalizationTaskRow]:
         query = select(LocalizationTaskRow).order_by(
@@ -206,10 +211,72 @@ class LocalizationTaskService:
             query = query.where(LocalizationTaskRow.capability == capability)
         if language:
             query = query.where(LocalizationTaskRow.target_language_code == language)
+        if media_item_id is not None:
+            query = query.where(LocalizationTaskRow.media_item_id == media_item_id)
         if media_type:
             query = query.join(MediaItemRow).where(MediaItemRow.media_type == media_type)
-        query = query.limit(max(1, min(limit, 500)))
+        query = query.limit(max(1, min(limit, 500))).offset(max(0, offset))
         return list(self.db.scalars(query).all())
+
+    def count_tasks(
+        self,
+        *,
+        status: str | None = None,
+        origin: str | None = None,
+        capability: str | None = None,
+        language: str | None = None,
+        media_type: str | None = None,
+        media_item_id: int | None = None,
+        active_only: bool = False,
+    ) -> int:
+        query = select(func.count()).select_from(LocalizationTaskRow)
+        if status:
+            query = query.where(LocalizationTaskRow.status == status)
+        if active_only:
+            query = query.where(LocalizationTaskRow.status.in_(list(ACTIVE_STATUSES)))
+        if origin:
+            query = query.where(LocalizationTaskRow.origin == origin)
+        if capability:
+            query = query.where(LocalizationTaskRow.capability == capability)
+        if language:
+            query = query.where(LocalizationTaskRow.target_language_code == language)
+        if media_item_id is not None:
+            query = query.where(LocalizationTaskRow.media_item_id == media_item_id)
+        if media_type:
+            query = query.join(MediaItemRow).where(MediaItemRow.media_type == media_type)
+        return int(self.db.scalar(query) or 0)
+
+    def latest_task_for_language(
+        self,
+        media_item_id: int,
+        language_code: str,
+        capability: str = "subtitles",
+    ) -> LocalizationTaskRow | None:
+        """Active task wins; otherwise the latest historical task for this language."""
+        from app.subtitles.filenames import languages_compatible
+
+        active = self.find_active(media_item_id, language_code, capability)
+        if active is not None:
+            return active
+        rows = list(
+            self.db.scalars(
+                select(LocalizationTaskRow)
+                .where(
+                    LocalizationTaskRow.media_item_id == media_item_id,
+                    LocalizationTaskRow.capability == capability,
+                )
+                .order_by(LocalizationTaskRow.created_at.desc(), LocalizationTaskRow.id.desc())
+            ).all()
+        )
+        for row in rows:
+            if row.status in ACTIVE_STATUSES and languages_compatible(
+                row.target_language_code, language_code
+            ):
+                return row
+        for row in rows:
+            if languages_compatible(row.target_language_code, language_code):
+                return row
+        return None
 
     def list_active(self) -> list[LocalizationTaskRow]:
         return list(
@@ -236,6 +303,18 @@ class LocalizationTaskService:
             self.db.commit()
             self.db.refresh(job)
         return job
+
+    def update_checkpoints(self, task_id: int | None, **states: str) -> None:
+        if not task_id:
+            return
+        from app.localization.checkpoints import merge_checkpoints
+
+        task = self.get(int(task_id))
+        if task is None:
+            return
+        task.metadata_json = merge_checkpoints(task.metadata_json, states)
+        self.db.add(task)
+        self.db.commit()
 
     def cancel(self, task_id: int) -> LocalizationTaskRow:
         task = self.get(task_id)

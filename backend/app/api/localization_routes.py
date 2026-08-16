@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -28,7 +28,6 @@ from app.localization.service import (
     LocalizationTaskService,
     UnsupportedCapabilityError,
 )
-from app.localization.state import ACTIVE_STATUSES
 from app.media import MediaRef
 from app.media.bazarr_provider import (
     BAZARR_PROVIDER_ID,
@@ -65,12 +64,21 @@ def _media_item_out(row: MediaItemRow) -> MediaItemOut:
 
 
 def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str]]:
-    """Derive a simple checklist from task status + executions."""
+    """Authoritative checkpoints when present; otherwise infer from executions."""
+    from app.localization.checkpoints import (
+        has_checkpoint_data,
+        progress_steps,
+        read_checkpoints,
+    )
+
+    if has_checkpoint_data(task.metadata_json):
+        return progress_steps(read_checkpoints(task.metadata_json))
+
     kinds_done = {j.job_kind for j in jobs if j.status == "completed"}
     kinds_active = {j.job_kind for j in jobs if j.status in {"pending", "processing"}}
     kinds_failed = {j.job_kind for j in jobs if j.status == "failed"}
 
-    def state(kind: str, label_done: str) -> str:
+    def state(kind: str) -> str:
         if kind in kinds_done:
             return "done"
         if kind in kinds_active:
@@ -80,38 +88,40 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
         return "pending"
 
     steps = [
-        {"id": "source", "label": "Source found", "state": state("request", "Source found")},
-        {"id": "extract", "label": "Source extracted", "state": state("extract", "Source extracted")},
-        {
-            "id": "translate",
-            "label": "Translating",
-            "state": state("translate", "Translated"),
-        },
+        {"id": "source", "label": "Source found", "state": state("request")},
+        {"id": "extract", "label": "Source extracted", "state": state("extract")},
+        {"id": "translate", "label": "Translating", "state": state("translate")},
         {"id": "validate", "label": "Validating", "state": "pending"},
-        {"id": "verify", "label": "Bazarr verification", "state": "pending"},
+        {"id": "write", "label": "Writing subtitle", "state": "pending"},
+        {"id": "sync", "label": "Bazarr sync", "state": "pending"},
+        {"id": "verify", "label": "Verification", "state": "pending"},
     ]
-    # If translate completed without request/extract, mark source done.
     if "translate" in kinds_done or "translate" in kinds_active:
         if steps[0]["state"] == "pending":
             steps[0]["state"] = "done"
         if steps[1]["state"] == "pending" and "extract" not in kinds_failed:
-            # extract optional
-            pass
+            steps[1]["state"] = "skipped"
     if "translate" in kinds_done:
         steps[2]["state"] = "done"
         steps[3]["state"] = "done"
+        steps[4]["state"] = "done"
         if task.status == "verifying":
-            steps[4]["state"] = "active"
+            steps[5]["state"] = "active"
+            steps[6]["state"] = "active"
         elif task.status == "completed":
-            steps[4]["state"] = "done"
+            steps[5]["state"] = "done"
+            steps[6]["state"] = "done"
         elif any(j.reason_code == "bazarr_verify_failed" for j in jobs if j.job_kind == "translate"):
-            steps[4]["state"] = "failed"
+            steps[5]["state"] = "done"
+            steps[6]["state"] = "failed"
     if task.status == "completed":
         for step in steps:
             if step["state"] == "pending":
-                step["state"] = "done"
+                step["state"] = "skipped" if step["id"] == "extract" else "done"
     if task.status == "waiting_for_source":
         steps[0]["state"] = "active"
+        if steps[1]["state"] == "pending":
+            steps[1]["state"] = "skipped"
     return steps
 
 
@@ -293,29 +303,35 @@ async def get_media_localization(
                 )
             )
 
-    # Overlay active/historical task status.
+    # Overlay a single current task per language: availability + active + latest.
     task_svc = LocalizationTaskService(db)
-    for task in task_svc.list_tasks(limit=200):
+    for lang in languages:
+        overlay = task_svc.latest_task_for_language(media_id, lang.language_code)
+        if overlay is None:
+            continue
+        lang.task_status = overlay.status
+        lang.task_id = overlay.id
+
+    # Languages that have tasks but aren't in the availability list yet.
+    seen_codes = {lang.language_code for lang in languages}
+    for task in task_svc.list_tasks(media_item_id=media_id, capability="subtitles", limit=200):
         if task.media_item_id != media_id or task.capability != "subtitles":
             continue
-        matched = False
-        for lang in languages:
-            if languages_compatible(lang.language_code, task.target_language_code):
-                if task.status in ACTIVE_STATUSES or lang.task_status is None:
-                    lang.task_status = task.status
-                    lang.task_id = task.id
-                matched = True
-                break
-        if not matched:
-            languages.append(
-                LanguageAvailabilityOut(
-                    language_code=task.target_language_code,
-                    language_name=task.target_language_name,
-                    available=task.status == "completed",
-                    task_status=task.status,
-                    task_id=task.id,
-                )
+        if any(languages_compatible(task.target_language_code, code) for code in seen_codes):
+            continue
+        overlay = task_svc.latest_task_for_language(media_id, task.target_language_code)
+        if overlay is None or overlay.id != task.id:
+            continue
+        languages.append(
+            LanguageAvailabilityOut(
+                language_code=task.target_language_code,
+                language_name=task.target_language_name,
+                available=task.status == "completed",
+                task_status=overlay.status,
+                task_id=overlay.id,
             )
+        )
+        seen_codes.add(task.target_language_code)
 
     return MediaLocalizationOut(media_id=media_id, capability="subtitles", languages=languages)
 
@@ -357,24 +373,40 @@ async def create_media_localization_task(
 
 @router.get("/localization-tasks", response_model=list[LocalizationTaskOut])
 def list_localization_tasks(
+    response: Response,
     status: str | None = None,
     origin: str | None = None,
     capability: str | None = None,
     language: str | None = None,
     media_type: str | None = None,
+    media_item_id: int | None = None,
     active_only: bool = False,
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ) -> list[LocalizationTaskOut]:
-    rows = LocalizationTaskService(db).list_tasks(
+    svc = LocalizationTaskService(db)
+    total = svc.count_tasks(
         status=status,
         origin=origin,
         capability=capability,
         language=language,
         media_type=media_type,
-        limit=limit,
+        media_item_id=media_item_id,
         active_only=active_only,
     )
+    rows = svc.list_tasks(
+        status=status,
+        origin=origin,
+        capability=capability,
+        language=language,
+        media_type=media_type,
+        media_item_id=media_item_id,
+        limit=limit,
+        offset=offset,
+        active_only=active_only,
+    )
+    response.headers["X-Total-Count"] = str(total)
     return [_task_out(db, row, include_detail=False) for row in rows]
 
 

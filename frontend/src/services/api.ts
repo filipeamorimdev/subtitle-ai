@@ -289,8 +289,10 @@ export const api = {
     capability?: string
     language?: string
     media_type?: string
+    media_item_id?: number
     active_only?: boolean
     limit?: number
+    offset?: number
   }) => {
     const query = new URLSearchParams()
     if (params?.status) query.set('status', params.status)
@@ -298,10 +300,49 @@ export const api = {
     if (params?.capability) query.set('capability', params.capability)
     if (params?.language) query.set('language', params.language)
     if (params?.media_type) query.set('media_type', params.media_type)
+    if (params?.media_item_id != null) query.set('media_item_id', String(params.media_item_id))
     if (params?.active_only) query.set('active_only', 'true')
     if (params?.limit != null) query.set('limit', String(params.limit))
+    if (params?.offset != null) query.set('offset', String(params.offset))
     const suffix = query.toString() ? `?${query}` : ''
     return request<LocalizationTask[]>(`/api/localization-tasks${suffix}`)
+  },
+  getLocalizationTasksPage: async (params?: {
+    status?: string
+    origin?: string
+    capability?: string
+    language?: string
+    media_type?: string
+    media_item_id?: number
+    active_only?: boolean
+    limit?: number
+    offset?: number
+  }) => {
+    const query = new URLSearchParams()
+    if (params?.status) query.set('status', params.status)
+    if (params?.origin) query.set('origin', params.origin)
+    if (params?.capability) query.set('capability', params.capability)
+    if (params?.language) query.set('language', params.language)
+    if (params?.media_type) query.set('media_type', params.media_type)
+    if (params?.media_item_id != null) query.set('media_item_id', String(params.media_item_id))
+    if (params?.active_only) query.set('active_only', 'true')
+    if (params?.limit != null) query.set('limit', String(params.limit))
+    if (params?.offset != null) query.set('offset', String(params.offset))
+    const suffix = query.toString() ? `?${query}` : ''
+    const response = await fetch(`/api/localization-tasks${suffix}`)
+    if (!response.ok) {
+      let detail = response.statusText
+      try {
+        const body = await response.json()
+        detail = body.detail || detail
+      } catch {
+        /* ignore */
+      }
+      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    }
+    const items = (await response.json()) as LocalizationTask[]
+    const total = Number(response.headers.get('X-Total-Count') || items.length)
+    return { items, total }
   },
   getLocalizationTask: (id: number) =>
     request<LocalizationTask>(`/api/localization-tasks/${id}`),

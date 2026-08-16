@@ -31,6 +31,7 @@ function stepIcon(state: string) {
   if (state === 'done') return '✓'
   if (state === 'active') return '⟳'
   if (state === 'failed') return '✗'
+  if (state === 'skipped') return '—'
   return '○'
 }
 
@@ -39,7 +40,7 @@ function canCancel(status: string) {
 }
 
 function canRetry(status: string) {
-  return ['failed', 'blocked', 'cancelled'].includes(status)
+  return ['failed', 'blocked', 'cancelled', 'verifying', 'waiting_for_source'].includes(status)
 }
 
 async function cancel() {
@@ -157,7 +158,10 @@ onUnmounted(() => {
             class="flex items-center gap-2 text-sm"
           >
             <span class="w-4 text-center font-semibold">{{ stepIcon(step.state) }}</span>
-            <span :class="step.state === 'active' ? 'font-semibold' : ''">{{ step.label }}</span>
+            <span :class="step.state === 'active' ? 'font-semibold' : ''">
+              {{ step.label }}
+              <span v-if="step.state === 'skipped'" class="text-ink-500"> · Skipped</span>
+            </span>
           </li>
         </ul>
       </div>
@@ -169,7 +173,7 @@ onUnmounted(() => {
             Open AI Control Center
           </RouterLink>
         </div>
-        <dl class="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <dl class="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
           <div>
             <dt class="text-ink-500">Provider</dt>
             <dd class="font-medium">{{ task.ai.provider_id || '—' }}</dd>
@@ -181,6 +185,10 @@ onUnmounted(() => {
           <div>
             <dt class="text-ink-500">Requests</dt>
             <dd class="font-medium">{{ task.ai.requests }}</dd>
+          </div>
+          <div>
+            <dt class="text-ink-500">Tokens</dt>
+            <dd class="font-medium">{{ task.ai.tokens.toLocaleString() }}</dd>
           </div>
           <div>
             <dt class="text-ink-500">Cost</dt>

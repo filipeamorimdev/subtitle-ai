@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.ai.providers.registry import reset_provider_registry
 from app.db import Base
 from app.db.models import AiUsageRecordRow, OpenRouterModelPreferenceRow, SettingsRow
 from app.services.ai_ranking import AiRankingService
@@ -15,6 +16,7 @@ from app.services.model_router import ModelRouter, RoutingPolicy
 
 
 def _db(tmp_path):
+    reset_provider_registry()
     engine = create_engine(f"sqlite:///{tmp_path / 'rank.db'}")
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()

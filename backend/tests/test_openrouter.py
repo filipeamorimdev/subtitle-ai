@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from app.ai.errors import AIProviderError
 from app.subtitles.parsers.srt import parse_srt
 from app.translation.openrouter.client import (
     OpenRouterClient,
@@ -683,7 +684,7 @@ async def test_translation_single_block_still_fails_hard(monkeypatch):
 00:00:01,000 --> 00:00:03,000
 Hello
 """
-    with pytest.raises(OpenRouterError, match="validation"):
+    with pytest.raises(AIProviderError, match="validation"):
         await service.translate_document(
             parse_srt(single),
             model="m",

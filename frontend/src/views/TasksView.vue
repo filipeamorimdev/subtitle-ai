@@ -7,10 +7,16 @@ import type { LocalizationTask } from '../types'
 import { formatDateTime } from '../utils/datetime'
 
 const tasks = ref<LocalizationTask[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = 25
 const loading = ref(false)
 const error = ref<string | null>(null)
 const statusFilter = ref<string | null>(null)
 const originFilter = ref<string | null>(null)
+const languageFilter = ref('')
+const capabilityFilter = ref<string | null>(null)
+const mediaTypeFilter = ref<string | null>(null)
 const modalOpen = ref(false)
 let timer: number | undefined
 
@@ -22,20 +28,34 @@ const filters = [
   { label: 'Failed', status: 'failed' },
 ]
 
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+
 async function load() {
   loading.value = true
   error.value = null
   try {
-    tasks.value = await api.getLocalizationTasks({
+    const result = await api.getLocalizationTasksPage({
       status: statusFilter.value || undefined,
       origin: originFilter.value || undefined,
-      limit: 200,
+      language: languageFilter.value.trim() || undefined,
+      capability: capabilityFilter.value || undefined,
+      media_type: mediaTypeFilter.value || undefined,
+      limit: pageSize,
+      offset: (page.value - 1) * pageSize,
     })
+    tasks.value = result.items
+    total.value = result.total
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
   }
+}
+
+function applyStatus(status: string | null) {
+  statusFilter.value = status
+  page.value = 1
+  load()
 }
 
 function statusLabel(status: string) {
@@ -96,7 +116,7 @@ onUnmounted(() => {
             ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
             : 'bg-ink-100 text-ink-700 dark:bg-ink-800 dark:text-ink-200'
         "
-        @click="statusFilter = f.status; load()"
+        @click="applyStatus(f.status)"
       >
         {{ f.label }}
       </button>
@@ -108,7 +128,7 @@ onUnmounted(() => {
             ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
             : 'bg-ink-100 text-ink-700 dark:bg-ink-800 dark:text-ink-200'
         "
-        @click="originFilter = originFilter === 'manual' ? null : 'manual'; load()"
+        @click="originFilter = originFilter === 'manual' ? null : 'manual'; page = 1; load()"
       >
         Manual
       </button>
@@ -120,10 +140,43 @@ onUnmounted(() => {
             ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
             : 'bg-ink-100 text-ink-700 dark:bg-ink-800 dark:text-ink-200'
         "
-        @click="originFilter = originFilter === 'automatic' ? null : 'automatic'; load()"
+        @click="originFilter = originFilter === 'automatic' ? null : 'automatic'; page = 1; load()"
       >
         Automatic
       </button>
+      <button
+        type="button"
+        class="rounded-full px-3 py-1 text-xs font-semibold"
+        :class="
+          capabilityFilter === 'subtitles'
+            ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
+            : 'bg-ink-100 text-ink-700 dark:bg-ink-800 dark:text-ink-200'
+        "
+        @click="capabilityFilter = capabilityFilter === 'subtitles' ? null : 'subtitles'; page = 1; load()"
+      >
+        Subtitles
+      </button>
+      <button
+        v-for="mt in ['movie', 'episode']"
+        :key="mt"
+        type="button"
+        class="rounded-full px-3 py-1 text-xs font-semibold capitalize"
+        :class="
+          mediaTypeFilter === mt
+            ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
+            : 'bg-ink-100 text-ink-700 dark:bg-ink-800 dark:text-ink-200'
+        "
+        @click="mediaTypeFilter = mediaTypeFilter === mt ? null : mt; page = 1; load()"
+      >
+        {{ mt }}
+      </button>
+      <input
+        v-model="languageFilter"
+        type="search"
+        class="rounded-full border border-ink-200 bg-white px-3 py-1 text-xs dark:border-ink-700 dark:bg-ink-900"
+        placeholder="Language code…"
+        @change="page = 1; load()"
+      />
     </div>
 
     <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
@@ -182,6 +235,29 @@ onUnmounted(() => {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div v-if="total > pageSize" class="flex items-center justify-between text-sm">
+      <p class="text-ink-500">{{ total }} tasks</p>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="rounded-md border border-ink-300 px-3 py-1 dark:border-ink-600"
+          :disabled="page <= 1"
+          @click="page -= 1; load()"
+        >
+          Previous
+        </button>
+        <span class="px-2 py-1 text-ink-500">{{ page }} / {{ pageCount }}</span>
+        <button
+          type="button"
+          class="rounded-md border border-ink-300 px-3 py-1 dark:border-ink-600"
+          :disabled="page >= pageCount"
+          @click="page += 1; load()"
+        >
+          Next
+        </button>
+      </div>
     </div>
 
     <p class="text-xs text-ink-500">

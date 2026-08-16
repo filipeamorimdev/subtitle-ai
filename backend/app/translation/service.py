@@ -84,6 +84,10 @@ class RetryableTranslationError(AIProviderError):
         self.checkpoint = checkpoint
 
 
+def _validation_error(message: str) -> AIProviderError:
+    return AIProviderError(message, category="validation_error", is_retryable=False)
+
+
 def _content(result: Any) -> str:
     return str(getattr(result, "content", "") or "")
 
@@ -238,7 +242,7 @@ class TranslationService:
             if validation.hard_ok:
                 break
             if not hard_ids:
-                raise OpenRouterError(
+                raise _validation_error(
                     f"Translation response failed validation. {validation.error_message}"
                 )
 
@@ -275,7 +279,7 @@ class TranslationService:
             )
             validation = validate_translation(document, result_doc, check_markup=True)
             if not validation.hard_ok:
-                raise OpenRouterError(
+                raise _validation_error(
                     "Translation response failed validation. "
                     + "; ".join(f"{i.code}: {i.message}" for i in validation.hard_issues)
                 )
@@ -295,7 +299,7 @@ class TranslationService:
             if message not in warnings:
                 warnings.append(message)
         if not final_validation.hard_ok:
-            raise OpenRouterError(
+            raise _validation_error(
                 "Translation response failed validation. "
                 + "; ".join(f"{i.code}: {i.message}" for i in final_validation.hard_issues)
             )
@@ -514,7 +518,7 @@ class TranslationService:
             )
             return {**left, **right}, repaired or left_repaired or right_repaired
 
-        raise OpenRouterError(
+        raise _validation_error(
             "Translation response failed validation. " + validation.error_message
         )
 
@@ -547,5 +551,5 @@ class TranslationService:
         return merged
 
 
-# Backward-compatible name.
+# Transitional alias for legacy imports.
 OpenRouterTranslationService = TranslationService

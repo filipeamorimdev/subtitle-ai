@@ -40,9 +40,8 @@ from app.integrations.bazarr.paths import (
     mappings_from_settings,
 )
 from app.ai.bootstrap import bootstrap_providers
-from app.ai.credentials import ProviderAccountService
-from app.ai.errors import AIProviderError
-from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID, OpenRouterProvider
+from app.ai.errors import AIProviderError, user_message_for_provider_error
+from app.ai.providers.openrouter import OpenRouterProvider
 from app.ai.providers.registry import get_provider_registry
 from app.services.ai_budget import AiBudgetService, BudgetBlockedError
 from app.services.ai_usage import AiUsageService, RecordingAIProvider
@@ -81,7 +80,7 @@ from app.translation.service import (
     TranslationService,
 )
 
-# Backward-compatible aliases.
+# Transitional aliases for legacy imports. Core v0.3 code uses the generic names.
 OpenRouterError = AIProviderError
 classify_openrouter_failure = classify_provider_failure
 RecordingOpenRouterClient = RecordingAIProvider
@@ -112,9 +111,15 @@ def dedupe_key(
     target_language: str,
     model: str,
     *,
-    provider_id: str = OPENROUTER_PROVIDER_ID,
+    provider_id: str | None = None,
 ) -> str:
-    raw = f"{source_hash}|{target_language}|{provider_id}|{model}"
+    raw = f"{source_hash}|{target_language}|{provider_id or ''}|{model}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def pending_dedupe_key(source_hash: str, target_language: str) -> str:
+    """Provider-neutral identity used until ModelRouter selects a candidate."""
+    raw = f"{source_hash}|{target_language}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -135,7 +140,7 @@ def job_to_out(row: JobRow) -> JobOut:
         target_subtitle_path=row.target_subtitle_path,
         source_language=row.source_language,
         target_language=row.target_language,
-        provider_id=getattr(row, "provider_id", None) or OPENROUTER_PROVIDER_ID,
+        provider_id=getattr(row, "provider_id", None),
         model=row.model,
         status=row.status,
         progress=row.progress,
@@ -687,17 +692,8 @@ class JobService:
         trigger_type: str = "manual",
         task_id: int | None = None,
     ) -> JobOut:
+        # Provider/account validation happens when execution starts, not at create.
         public = self.settings.get_public()
-        accounts = ProviderAccountService(self.db)
-        openrouter_key = accounts.get_api_key(OPENROUTER_PROVIDER_ID)
-        _, model = self.settings.get_openrouter_credentials()
-        if not openrouter_key:
-            raise AIProviderError(
-                "OpenRouter API key is not configured",
-                category="auth_error",
-                is_retryable=False,
-                provider_id=OPENROUTER_PROVIDER_ID,
-            )
 
         trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
         candidate_key = payload.candidate_key
@@ -714,25 +710,43 @@ class JobService:
         if candidate_key:
             match = candidate
             if match is None or match.key != candidate_key:
-                match = await CandidateService(self.db).get_candidate(candidate_key)
-            if not match:
-                raise ValueError("Candidate not found. Refresh the list and try again.")
-            if not match.can_translate or not match.source_subtitle_path:
+                # Planner-resolved local sources should not require a live Bazarr lookup.
+                if source_path and Path(source_path).exists():
+                    match = None
+                else:
+                    try:
+                        match = await CandidateService(self.db).get_candidate(candidate_key)
+                    except Exception:  # noqa: BLE001
+                        match = None
+            if match is None:
+                # Path-based create is allowed when the candidate list lags or the
+                # planner already resolved a local source subtitle.
+                if not (source_path and Path(source_path).exists()):
+                    raise ValueError("Candidate not found. Refresh the list and try again.")
+            elif not match.can_translate or not match.source_subtitle_path:
                 # Allow path-based automatic chain when candidate list lags.
                 if not (source_path and Path(source_path).exists()):
                     raise ValueError(match.reason or "Candidate cannot be translated.")
                 if not source_path:
                     source_path = match.source_subtitle_path
+                media_path = match.media_path
+                media_type = match.media_type
+                media_title = match.title
+                source_language = match.source_language or source_language
+                target_language = match.target_language
+                bazarr_movie_id = match.bazarr_movie_id
+                bazarr_episode_id = match.bazarr_episode_id
+                bazarr_series_id = match.bazarr_series_id
             else:
                 source_path = match.source_subtitle_path
-            media_path = match.media_path
-            media_type = match.media_type
-            media_title = match.title
-            source_language = match.source_language or source_language
-            target_language = match.target_language
-            bazarr_movie_id = match.bazarr_movie_id
-            bazarr_episode_id = match.bazarr_episode_id
-            bazarr_series_id = match.bazarr_series_id
+                media_path = match.media_path
+                media_type = match.media_type
+                media_title = match.title
+                source_language = match.source_language or source_language
+                target_language = match.target_language
+                bazarr_movie_id = match.bazarr_movie_id
+                bazarr_episode_id = match.bazarr_episode_id
+                bazarr_series_id = match.bazarr_series_id
 
         if not source_path:
             raise ValueError("source_subtitle_path or candidate_key is required")
@@ -761,7 +775,8 @@ class JobService:
                 target_subtitle_path=str(target),
                 source_language=source_language,
                 target_language=target_language,
-                model=model,
+                provider_id=None,
+                model="",
                 status="skipped",
                 progress=100,
                 reason_code="target_exists",
@@ -797,46 +812,26 @@ class JobService:
             return job_to_out(existing)
 
         src_hash = content_hash(source)
-        router = ModelRouter(self.db)
-        routing = router.select_models(trigger_type=trigger)
-        candidate_models = [c.model_id for c in routing.candidates] or [model]
-        completed = None
-        dkey = dedupe_key(
-            src_hash, target_language, candidate_models[0], provider_id=OPENROUTER_PROVIDER_ID
+        completed = self.db.scalar(
+            select(JobRow)
+            .where(
+                JobRow.job_kind == "translate",
+                JobRow.source_hash == src_hash,
+                JobRow.target_language == target_language,
+                JobRow.status == "completed",
+            )
+            .order_by(JobRow.completed_at.desc(), JobRow.id.desc())
         )
-        cache_model = candidate_models[0]
-        for candidate_model in candidate_models:
-            maybe_key = dedupe_key(
-                src_hash, target_language, candidate_model, provider_id=OPENROUTER_PROVIDER_ID
-            )
-            hit = self.db.scalar(
+        if completed is None:
+            # Legacy cache identity (pre-provider / pre-source_hash column match).
+            pending_key = pending_dedupe_key(src_hash, target_language)
+            completed = self.db.scalar(
                 select(JobRow).where(
                     JobRow.job_kind == "translate",
-                    JobRow.dedupe_key == maybe_key,
+                    JobRow.dedupe_key == pending_key,
                     JobRow.status == "completed",
                 )
             )
-            if hit and Path(hit.target_subtitle_path).exists():
-                completed = hit
-                dkey = maybe_key
-                cache_model = candidate_model
-                break
-            # Legacy cache identity (pre-provider): still treat as OpenRouter hit.
-            legacy_key = hashlib.sha256(
-                f"{src_hash}|{target_language}|{candidate_model}".encode("utf-8")
-            ).hexdigest()
-            hit = self.db.scalar(
-                select(JobRow).where(
-                    JobRow.job_kind == "translate",
-                    JobRow.dedupe_key == legacy_key,
-                    JobRow.status == "completed",
-                )
-            )
-            if hit and Path(hit.target_subtitle_path).exists():
-                completed = hit
-                dkey = maybe_key
-                cache_model = candidate_model
-                break
         if completed and Path(completed.target_subtitle_path).exists():
             row = JobRow(
                 candidate_key=candidate_key,
@@ -852,12 +847,12 @@ class JobService:
                 target_subtitle_path=str(target),
                 source_language=source_language,
                 target_language=target_language,
-                provider_id=OPENROUTER_PROVIDER_ID,
-                model=cache_model,
+                provider_id=getattr(completed, "provider_id", None),
+                model=completed.model or "",
                 status="skipped",
                 progress=100,
                 reason_code="cache_hit",
-                dedupe_key=dkey,
+                dedupe_key=completed.dedupe_key or pending_dedupe_key(src_hash, target_language),
                 source_hash=src_hash,
                 error="Identical translation already completed.",
                 completed_at=utcnow(),
@@ -882,13 +877,11 @@ class JobService:
             target_subtitle_path=str(target),
             source_language=source_language,
             target_language=target_language,
-            provider_id=OPENROUTER_PROVIDER_ID,
-            model=candidate_models[0],
+            provider_id=None,
+            model="",
             status="pending",
             progress=0,
-            dedupe_key=dedupe_key(
-                src_hash, target_language, candidate_models[0], provider_id=OPENROUTER_PROVIDER_ID
-            ),
+            dedupe_key=pending_dedupe_key(src_hash, target_language),
             source_hash=src_hash,
         )
         self.db.add(row)
@@ -1291,7 +1284,7 @@ class JobService:
                     reused_count += 1
                 else:
                     created_count += 1
-            except (ValueError, OpenRouterError) as exc:
+            except (ValueError, AIProviderError) as exc:
                 errors.append(f"{match.title}: {exc}")
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{match.title}: {exc}")
@@ -1375,13 +1368,17 @@ class JobService:
         if kind == "extract":
             if not row.candidate_key:
                 raise ValueError("Extract job is missing candidate key")
-            return await self.create_extract_job(ExtractCreate(candidate_key=row.candidate_key))
+            return await self.create_extract_job(
+                ExtractCreate(candidate_key=row.candidate_key),
+                task_id=getattr(row, "task_id", None),
+            )
         if kind == "request":
             if not row.candidate_key:
                 raise ValueError("Request job is missing candidate key")
             return await self.create_request_subtitle_job(
                 row.candidate_key,
                 language=row.source_language,
+                task_id=getattr(row, "task_id", None),
             )
         payload = JobCreate(
             candidate_key=row.candidate_key,
@@ -1395,7 +1392,7 @@ class JobService:
             bazarr_series_id=row.bazarr_series_id,
             source_language=row.source_language,
         )
-        return await self.create_job(payload)
+        return await self.create_job(payload, task_id=getattr(row, "task_id", None))
 
     async def retry_bazarr_sync(self, job_id: int) -> JobOut:
         row = self.db.get(JobRow, job_id)
@@ -1758,6 +1755,8 @@ class JobService:
             )
 
     async def _maybe_chain_automatic_translate(self, job_id: int, source_path: str) -> None:
+        # Legacy compatibility path.
+        # Task-backed executions are orchestrated exclusively by TaskPlanner.
         row = self.db.get(JobRow, job_id)
         if not row or (getattr(row, "trigger_type", None) or "manual") != "automatic":
             return
@@ -1788,6 +1787,19 @@ class JobService:
                 exc,
             )
 
+    def _set_task_checkpoints(self, task_id: int | None, **states: str) -> None:
+        if not task_id:
+            return
+        from app.localization.checkpoints import merge_checkpoints
+        from app.db.models import LocalizationTaskRow
+
+        task = self.db.get(LocalizationTaskRow, task_id)
+        if task is None:
+            return
+        task.metadata_json = merge_checkpoints(task.metadata_json, states)
+        self.db.add(task)
+        self.db.commit()
+
     async def _process_translate_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
         if not row or row.status != "processing":
@@ -1798,18 +1810,10 @@ class JobService:
         usage_service = AiUsageService(self.db)
         budget = AiBudgetService(self.db)
         router = ModelRouter(self.db)
+        task_id = getattr(row, "task_id", None)
         try:
             public = self.settings.get_public()
-            accounts = ProviderAccountService(self.db)
-            api_key = accounts.get_api_key(OPENROUTER_PROVIDER_ID)
-            if not api_key:
-                # Legacy fallback already handled inside ProviderAccountService.
-                raise AIProviderError(
-                    "OpenRouter API key is not configured",
-                    category="auth_error",
-                    is_retryable=False,
-                    provider_id=OPENROUTER_PROVIDER_ID,
-                )
+            bootstrap_providers(self.db)
 
             source_path = Path(row.source_subtitle_path)
             content = source_path.read_text(encoding="utf-8")
@@ -1874,6 +1878,14 @@ class JobService:
             )
             log.info("AI exchange log job_id=%s path=%s", job_id, exchange_log.path)
 
+            target_language_name = public.target_language.name
+            if task_id:
+                from app.db.models import LocalizationTaskRow
+
+                task_row = self.db.get(LocalizationTaskRow, int(task_id))
+                if task_row is not None:
+                    target_language_name = task_row.target_language_name
+
             current = self.db.get(JobRow, job_id)
             if current:
                 current.progress = 5
@@ -1882,6 +1894,7 @@ class JobService:
                 current.provider_id = resolved_provider
                 self.db.add(current)
                 self.db.commit()
+            self._set_task_checkpoints(task_id, translate="active")
 
             checkpoint = TranslationCheckpoint()
             glossary = None
@@ -1891,7 +1904,6 @@ class JobService:
             winning_provider = resolved_provider
             repair_used = False
 
-            bootstrap_providers(self.db)
             registry = get_provider_registry()
 
             for index, candidate in enumerate(routing.candidates):
@@ -1951,7 +1963,7 @@ class JobService:
                             media_type=row.media_type,
                             media_title=row.media_title,
                             target_language_code=row.target_language,
-                            target_language_name=public.target_language.name,
+                            target_language_name=target_language_name,
                             bazarr_series_id=row.bazarr_series_id,
                             bazarr_movie_id=row.bazarr_movie_id,
                             document=document,
@@ -1984,7 +1996,7 @@ class JobService:
                         document,
                         model=candidate.model_id,
                         target_language_code=row.target_language,
-                        target_language_name=public.target_language.name,
+                        target_language_name=target_language_name,
                         batch_size=public.batch_size,
                         progress_callback=on_progress,
                         glossary_terms=glossary.terms,
@@ -2066,8 +2078,12 @@ class JobService:
                 self.db.commit()
                 return
 
+            self._set_task_checkpoints(
+                task_id, translate="done", validate="done", write="active"
+            )
             target_path = Path(current.target_subtitle_path)
             write_srt_atomic(target_path, outcome.document, overwrite=False)
+            self._set_task_checkpoints(task_id, write="done", sync="active")
 
             current.model = winning_model
             current.provider_id = winning_provider
@@ -2111,8 +2127,10 @@ class JobService:
 
             try:
                 await self._rescan(current)
+                self._set_task_checkpoints(task_id, sync="done", verify="active")
                 verified = await self._verify_target_with_backoff(current)
                 if not verified:
+                    self._set_task_checkpoints(task_id, verify="failed")
                     verify_warning = (
                         "Bazarr rescan succeeded but the target subtitle was still "
                         "reported missing after verification retries."
@@ -2122,7 +2140,11 @@ class JobService:
                     else:
                         current.warning = verify_warning
                     current.reason_code = "bazarr_verify_failed"
+                else:
+                    self._set_task_checkpoints(task_id, verify="done")
             except Exception as exc:  # noqa: BLE001
+                log.warning("Bazarr rescan failed job_id=%s error=%s", job_id, exc)
+                self._set_task_checkpoints(task_id, sync="failed", verify="failed")
                 log.warning("Bazarr rescan failed job_id=%s error=%s", job_id, exc)
                 rescan_warning = str(exc)
                 if current.warning:
@@ -2157,12 +2179,14 @@ class JobService:
                 current.completed_at = utcnow()
                 self.db.add(current)
             if reason == "validation_failed":
+                self._set_task_checkpoints(task_id, translate="done", validate="failed")
                 usage_service.set_translation_outcomes(job_id, "validation_failure")
             elif reason in {"blocked_by_cost_policy"}:
                 usage_service.set_translation_outcomes(job_id, "budget_blocked")
             elif reason == "cancelled":
                 usage_service.set_translation_outcomes(job_id, "cancelled")
             else:
+                self._set_task_checkpoints(task_id, translate="failed")
                 usage_service.set_translation_outcomes(job_id, "technical_failure")
             self.db.commit()
             if exchange_log is not None:
@@ -2225,8 +2249,8 @@ def _public_error(exc: Exception) -> str:
         return str(exc)
     if isinstance(exc, BudgetBlockedError):
         return str(exc)
-    if isinstance(exc, OpenRouterError):
-        return str(exc)
+    if isinstance(exc, AIProviderError):
+        return user_message_for_provider_error(exc)
     if isinstance(exc, BazarrError):
         return str(exc)
     if isinstance(exc, EmbeddedError):
@@ -2250,12 +2274,21 @@ def _reason_code(exc: Exception) -> str:
         return exc.reason_code
     if isinstance(exc, BudgetBlockedError):
         return "blocked_by_cost_policy"
-    if isinstance(exc, OpenRouterError):
-        if "validation" in str(exc).lower():
+    if isinstance(exc, AIProviderError):
+        category = getattr(exc, "category", None) or "provider_error"
+        if category == "validation_error" or "validation" in str(exc).lower():
             return "validation_failed"
-        if getattr(exc, "status_code", None) == 401:
-            return "openrouter_auth"
-        return "openrouter_error"
+        if category == "auth_error" or getattr(exc, "status_code", None) == 401:
+            return "provider_auth"
+        if category == "rate_limit":
+            return "rate_limit"
+        if category == "context_overflow":
+            return "context_limit"
+        if category == "incompatible":
+            return "model_not_found"
+        if category == "timeout":
+            return "provider_timeout"
+        return "provider_error"
     if isinstance(exc, BazarrError):
         return "bazarr_error"
     if isinstance(exc, EmbeddedError):

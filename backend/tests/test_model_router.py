@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.ai.providers.registry import reset_provider_registry
 from app.db import Base
 from app.db.models import OpenRouterCatalogCacheRow, OpenRouterModelPreferenceRow, SettingsRow
 from app.services.ai_cost import estimate_request_cost_micro
@@ -13,6 +14,7 @@ from app.translation.openrouter.client import OpenRouterModelInfo
 
 
 def setup_db(tmp_path, prefs, strategy="free_first", allow_paid=False, allow_free=True, allow_unknown=False, cap=None):
+    reset_provider_registry()
     engine = create_engine(f"sqlite:///{tmp_path / 'r.db'}")
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)

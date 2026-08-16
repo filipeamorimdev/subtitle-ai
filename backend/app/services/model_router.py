@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.ai.errors import AIProviderError
 from app.ai.models import AIModelCandidate
 from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID
+from app.ai.providers.registry import get_provider_registry
 from app.core.logging import get_logger
 from app.db.models import AiModelPreferenceRow, AiRoutingEventRow, JobRow, SettingsRow
 from app.services.ai_budget import AiBudgetService
@@ -139,7 +140,7 @@ def classify_provider_failure(exc: Exception) -> str:
     return FAILURE_PROVIDER
 
 
-# Backward-compatible alias used by existing tests/call sites.
+# Transitional alias used by existing tests/call sites.
 classify_openrouter_failure = classify_provider_failure
 
 
@@ -201,6 +202,16 @@ class ModelRouter:
             if identity in seen:
                 continue
             seen.add(identity)
+
+            registered = get_provider_registry().get_optional(provider_id)
+            if registered is not None:
+                try:
+                    configured = bool(registered.is_configured())
+                except Exception:  # noqa: BLE001
+                    # Missing secrets/config in isolated unit tests must not crash routing.
+                    configured = True
+                if not configured:
+                    continue
 
             meta = self.catalog.annotate_model(
                 pref.model_id, batch_size=pol.batch_size, provider_id=provider_id
@@ -350,10 +361,9 @@ class ModelRouter:
             job_id=job_id,
             event=event,
             strategy=strategy,
-            provider_id=provider_id or (OPENROUTER_PROVIDER_ID if model_id else None),
+            provider_id=provider_id,
             model_id=model_id,
-            next_provider_id=next_provider_id
-            or (OPENROUTER_PROVIDER_ID if next_model_id else None),
+            next_provider_id=next_provider_id,
             next_model_id=next_model_id,
             failure_category=failure_category,
             detail=(detail or "")[:512] or None,
@@ -369,7 +379,7 @@ class ModelRouter:
         next_model_id: str | None,
         failure_category: str,
         strategy: str | None = None,
-        provider_id: str = OPENROUTER_PROVIDER_ID,
+        provider_id: str | None = None,
         next_provider_id: str | None = None,
     ) -> None:
         next_pid = next_provider_id or (provider_id if next_model_id else None)

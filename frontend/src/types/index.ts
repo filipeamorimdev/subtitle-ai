@@ -124,7 +124,7 @@ export interface Job {
   target_subtitle_path: string
   source_language: string
   target_language: string
-  provider_id?: string
+  provider_id?: string | null
   model: string
   status: string
   progress: number

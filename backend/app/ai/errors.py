@@ -46,6 +46,35 @@ class AIProviderError(Exception):
         }
 
 
+def user_message_for_provider_error(exc: Exception) -> str:
+    """User-facing task message. Raw technical detail stays on the execution."""
+    category = getattr(exc, "category", None)
+    if isinstance(exc, RateLimitError) or category == "rate_limit":
+        return "The AI provider is temporarily rate-limiting requests."
+    if isinstance(exc, AuthenticationError) or category == "auth_error":
+        return "AI provider authentication failed. Check credentials in AI → Providers."
+    if isinstance(exc, ContextLimitError) or category == "context_overflow":
+        return "This subtitle is too large for the selected model."
+    if isinstance(exc, ProviderUnavailableError) or category in {
+        "provider_unavailable",
+        "timeout",
+        "provider_error",
+    }:
+        if category == "timeout":
+            return "The AI provider timed out. The task can be retried."
+        return "The AI provider is unavailable. Try again later."
+    if isinstance(exc, ModelNotFoundError) or category == "incompatible":
+        return "The selected model is not available. Check AI → Models & Routing."
+    if isinstance(exc, InvalidRequestError) or category in {"invalid_response", "validation_error"}:
+        if category == "validation_error" or "validation" in str(exc).lower():
+            return "The translation failed quality checks and was not written."
+        return "The AI provider rejected the request."
+    message = str(exc)
+    if "validation" in message.lower():
+        return "The translation failed quality checks and was not written."
+    return message
+
+
 class AuthenticationError(AIProviderError):
     def __init__(self, message: str = "Authentication failed", **kwargs: Any) -> None:
         kwargs.setdefault("category", "auth_error")

@@ -55,6 +55,54 @@ def get_db() -> Generator[Session, None, None]:
         session.close()
 
 
+def _ensure_jobs_provider_id_nullable(conn) -> None:
+    """SQLite cannot ALTER COLUMN; rebuild jobs if provider_id is still NOT NULL."""
+    from sqlalchemy import text
+
+    info = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
+    if not info:
+        return
+    provider = next((row for row in info if row[1] == "provider_id"), None)
+    if provider is None or int(provider[3] or 0) == 0:
+        return
+
+    col_sql: list[str] = []
+    names: list[str] = []
+    for _cid, name, ctype, notnull, dflt, pk in info:
+        names.append(name)
+        sql_type = ctype or "TEXT"
+        parts = [f'"{name}" {sql_type}']
+        if pk:
+            parts.append("PRIMARY KEY")
+            if name == "id" and sql_type.upper().startswith("INT"):
+                parts.append("AUTOINCREMENT")
+        elif name != "provider_id":
+            if notnull:
+                parts.append("NOT NULL")
+            if dflt is not None:
+                parts.append(f"DEFAULT {dflt}")
+        col_sql.append(" ".join(parts))
+
+    indexes = list(
+        conn.execute(
+            text(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='jobs' AND sql IS NOT NULL"
+            )
+        ).fetchall()
+    )
+    conn.execute(text("PRAGMA foreign_keys=OFF"))
+    conn.execute(text(f"CREATE TABLE jobs__p9 ({', '.join(col_sql)})"))
+    quoted = ", ".join(f'"{n}"' for n in names)
+    conn.execute(text(f"INSERT INTO jobs__p9 ({quoted}) SELECT {quoted} FROM jobs"))
+    conn.execute(text("DROP TABLE jobs"))
+    conn.execute(text("ALTER TABLE jobs__p9 RENAME TO jobs"))
+    for _name, sql in indexes:
+        if sql:
+            conn.execute(text(sql))
+    conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
 def init_db() -> None:
     # Import models so metadata is registered.
     from app.db import models  # noqa: F401
@@ -77,11 +125,8 @@ def init_db() -> None:
                 text("ALTER TABLE jobs ADD COLUMN trigger_type VARCHAR(16) NOT NULL DEFAULT 'manual'")
             )
         if "provider_id" not in job_columns:
-            conn.execute(
-                text(
-                    "ALTER TABLE jobs ADD COLUMN provider_id VARCHAR(64) NOT NULL DEFAULT 'openrouter'"
-                )
-            )
+            conn.execute(text("ALTER TABLE jobs ADD COLUMN provider_id VARCHAR(64)"))
+        _ensure_jobs_provider_id_nullable(conn)
         if "task_id" not in job_columns:
             conn.execute(text("ALTER TABLE jobs ADD COLUMN task_id INTEGER"))
 

@@ -222,7 +222,10 @@ class OpenRouterProvider(AIProvider):
         return None
 
     def is_configured(self) -> bool:
-        key = self._resolve_api_key()
+        try:
+            key = self._resolve_api_key()
+        except Exception:  # noqa: BLE001
+            return False
         return bool(key and key.strip())
 
     def supports(self, capability: str) -> bool:

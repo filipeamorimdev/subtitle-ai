@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.subtitles.models import SubtitleBlock, SubtitleDocument
+from app.ai.errors import AIProviderError
 from app.translation.openrouter.client import ChatResult, OpenRouterError
 from app.translation.openrouter.service import OpenRouterTranslationService, RetryableTranslationError
 
@@ -114,7 +115,7 @@ async def test_validation_failure_is_not_retryable_pool_burn():
         ]
     )
     svc = OpenRouterTranslationService(client)
-    with pytest.raises(OpenRouterError) as exc:
+    with pytest.raises(AIProviderError) as exc:
         await svc.translate_document(
             _doc(), model="a", target_language_code="pt-PT", target_language_name="Portuguese", batch_size=2
         )

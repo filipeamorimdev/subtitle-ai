@@ -20,7 +20,6 @@ from app.services.candidates import CandidateService, candidate_key, to_bazarr_c
 from app.services.settings import SettingsService
 from app.subtitles.embedded import pick_extractable_track, probe_subtitle_tracks
 from app.subtitles.filenames import (
-    build_target_subtitle_path,
     find_source_srt_beside_media,
     language_matches,
     languages_compatible,
@@ -91,17 +90,40 @@ class TaskPlanner:
         # Verify path after successful translate with verify warning
         verify_job = self._latest_verify_needed(task.id)
         if verify_job is not None:
-            # Mark verifying; actual rescan/retry is driven by FallbackPlanner
-            # next_action == "verify" / retry_bazarr_sync so we do not double-run here.
             if task.status != "verifying":
-                return self.tasks.transition(
+                self.tasks.transition(
                     task,
                     "verifying",
                     substate="bazarr_sync",
                     error_code="bazarr_verify_failed",
                     error_message=verify_job.warning or "Bazarr verification pending",
                 )
-            return task
+                task = self.tasks.get(task.id)  # type: ignore[assignment]
+                assert task is not None
+            self.tasks.update_checkpoints(task.id, sync="active", verify="active")
+            try:
+                synced = await JobService(self.db).retry_bazarr_sync(verify_job.id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Verify retry failed task=%s error=%s", task.id, exc)
+                return self.tasks.transition(
+                    task,
+                    "verifying",
+                    substate="bazarr_sync",
+                    error_code="bazarr_rescan_failed",
+                    error_message=str(exc),
+                )
+            if synced.reason_code not in {"bazarr_verify_failed", "bazarr_rescan_failed"}:
+                self.tasks.update_checkpoints(task.id, sync="done", verify="done")
+                if await self._target_satisfied(media, task.target_language_code):
+                    return self.tasks.transition(task, "completed", substate=None, clear_error=True)
+            self.tasks.update_checkpoints(task.id, verify="failed")
+            return self.tasks.transition(
+                task,
+                "verifying",
+                substate="bazarr_sync",
+                error_code=synced.reason_code or "bazarr_verify_failed",
+                error_message=synced.warning or "Bazarr verification pending",
+            )
 
         # Successful translate with file on disk → verifying / completed
         latest_translate = self._latest_job(task.id, "translate")
@@ -111,17 +133,27 @@ class TaskPlanner:
                 if latest_translate.reason_code in {"bazarr_verify_failed", "bazarr_rescan_failed"}:
                     return self.tasks.transition(task, "verifying", substate="bazarr_sync")
                 if await self._target_satisfied(media, task.target_language_code):
+                    self.tasks.update_checkpoints(
+                        task.id,
+                        translate="done",
+                        validate="done",
+                        write="done",
+                        sync="done",
+                        verify="done",
+                    )
                     return self.tasks.transition(task, "completed", clear_error=True)
+                self.tasks.update_checkpoints(task.id, verify="active")
                 return self.tasks.transition(task, "verifying", substate="bazarr_sync")
 
-        # Failed translate → fail task (retry can re-enter)
+        # Failed translate → fail task unless this is an explicit retry (planning)
         if latest_translate and latest_translate.status == "failed":
-            return self.tasks.transition(
-                task,
-                "failed",
-                error_code=latest_translate.reason_code or "failed",
-                error_message=latest_translate.error or "Translation failed",
-            )
+            if task.status != "planning":
+                return self.tasks.transition(
+                    task,
+                    "failed",
+                    error_code=latest_translate.reason_code or "failed",
+                    error_message=latest_translate.error or "Translation failed",
+                )
 
         # Resolve source / next action via current mechanisms
         snapshot = await self._resolve_source_snapshot(media, task.target_language_code)
@@ -129,7 +161,9 @@ class TaskPlanner:
         jobs = JobService(self.db)
 
         if snapshot.get("target_exists"):
-            return self.tasks.transition(task, "completed", clear_error=True)
+            if await self._target_satisfied(media, task.target_language_code):
+                return self.tasks.transition(task, "completed", clear_error=True)
+            return self.tasks.transition(task, "verifying", substate="bazarr_sync")
 
         # Attach any orphan active job for same candidate
         ckey = snapshot.get("candidate_key")
@@ -146,6 +180,18 @@ class TaskPlanner:
                 return self._sync_status_from_job(task, orphan)
 
         if snapshot.get("can_translate") and snapshot.get("source_path"):
+            extracted = self._latest_job(task.id, "extract")
+            extract_state = (
+                "done"
+                if extracted and extracted.status == "completed"
+                else "skipped"
+            )
+            self.tasks.update_checkpoints(
+                task.id,
+                source="done",
+                extract=extract_state,
+                translate="active",
+            )
             self.tasks.transition(task, "processing", substate="translating", clear_error=True)
             try:
                 job = await jobs.create_job(
@@ -168,7 +214,9 @@ class TaskPlanner:
                 if row:
                     self.tasks.attach_job(row, task.id)
                 if job.status == "skipped" and job.reason_code == "target_exists":
-                    return self.tasks.transition(task, "completed", clear_error=True)
+                    if await self._target_satisfied(media, task.target_language_code):
+                        return self.tasks.transition(task, "completed", clear_error=True)
+                    return self.tasks.transition(task, "verifying", substate="bazarr_sync")
             except Exception as exc:  # noqa: BLE001
                 return self.tasks.transition(
                     task,
@@ -179,6 +227,7 @@ class TaskPlanner:
             return self.tasks.get(task.id)
 
         if snapshot.get("can_extract") and snapshot.get("extract_stream_index") is not None and ckey:
+            self.tasks.update_checkpoints(task.id, source="done", extract="active")
             self.tasks.transition(task, "processing", substate="extracting_source", clear_error=True)
             try:
                 # Prefer candidate-based extract when on wanted list
@@ -206,6 +255,7 @@ class TaskPlanner:
                     error_code="not_found",
                     error_message="No suitable subtitle source found yet (cooldown)",
                 )
+            self.tasks.update_checkpoints(task.id, source="active")
             self.tasks.transition(task, "processing", substate="discovering_source", clear_error=True)
             try:
                 if ckey:
@@ -341,29 +391,17 @@ class TaskPlanner:
         return task
 
     async def _target_satisfied(self, media: MediaItemRow, target_language: str) -> bool:
-        if not media.path:
-            return await self._bazarr_target_present(media, target_language)
-        public = self.settings.get_public()
-        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
-        local_media = apply_path_mapping(media.path, mappings)
-        # Sidecar beside media
-        media_path = Path(local_media)
-        if media_path.exists():
-            target = build_target_subtitle_path(
-                media_path.with_suffix(".srt"),
-                target_language,
-                media_path=str(media_path),
-            )
-            # build_target expects a source srt; also try direct stem
-            from app.subtitles.filenames import build_external_subtitle_path
+        """Complete only when Bazarr verification succeeds (and any local file is non-empty)."""
+        if media.path:
+            public = self.settings.get_public()
+            mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+            media_path = Path(apply_path_mapping(media.path, mappings))
+            if media_path.exists():
+                from app.subtitles.filenames import build_external_subtitle_path
 
-            direct = build_external_subtitle_path(media_path, target_language)
-            if direct.is_file() and direct.stat().st_size > 0:
-                # Confirm with Bazarr when possible
-                if await self._bazarr_target_present(media, target_language):
-                    return True
-                # Disk presence is enough for reconciliation when Bazarr lags
-                return True
+                direct = build_external_subtitle_path(media_path, target_language)
+                if direct.is_file() and direct.stat().st_size <= 0:
+                    return False
         return await self._bazarr_target_present(media, target_language)
 
     async def _bazarr_target_present(self, media: MediaItemRow, target_language: str) -> bool:

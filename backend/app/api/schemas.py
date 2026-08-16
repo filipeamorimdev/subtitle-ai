@@ -212,7 +212,7 @@ class JobOut(BaseModel):
     target_subtitle_path: str
     source_language: str
     target_language: str
-    provider_id: str = "openrouter"
+    provider_id: str | None = None
     model: str
     status: str
     progress: float

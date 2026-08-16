@@ -37,3 +37,25 @@ def test_bootstrap_registers_openrouter_only(tmp_path):
     assert registry.get_optional("mock") is None
     provider = registry.get("openrouter")
     assert provider.supports("text_generation")
+
+
+def test_user_messages_for_provider_errors():
+    from app.ai.errors import (
+        AuthenticationError,
+        ContextLimitError,
+        InvalidRequestError,
+        ModelNotFoundError,
+        ProviderUnavailableError,
+        RateLimitError,
+        user_message_for_provider_error,
+    )
+
+    assert "rate-limiting" in user_message_for_provider_error(RateLimitError()).lower()
+    assert "authentication" in user_message_for_provider_error(AuthenticationError()).lower()
+    assert "too large" in user_message_for_provider_error(ContextLimitError()).lower()
+    assert "unavailable" in user_message_for_provider_error(ProviderUnavailableError()).lower()
+    assert "model" in user_message_for_provider_error(ModelNotFoundError()).lower()
+    assert "rejected" in user_message_for_provider_error(InvalidRequestError()).lower()
+    validation = AIProviderError("bad output", category="validation_error")
+    assert "quality" in user_message_for_provider_error(validation).lower()
+

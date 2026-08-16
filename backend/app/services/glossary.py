@@ -17,7 +17,7 @@ from app.services.glossary_universes import UniverseDef, match_universe, univers
 from app.subtitles.models import SubtitleDocument
 from app.translation.openrouter.client import ChatResult, batch_base_model
 
-# Alias for transitional catch blocks.
+# Alias for transitional catch blocks. Core code should catch AIProviderError.
 OpenRouterError = AIProviderError
 
 
