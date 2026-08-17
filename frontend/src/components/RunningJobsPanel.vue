@@ -231,6 +231,9 @@ watch(
               </RouterLink>
             </div>
           </div>
+          <p class="mt-1 text-ink-600 dark:text-ink-300">
+            {{ job.progress_detail || `${job.progress}%` }}
+          </p>
           <div
             v-if="job.status === 'pending' || job.status === 'processing'"
             class="mt-2 h-1.5 overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800"

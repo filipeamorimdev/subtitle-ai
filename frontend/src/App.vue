@@ -1,23 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useAppStore } from './stores/app'
 
 const store = useAppStore()
 const route = useRoute()
-const navOpen = ref(false)
 
 onMounted(() => {
   store.loadSettings().catch(() => undefined)
   store.loadJobs().catch(() => undefined)
 })
-
-watch(
-  () => route.fullPath,
-  () => {
-    navOpen.value = false
-  },
-)
 
 const links = [{ to: '/media', label: 'Media' }]
 
@@ -60,10 +52,10 @@ const activeLinkClass = 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white
           </div>
 
           <div class="flex shrink-0 items-center gap-1">
-            <nav class="hidden items-center gap-1 text-sm font-medium md:flex">
+            <nav class="flex items-center gap-1 text-sm font-medium">
               <RouterLink
                 v-for="link in links"
-                :key="`desk-${link.to}`"
+                :key="link.to"
                 :to="link.to"
                 :class="[linkClass, linkActive(link.to) ? activeLinkClass : '']"
               >
@@ -92,34 +84,8 @@ const activeLinkClass = 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white
                 />
               </svg>
             </RouterLink>
-            <button
-              class="rounded-md px-3 py-2 text-sm font-medium text-ink-600 hover:bg-ink-100 md:hidden dark:text-ink-200 dark:hover:bg-ink-800"
-              type="button"
-              :title="navOpen ? 'Close menu' : 'Open menu'"
-              :aria-label="navOpen ? 'Close menu' : 'Open menu'"
-              :aria-expanded="navOpen"
-              aria-controls="primary-nav"
-              @click="navOpen = !navOpen"
-            >
-              {{ navOpen ? 'Close' : 'Menu' }}
-            </button>
           </div>
         </div>
-
-        <nav
-          v-show="navOpen"
-          id="primary-nav"
-          class="mt-3 flex flex-col gap-1 border-t border-ink-200 pt-3 md:hidden dark:border-ink-800"
-        >
-          <RouterLink
-            v-for="link in links"
-            :key="`mob-${link.to}`"
-            :to="link.to"
-            :class="[linkClass, linkActive(link.to) ? activeLinkClass : '']"
-          >
-            {{ link.label }}
-          </RouterLink>
-        </nav>
       </div>
     </header>
     <main class="mx-auto max-w-6xl px-4 py-6 sm:py-8">
