@@ -268,6 +268,8 @@ class JobActionOut(BaseModel):
     current: bool = False
     target_language: str | None = None
     kind: Literal["job", "task"] = "job"
+    progress: float | None = None
+    progress_detail: str | None = None
 
 
 class JobLogOut(BaseModel):
@@ -579,6 +581,7 @@ class LanguageAvailabilityOut(BaseModel):
     available: bool = False
     task_status: str | None = None
     task_id: int | None = None
+    task_substate: str | None = None
 
 
 class MediaLocalizationOut(BaseModel):

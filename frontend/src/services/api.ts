@@ -299,6 +299,7 @@ export const api = {
     media_type?: string
     media_item_id?: number
     active_only?: boolean
+    include_detail?: boolean
     limit?: number
     offset?: number
   }) => {
@@ -310,6 +311,7 @@ export const api = {
     if (params?.media_type) query.set('media_type', params.media_type)
     if (params?.media_item_id != null) query.set('media_item_id', String(params.media_item_id))
     if (params?.active_only) query.set('active_only', 'true')
+    if (params?.include_detail) query.set('include_detail', 'true')
     if (params?.limit != null) query.set('limit', String(params.limit))
     if (params?.offset != null) query.set('offset', String(params.offset))
     const suffix = query.toString() ? `?${query}` : ''

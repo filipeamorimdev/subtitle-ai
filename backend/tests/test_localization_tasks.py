@@ -1070,6 +1070,128 @@ async def test_checkpoint_embedded_extract_then_translate(loc_env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_plan_after_extract_translates_when_wanted_snapshot_is_stale(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="extracting_source")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="extract",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(media_dir / "The Matrix.mkv"),
+            target_subtitle_path=str(source),
+            source_language="en",
+            model="tesseract-ocr",
+            status="completed",
+        )
+    )
+    db.commit()
+
+    created: list[str] = []
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def stale_snapshot(self, media_row, target_language):
+        return {
+            "candidate_key": "k",
+            "can_translate": False,
+            "can_extract": True,
+            "can_request": True,
+            "source_path": None,
+            "source_language": "en",
+            "extract_stream_index": 2,
+            "target_exists": False,
+        }
+
+    async def fake_create_job(self, payload, **kwargs):
+        from app.jobs.service import job_to_out
+
+        created.append("translate")
+        row = JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(source),
+            target_subtitle_path=str(media_dir / "The Matrix.pt-PT.srt"),
+            model="",
+            provider_id=None,
+            status="pending",
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return job_to_out(row)
+
+    async def fake_create_extract(self, payload, **kwargs):
+        created.append("extract")
+        raise AssertionError("completed extract must not be queued again")
+
+    async def fake_create_request(self, *args, **kwargs):
+        created.append("request")
+        raise AssertionError("completed extract must not fall back to request")
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", stale_snapshot)
+    monkeypatch.setattr("app.jobs.service.JobService.create_job", fake_create_job)
+    monkeypatch.setattr("app.jobs.service.JobService.create_extract_job", fake_create_extract)
+    monkeypatch.setattr(
+        "app.jobs.service.JobService.create_request_subtitle_job", fake_create_request
+    )
+
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "processing"
+    assert planned.substate == "translating"
+    assert created == ["translate"]
+
+
+def test_latest_task_does_not_overlay_regional_onto_generic_chip(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="extracting_source")
+
+    assert svc.latest_task_for_language(media.id, "pt-PT").id == task.id
+    assert svc.latest_task_for_language(media.id, "pt") is None
+    assert svc.latest_task_for_language(media.id, "pt-BR") is None
+
+
+def test_language_chip_matches_task_is_one_way():
+    from app.subtitles.filenames import language_chip_matches_task
+
+    assert language_chip_matches_task("pt-PT", "pt-PT")
+    assert language_chip_matches_task("pt", "pt")
+    assert language_chip_matches_task("pt", "pt-PT")
+    assert not language_chip_matches_task("pt-PT", "pt")
+    assert not language_chip_matches_task("pt-PT", "pt-BR")
+
+
+@pytest.mark.asyncio
 async def test_verification_failure_marks_verify_failed_not_completed(loc_env, monkeypatch):
     db, tmp_path, media_dir, source = loc_env
     media_path = media_dir / "The Matrix.mkv"
@@ -1587,10 +1709,12 @@ def test_list_job_actions_for_media_includes_legacy_and_task_jobs(loc_env):
     actions = JobService(db).list_job_actions_for_media(media)
     kinds = {item.action for item in actions}
     langs = {item.target_language for item in actions}
-    assert kinds == {"translate", "request"}
+    assert "translate" in kinds
+    assert "request" in kinds
+    assert "localize" in kinds
     assert "pt-PT" in langs
     assert "en" in langs
-    assert all(item.kind == "job" for item in actions)
+    assert any(item.kind == "task" and item.current for item in actions)
 
 
 def test_list_job_actions_for_media_includes_tasks_without_jobs(loc_env):

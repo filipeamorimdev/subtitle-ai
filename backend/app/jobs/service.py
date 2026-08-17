@@ -220,8 +220,9 @@ def _job_row_to_action(
     now: datetime | None = None,
 ) -> JobActionOut:
     message = item.error
-    if not message and item.status == "skipped" and item.progress_detail:
-        message = item.progress_detail
+    if not message and item.progress_detail:
+        if item.status in {"pending", "processing", "skipped"}:
+            message = item.progress_detail
     return JobActionOut(
         id=item.id,
         action=getattr(item, "job_kind", None) or "translate",
@@ -232,6 +233,8 @@ def _job_row_to_action(
         current=current_id is not None and item.id == current_id,
         target_language=item.target_language,
         kind="job",
+        progress=item.progress,
+        progress_detail=item.progress_detail,
     )
 
 
@@ -307,13 +310,15 @@ class JobService:
         now = datetime.now(timezone.utc)
         actions = [_job_row_to_action(item, now=now) for item in related]
         job_task_ids = {item.task_id for item in related if item.task_id is not None}
+        from app.localization.state import ACTIVE_STATUSES
+
         tasks = self.db.scalars(
             select(LocalizationTaskRow)
             .where(LocalizationTaskRow.media_item_id == media.id)
             .order_by(LocalizationTaskRow.created_at.desc(), LocalizationTaskRow.id.desc())
         ).all()
         for task in tasks:
-            if task.id in job_task_ids:
+            if task.id in job_task_ids and task.status not in ACTIVE_STATUSES:
                 continue
             actions.append(
                 JobActionOut(
@@ -322,8 +327,8 @@ class JobService:
                     status=task.status,
                     datetime=task.completed_at or task.started_at or task.created_at,
                     duration_seconds=None,
-                    message=task.error_message,
-                    current=False,
+                    message=task.error_message or task.substate,
+                    current=task.status in ACTIVE_STATUSES,
                     target_language=task.target_language_code,
                     kind="task",
                 )

@@ -318,6 +318,7 @@ async def get_media_localization(
             continue
         lang.task_status = overlay.status
         lang.task_id = overlay.id
+        lang.task_substate = overlay.substate
 
     # Languages that have tasks but aren't in the availability list yet.
     seen_codes = {lang.language_code for lang in languages}
@@ -336,6 +337,7 @@ async def get_media_localization(
                 available=task.status == "completed",
                 task_status=overlay.status,
                 task_id=overlay.id,
+                task_substate=overlay.substate,
             )
         )
         seen_codes.add(task.target_language_code)
@@ -396,6 +398,7 @@ def list_localization_tasks(
     media_type: str | None = None,
     media_item_id: int | None = None,
     active_only: bool = False,
+    include_detail: bool = False,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -422,7 +425,7 @@ def list_localization_tasks(
         active_only=active_only,
     )
     response.headers["X-Total-Count"] = str(total)
-    return [_task_out(db, row, include_detail=False) for row in rows]
+    return [_task_out(db, row, include_detail=include_detail) for row in rows]
 
 
 @router.get("/localization-tasks/{task_id}", response_model=LocalizationTaskOut)

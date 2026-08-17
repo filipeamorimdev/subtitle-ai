@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from app.core.logging import get_logger
 from app.db import get_session_factory
@@ -14,6 +15,7 @@ from sqlalchemy import select
 logger = get_logger("worker")
 
 JOB_KINDS = ("translate", "extract", "request")
+TASK_REPLAN_INTERVAL_SECONDS = 30.0
 
 
 class JobWorker:
@@ -23,6 +25,7 @@ class JobWorker:
         self._stop = asyncio.Event()
         self._inflight: dict[str, set[asyncio.Task]] = {kind: set() for kind in JOB_KINDS}
         self._tasks_by_job: dict[int, asyncio.Task] = {}
+        self._last_task_replan = 0.0
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -139,10 +142,26 @@ class JobWorker:
             session.close()
             self._tasks_by_job.pop(job_id, None)
 
+    async def _replan_active_tasks(self) -> None:
+        """Resume localization tasks that have no in-flight job (e.g. extract finished)."""
+        from app.localization.planner import TaskPlanner
+
+        session = get_session_factory()()
+        try:
+            await TaskPlanner(session).plan_all_active()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Active task replan failed: %s", exc)
+        finally:
+            session.close()
+
     async def _tick(self) -> None:
         self._prune_inflight()
         self._reconcile_cancelled_slots()
         self._prune_inflight()
+        now = time.monotonic()
+        if now - self._last_task_replan >= TASK_REPLAN_INTERVAL_SECONDS:
+            self._last_task_replan = now
+            await self._replan_active_tasks()
         limits = self._concurrency_limits()
         for kind in JOB_KINDS:
             limit = limits.get(kind, 1)

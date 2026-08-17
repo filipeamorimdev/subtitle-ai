@@ -194,6 +194,7 @@ export interface LanguageAvailability {
   available: boolean
   task_status: string | null
   task_id: number | null
+  task_substate?: string | null
 }
 
 export interface MediaLocalization {
@@ -257,6 +258,8 @@ export interface JobAction {
   current: boolean
   target_language?: string | null
   kind?: 'job' | 'task'
+  progress?: number | null
+  progress_detail?: string | null
 }
 
 export interface JobLog {

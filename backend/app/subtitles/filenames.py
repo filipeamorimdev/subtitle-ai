@@ -136,6 +136,23 @@ def languages_compatible(a: str | None, b: str | None) -> bool:
     return False
 
 
+def language_chip_matches_task(task_code: str | None, chip_code: str | None) -> bool:
+    """Attach a localization task to a language chip.
+
+    Exact match always. A generic task (``pt``) may overlay regional chips
+    (``pt-PT``). A regional task must not appear on the generic chip — otherwise
+    Portuguese (Portugal) looks like it is also generic Portuguese.
+    """
+    nt = normalize_language_code(task_code)
+    nc = normalize_language_code(chip_code)
+    if not nt or not nc:
+        return False
+    if nt.lower() == nc.lower():
+        return True
+    tl, cl = nt.lower(), nc.lower()
+    return "-" not in tl and cl.startswith(tl + "-")
+
+
 def language_matches(candidate: str | None, preferred: list[str]) -> bool:
     if not candidate:
         return False

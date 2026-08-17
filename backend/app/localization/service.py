@@ -255,7 +255,7 @@ class LocalizationTaskService:
         capability: str = "subtitles",
     ) -> LocalizationTaskRow | None:
         """Active task wins; otherwise the latest historical task for this language."""
-        from app.subtitles.filenames import languages_compatible
+        from app.subtitles.filenames import language_chip_matches_task
 
         active = self.find_active(media_item_id, language_code, capability)
         if active is not None:
@@ -271,12 +271,12 @@ class LocalizationTaskService:
             ).all()
         )
         for row in rows:
-            if row.status in ACTIVE_STATUSES and languages_compatible(
+            if row.status in ACTIVE_STATUSES and language_chip_matches_task(
                 row.target_language_code, language_code
             ):
                 return row
         for row in rows:
-            if languages_compatible(row.target_language_code, language_code):
+            if language_chip_matches_task(row.target_language_code, language_code):
                 return row
         return None
 

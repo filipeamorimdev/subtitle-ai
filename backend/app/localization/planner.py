@@ -225,6 +225,7 @@ class TaskPlanner:
 
         # Resolve source / next action via current mechanisms
         snapshot = await self._resolve_source_snapshot(media, task.target_language_code)
+        self._prefer_completed_extract(task.id, snapshot)
         trigger = "manual" if task.origin == "manual" else "automatic"
         jobs = JobService(self.db)
 
@@ -289,6 +290,10 @@ class TaskPlanner:
                     error_message=MSG_TRANSLATE_FAILED,
                 )
             return self.tasks.get(task.id)
+
+        latest_extract = self._latest_job(task.id, "extract")
+        if latest_extract and latest_extract.status == "completed":
+            snapshot["can_extract"] = False
 
         if snapshot.get("can_extract") and snapshot.get("extract_stream_index") is not None and ckey:
             self.tasks.update_checkpoints(task.id, source="done", extract="active")
@@ -429,6 +434,34 @@ class TaskPlanner:
             .limit(1)
         )
 
+    def _prefer_completed_extract(self, task_id: int, snapshot: dict) -> None:
+        """Use a finished extract as the translation source even if Bazarr is stale."""
+        latest_extract = self._latest_job(task_id, "extract")
+        if latest_extract is None or latest_extract.status != "completed":
+            return
+        extract_out = Path(latest_extract.target_subtitle_path)
+        if extract_out.is_file() and extract_out.stat().st_size > 0:
+            snapshot["can_translate"] = True
+            snapshot["source_path"] = str(extract_out)
+            if latest_extract.source_language:
+                snapshot["source_language"] = latest_extract.source_language
+            snapshot["can_extract"] = False
+            return
+        snapshot["can_extract"] = False
+
+    def _overlay_disk_source(self, result: dict, path: str, source_langs: list[str]) -> None:
+        """Prefer a sidecar SRT on disk over a stale Bazarr wanted-list snapshot."""
+        if result.get("can_translate") and result.get("source_path"):
+            return
+        if not path:
+            return
+        found = find_source_srt_beside_media(Path(path), source_langs)
+        if not found:
+            return
+        result["can_translate"] = True
+        result["source_path"] = str(found[0])
+        result["source_language"] = found[1]
+
     def _latest_job(self, task_id: int, job_kind: str) -> JobRow | None:
         return self.db.scalar(
             select(JobRow)
@@ -523,32 +556,31 @@ class TaskPlanner:
         try:
             candidates = await CandidateService(self.db).list_candidates()
             for cand in candidates:
-                if media.media_type == "movie" and media.bazarr_movie_id is not None:
-                    if cand.bazarr_movie_id == media.bazarr_movie_id and languages_compatible(
-                        cand.target_language, target_language
-                    ):
-                        return {
-                            "candidate_key": cand.key,
-                            "can_translate": cand.can_translate,
-                            "can_extract": cand.can_extract,
-                            "can_request": JobService._can_request_source(cand),
-                            "source_path": cand.source_subtitle_path,
-                            "source_language": cand.source_language,
-                            "extract_stream_index": cand.extract_stream_index,
-                            "target_exists": cand.reason_code == "target_exists",
-                        }
-                if media.bazarr_episode_id is not None and cand.bazarr_episode_id == media.bazarr_episode_id:
-                    if languages_compatible(cand.target_language, target_language):
-                        return {
-                            "candidate_key": cand.key,
-                            "can_translate": cand.can_translate,
-                            "can_extract": cand.can_extract,
-                            "can_request": JobService._can_request_source(cand),
-                            "source_path": cand.source_subtitle_path,
-                            "source_language": cand.source_language,
-                            "extract_stream_index": cand.extract_stream_index,
-                            "target_exists": cand.reason_code == "target_exists",
-                        }
+                movie_match = (
+                    media.media_type == "movie"
+                    and media.bazarr_movie_id is not None
+                    and cand.bazarr_movie_id == media.bazarr_movie_id
+                    and languages_compatible(cand.target_language, target_language)
+                )
+                episode_match = (
+                    media.bazarr_episode_id is not None
+                    and cand.bazarr_episode_id == media.bazarr_episode_id
+                    and languages_compatible(cand.target_language, target_language)
+                )
+                if not movie_match and not episode_match:
+                    continue
+                result = {
+                    "candidate_key": cand.key,
+                    "can_translate": cand.can_translate,
+                    "can_extract": cand.can_extract,
+                    "can_request": JobService._can_request_source(cand),
+                    "source_path": cand.source_subtitle_path,
+                    "source_language": cand.source_language,
+                    "extract_stream_index": cand.extract_stream_index,
+                    "target_exists": cand.reason_code == "target_exists",
+                }
+                self._overlay_disk_source(result, path, source_langs)
+                return result
         except BazarrError:
             pass
 

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import JobHistoryTable from '../components/JobHistoryTable.vue'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
+import RunningJobsPanel from '../components/RunningJobsPanel.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import type {
@@ -51,13 +52,22 @@ const selectedTask = computed(() => {
 })
 
 const historyActions = computed(() => {
-  return [...actions.value].sort((a, b) => {
-    const aTime = a.datetime || ''
-    const bTime = b.datetime || ''
-    if (aTime !== bTime) return bTime.localeCompare(aTime)
-    return b.id - a.id
-  })
+  const runningJob = new Set(['pending', 'processing'])
+  return [...actions.value]
+    .filter((item) => {
+      if (item.kind === 'task' && isActiveTaskStatus(item.status)) return false
+      if (item.kind !== 'task' && runningJob.has(item.status)) return false
+      return true
+    })
+    .sort((a, b) => {
+      const aTime = a.datetime || ''
+      const bTime = b.datetime || ''
+      if (aTime !== bTime) return bTime.localeCompare(aTime)
+      return b.id - a.id
+    })
 })
+
+const runningTasks = computed(() => tasks.value.filter((task) => isActiveTaskStatus(task.status)))
 
 const matchedCandidate = computed<Candidate | null>(() => {
   if (!media.value) return null
@@ -123,7 +133,7 @@ const showDiagnostics = computed(() => {
 
 function languageLabel(lang: LanguageAvailability) {
   const status = lang.task_status
-  if (status) return taskStatusLabel(status)
+  if (status) return taskStatusLabel(status, lang.task_substate)
   if (lang.available) return 'Available'
   return '—'
 }
@@ -137,7 +147,7 @@ async function load() {
     const [mediaRow, loc, taskList, history] = await Promise.all([
       api.getMedia(mediaId.value),
       api.getMediaLocalization(mediaId.value),
-      api.getLocalizationTasks({ media_item_id: mediaId.value, limit: 50 }),
+      api.getLocalizationTasks({ media_item_id: mediaId.value, limit: 50, include_detail: true }),
       api.getMediaActions(mediaId.value),
     ])
     media.value = mediaRow
@@ -164,12 +174,13 @@ async function retryTask() {
   }
 }
 
-async function cancelTask() {
-  if (!selectedTask.value || busy.value) return
+async function cancelTask(taskId?: number) {
+  const id = taskId ?? selectedTask.value?.id
+  if (!id || busy.value) return
   busy.value = true
   actionError.value = null
   try {
-    await api.cancelLocalizationTask(selectedTask.value.id)
+    await api.cancelLocalizationTask(id)
     await load()
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
@@ -243,11 +254,11 @@ onUnmounted(() => {
             Retry
           </button>
           <button
-            v-if="selectedTask && canCancelTask(selectedTask.status)"
+            v-if="selectedTask && canCancelTask(selectedTask.status) && !runningTasks.length"
             type="button"
             class="rounded-md border border-red-300 px-3 py-1.5 text-sm font-semibold text-red-700 dark:border-red-800 dark:text-red-300"
             :disabled="busy"
-            @click="cancelTask"
+            @click="cancelTask()"
           >
             Cancel
           </button>
@@ -282,6 +293,13 @@ onUnmounted(() => {
           No localized subtitles requested for this media.
         </p>
       </div>
+
+      <RunningJobsPanel
+        v-if="runningTasks.length"
+        :tasks="runningTasks"
+        :busy="busy"
+        @cancel="cancelTask"
+      />
 
       <details
         v-if="showDiagnostics"
