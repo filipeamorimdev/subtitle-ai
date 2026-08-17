@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
+import JobHistoryTable from '../components/JobHistoryTable.vue'
 import { api } from '../services/api'
 import type { Job, JobAction, JobLog } from '../types'
-import { formatDateTime, formatDuration } from '../utils/datetime'
+import { formatDateTime } from '../utils/datetime'
+import { mediaHrefForJob, mediaHrefForTaskId } from '../utils/mediaNav'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
@@ -16,6 +18,8 @@ const logBusy = ref(false)
 const logVisible = ref(false)
 const jobLog = ref<JobLog | null>(null)
 const logError = ref<string | null>(null)
+const mediaHref = ref<string | null>(null)
+const retryingId = ref<number | null>(null)
 let timer: number | undefined
 let lastStatus: string | null = null
 
@@ -55,14 +59,6 @@ function notifyFinished(current: Job) {
   }
 }
 
-function statusClass(status: string) {
-  if (status === 'completed') return 'text-emerald-700 dark:text-emerald-300'
-  if (status === 'failed') return 'text-red-700 dark:text-red-300'
-  if (status === 'cancelled' || status === 'skipped') return 'text-amber-700 dark:text-amber-300'
-  if (status === 'processing') return 'text-accent'
-  return 'text-ink-700 dark:text-ink-200'
-}
-
 async function loadActions() {
   try {
     actions.value = await api.getJobActions(Number(props.id))
@@ -76,6 +72,19 @@ async function load() {
   try {
     job.value = await api.getJob(Number(props.id))
     await loadActions()
+    if (job.value.task_id) {
+      try {
+        mediaHref.value = await mediaHrefForTaskId(job.value.task_id)
+      } catch {
+        mediaHref.value = '/media'
+      }
+    } else {
+      try {
+        mediaHref.value = await mediaHrefForJob(job.value)
+      } catch {
+        mediaHref.value = '/media'
+      }
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   }
@@ -126,15 +135,22 @@ watch(
 )
 
 async function retry() {
+  await retryAction(Number(props.id))
+}
+
+async function retryAction(jobId: number) {
+  if (retryingId.value != null || busy.value) return
   busy.value = true
+  retryingId.value = jobId
   error.value = null
   try {
-    const next = await api.retryJob(Number(props.id))
+    const next = await api.retryJob(jobId)
     await router.push(`/jobs/${next.id}`)
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     busy.value = false
+    retryingId.value = null
   }
 }
 
@@ -185,6 +201,14 @@ async function toggleLog() {
 
 <template>
   <section v-if="job" class="space-y-6">
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+      <RouterLink class="text-accent hover:underline" :to="mediaHref || '/media'">
+        ← Media
+      </RouterLink>
+      <span class="text-ink-400">/</span>
+      <span class="text-ink-500">Job #{{ job.id }}</span>
+    </div>
+
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div class="min-w-0">
         <h1 class="break-words font-display text-2xl font-bold sm:text-3xl">
@@ -349,65 +373,14 @@ async function toggleLog() {
         <p class="text-sm text-ink-500">{{ actions.length }} total</p>
       </div>
 
-      <p v-if="actionsError" class="mt-3 text-sm text-red-700 dark:text-red-300">{{ actionsError }}</p>
-
-      <div v-else class="mt-4 overflow-x-auto">
-        <table class="min-w-full text-left text-sm">
-          <thead class="border-b border-ink-200 text-ink-500 dark:border-ink-800 dark:text-ink-300">
-            <tr>
-              <th class="py-2 pr-4 font-medium">Action</th>
-              <th class="py-2 pr-4 font-medium">Date / time</th>
-              <th class="py-2 pr-4 font-medium">Duration</th>
-              <th class="py-2 pr-4 font-medium">Status</th>
-              <th class="py-2 font-medium">Message</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="!actions.length">
-              <td colspan="5" class="py-4 text-ink-500">No actions recorded yet.</td>
-            </tr>
-            <tr
-              v-for="item in actions"
-              :key="item.id"
-              class="border-b border-ink-100 last:border-0 dark:border-ink-800/80"
-              :class="item.current ? 'bg-accent/5' : ''"
-            >
-              <td class="py-3 pr-4 align-top">
-                <RouterLink
-                  v-if="!item.current"
-                  class="capitalize text-accent hover:underline"
-                  :to="`/jobs/${item.id}`"
-                >
-                  {{ item.action }}
-                  <span class="text-ink-500">#{{ item.id }}</span>
-                </RouterLink>
-                <span v-else class="capitalize font-medium">
-                  {{ item.action }}
-                  <span class="text-ink-500">#{{ item.id }}</span>
-                </span>
-              </td>
-              <td class="py-3 pr-4 align-top whitespace-nowrap text-ink-600 dark:text-ink-300">
-                {{ formatDateTime(item.datetime) }}
-              </td>
-              <td class="py-3 pr-4 align-top whitespace-nowrap text-ink-600 dark:text-ink-300">
-                {{ formatDuration(item.duration_seconds) }}
-              </td>
-              <td class="py-3 pr-4 align-top capitalize" :class="statusClass(item.status)">
-                {{ item.status }}
-              </td>
-              <td
-                class="py-3 align-top break-words"
-                :class="
-                  item.status === 'failed'
-                    ? 'text-red-700 dark:text-red-300'
-                    : 'text-ink-600 dark:text-ink-300'
-                "
-              >
-                {{ item.message || '—' }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="mt-4">
+        <JobHistoryTable
+          :actions="actions"
+          :error="actionsError"
+          :link-current="false"
+          :retrying-id="retryingId"
+          @retry="retryAction"
+        />
       </div>
     </div>
   </section>

@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.ai.errors import AIProviderError
@@ -280,6 +280,77 @@ class GlossaryService:
         if target_language:
             stmt = stmt.where(GlossaryScopeRow.target_language == target_language)
         return list(self.db.execute(stmt).all())
+
+    def summarize(self, *, target_language: str | None = None) -> dict[str, Any]:
+        scope_stmt = select(GlossaryScopeRow.kind, func.count()).group_by(GlossaryScopeRow.kind)
+        if target_language:
+            scope_stmt = scope_stmt.where(GlossaryScopeRow.target_language == target_language)
+        kind_counts = {kind: int(count) for kind, count in self.db.execute(scope_stmt).all()}
+
+        term_stmt = (
+            select(GlossaryTermRow.status, GlossaryTermRow.locked, func.count())
+            .select_from(GlossaryTermRow)
+            .join(GlossaryScopeRow, GlossaryTermRow.scope_id == GlossaryScopeRow.id)
+            .group_by(GlossaryTermRow.status, GlossaryTermRow.locked)
+        )
+        if target_language:
+            term_stmt = term_stmt.where(GlossaryScopeRow.target_language == target_language)
+
+        active_terms = 0
+        locked_terms = 0
+        awaiting_review = 0
+        rejected = 0
+        for status, locked, count in self.db.execute(term_stmt).all():
+            n = int(count)
+            if status == "active":
+                active_terms += n
+            elif status == "suggested":
+                awaiting_review += n
+            elif status == "rejected":
+                rejected += n
+            if locked:
+                locked_terms += n
+
+        pending_stmt = (
+            select(
+                GlossaryScopeRow.id,
+                GlossaryScopeRow.display_name,
+                GlossaryScopeRow.kind,
+                func.count(GlossaryTermRow.id).label("suggested_count"),
+            )
+            .join(GlossaryTermRow, GlossaryTermRow.scope_id == GlossaryScopeRow.id)
+            .where(GlossaryTermRow.status == "suggested")
+            .group_by(GlossaryScopeRow.id, GlossaryScopeRow.display_name, GlossaryScopeRow.kind)
+            .order_by(func.count(GlossaryTermRow.id).desc(), GlossaryScopeRow.display_name)
+            .limit(5)
+        )
+        if target_language:
+            pending_stmt = pending_stmt.where(GlossaryScopeRow.target_language == target_language)
+
+        pending_scopes = [
+            {
+                "id": row.id,
+                "display_name": row.display_name,
+                "kind": row.kind,
+                "suggested_count": int(row.suggested_count),
+            }
+            for row in self.db.execute(pending_stmt).all()
+        ]
+
+        universes = kind_counts.get("universe", 0)
+        series = kind_counts.get("series", 0)
+        movies = kind_counts.get("movie", 0)
+        return {
+            "scopes": universes + series + movies,
+            "universes": universes,
+            "series": series,
+            "movies": movies,
+            "active_terms": active_terms,
+            "locked_terms": locked_terms,
+            "awaiting_review": awaiting_review,
+            "rejected": rejected,
+            "pending_scopes": pending_scopes,
+        }
 
     def create_scope(
         self,

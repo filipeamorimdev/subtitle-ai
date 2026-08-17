@@ -100,7 +100,7 @@ onMounted(load)
           </div>
           <RouterLink
             class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-            to="/ai/models"
+            to="/settings/models/routing"
           >
             Models &amp; Routing
           </RouterLink>

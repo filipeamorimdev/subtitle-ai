@@ -120,6 +120,9 @@ export interface Job {
   media_type: string
   media_path: string
   media_title: string | null
+  bazarr_movie_id?: number | null
+  bazarr_episode_id?: number | null
+  bazarr_series_id?: number | null
   source_subtitle_path: string
   target_subtitle_path: string
   source_language: string
@@ -250,6 +253,7 @@ export interface JobAction {
   duration_seconds: number | null
   message: string | null
   current: boolean
+  target_language?: string | null
 }
 
 export interface JobLog {
@@ -479,6 +483,25 @@ export interface GlossaryTermUpdate {
   status?: string
   locked?: boolean
   notes?: string | null
+}
+
+export interface GlossaryPendingScope {
+  id: number
+  display_name: string
+  kind: string
+  suggested_count: number
+}
+
+export interface GlossarySummary {
+  scopes: number
+  universes: number
+  series: number
+  movies: number
+  active_terms: number
+  locked_terms: number
+  awaiting_review: number
+  rejected: number
+  pending_scopes: GlossaryPendingScope[]
 }
 
 export interface AiRouting {

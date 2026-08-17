@@ -91,15 +91,15 @@ Docker (single container)
 
 Budget reservations use a **process-wide lock** around check / insert / commit. That is concurrency-safe for concurrent workers and API activity **inside the same Python process**. It is not a distributed lock. Running multiple independent application processes against the same SQLite database is **not** a supported concurrency model for budget reservations.
 
-## AI Control Center vs Settings
+## Dashboard vs Settings
 
 | Surface | Answers |
 | --- | --- |
-| Dashboard | What is Subtitle AI doing right now? |
-| AI (Overview / Providers / Models & Routing / Usage) | How is AI behaving, and how do I control it? |
-| Settings | How is Subtitle AI configured? (Bazarr, languages, automation, media paths, concurrency) |
+| Dashboard | What is Subtitle AI doing right now? Includes AI cost/quality snapshot and glossary review counters. |
+| AI dashboard | Detailed AI observability (Overview / Usage), opened from Dashboard. |
+| Settings | How is Subtitle AI configured? General (Bazarr, languages, automation, media paths, concurrency), Models (keys, pools, routing, budgets), Glossary. |
 
-Provider credentials live under **AI → Providers**. Pools, strategy, and budgets live under **AI → Models & Routing**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
+Provider credentials live under **Settings → Models → Providers**. Pools, strategy, and budgets live under **Settings → Models → Models & Routing**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
 
 ## Automatic fallback
 

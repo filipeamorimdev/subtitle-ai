@@ -266,6 +266,7 @@ class JobActionOut(BaseModel):
     duration_seconds: float | None = None
     message: str | None = None
     current: bool = False
+    target_language: str | None = None
 
 
 class JobLogOut(BaseModel):
@@ -445,6 +446,25 @@ class GlossaryTermReview(BaseModel):
 class GlossaryUniverseOut(BaseModel):
     key: str
     display_name: str
+
+
+class GlossaryPendingScopeOut(BaseModel):
+    id: int
+    display_name: str
+    kind: str
+    suggested_count: int
+
+
+class GlossarySummaryOut(BaseModel):
+    scopes: int = 0
+    universes: int = 0
+    series: int = 0
+    movies: int = 0
+    active_terms: int = 0
+    locked_terms: int = 0
+    awaiting_review: int = 0
+    rejected: int = 0
+    pending_scopes: list[GlossaryPendingScopeOut] = Field(default_factory=list)
 
 
 class AiRoutingOut(BaseModel):

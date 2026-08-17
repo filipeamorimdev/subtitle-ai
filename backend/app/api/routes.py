@@ -19,6 +19,7 @@ from app.api.schemas import (
     GlossaryScopeCreate,
     GlossaryScopeOut,
     GlossaryScopeUpdate,
+    GlossarySummaryOut,
     GlossaryTermCreate,
     GlossaryTermOut,
     GlossaryTermReview,
@@ -375,6 +376,15 @@ def _term_out(term, *, scope=None) -> GlossaryTermOut:
 @router.get("/glossary/universes", response_model=list[GlossaryUniverseOut])
 def list_glossary_universes() -> list[GlossaryUniverseOut]:
     return [GlossaryUniverseOut(key=u.key, display_name=u.display_name) for u in UNIVERSES]
+
+
+@router.get("/glossary/summary", response_model=GlossarySummaryOut)
+def glossary_summary(
+    target_language: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> GlossarySummaryOut:
+    data = GlossaryService(db).summarize(target_language=target_language)
+    return GlossarySummaryOut.model_validate(data)
 
 
 @router.get("/glossary/scopes", response_model=list[GlossaryScopeOut])

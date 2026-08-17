@@ -10,6 +10,7 @@ import type {
   GlossaryTerm,
   GlossaryTermCreate,
   GlossaryTermUpdate,
+  GlossarySummary,
   GlossaryUniverse,
   Health,
   Job,
@@ -123,6 +124,12 @@ export const api = {
   runAutomationScan: () =>
     request<AutomationScanResult>('/api/automation/run', { method: 'POST' }),
   getGlossaryUniverses: () => request<GlossaryUniverse[]>('/api/glossary/universes'),
+  getGlossarySummary: (target_language?: string) => {
+    const suffix = target_language
+      ? `?target_language=${encodeURIComponent(target_language)}`
+      : ''
+    return request<GlossarySummary>(`/api/glossary/summary${suffix}`)
+  },
   getGlossaryScopes: (params?: { target_language?: string; kind?: string }) => {
     const query = new URLSearchParams()
     if (params?.target_language) query.set('target_language', params.target_language)
@@ -261,6 +268,7 @@ export const api = {
   getMedia: (id: number) => request<MediaItem>(`/api/media/${id}`),
   getMediaLocalization: (id: number) =>
     request<MediaLocalization>(`/api/media/${id}/localization`),
+  getMediaActions: (id: number) => request<JobAction[]>(`/api/media/${id}/actions`),
   createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {
     const response = await fetch(`/api/media/${mediaId}/localization-tasks`, {
       method: 'POST',

@@ -225,3 +225,52 @@ def test_review_term_api_helpers():
     )
     rejected = service.review_term(rejected.id, approve=False)
     assert rejected.status == "rejected"
+
+
+def test_summarize_counts_terms_and_pending_scopes():
+    db = _session()
+    service = GlossaryService(db)
+    universe = service.create_scope(
+        kind="universe",
+        key="marvel",
+        display_name="Marvel",
+        target_language="pt-PT",
+    )
+    series = service.create_scope(
+        kind="series",
+        key="series:summary",
+        display_name="WandaVision",
+        target_language="pt-PT",
+        parent_scope_id=universe.id,
+        bazarr_series_id=11,
+    )
+    service.create_term(
+        universe.id,
+        source="Vision",
+        target="Vision",
+        status="active",
+        locked=True,
+    )
+    service.create_term(
+        series.id,
+        source="Westview",
+        target="Westview",
+        status="suggested",
+    )
+    service.create_term(
+        series.id,
+        source="TVA",
+        target="AVT",
+        status="rejected",
+    )
+    summary = service.summarize(target_language="pt-PT")
+    assert summary["scopes"] == 2
+    assert summary["universes"] == 1
+    assert summary["series"] == 1
+    assert summary["movies"] == 0
+    assert summary["active_terms"] == 1
+    assert summary["locked_terms"] == 1
+    assert summary["awaiting_review"] == 1
+    assert summary["rejected"] == 1
+    assert summary["pending_scopes"][0]["id"] == series.id
+    assert summary["pending_scopes"][0]["suggested_count"] == 1

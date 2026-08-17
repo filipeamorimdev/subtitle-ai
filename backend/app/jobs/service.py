@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
@@ -31,7 +31,14 @@ from app.api.schemas import (
 )
 from app.core.config import get_app_config
 from app.core.logging import get_logger
-from app.db.models import AiRoutingEventRow, AiUsageRecordRow, JobRow, TranslationCacheRow
+from app.db.models import (
+    AiRoutingEventRow,
+    AiUsageRecordRow,
+    JobRow,
+    LocalizationTaskRow,
+    MediaItemRow,
+    TranslationCacheRow,
+)
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import (
     PathMapping,
@@ -198,6 +205,27 @@ def _action_duration_seconds(row: JobRow, *, now: datetime | None = None) -> flo
     return round((end - start).total_seconds(), 3)
 
 
+def _job_row_to_action(
+    item: JobRow,
+    *,
+    current_id: int | None = None,
+    now: datetime | None = None,
+) -> JobActionOut:
+    message = item.error
+    if not message and item.status == "skipped" and item.progress_detail:
+        message = item.progress_detail
+    return JobActionOut(
+        id=item.id,
+        action=getattr(item, "job_kind", None) or "translate",
+        status=item.status,
+        datetime=item.completed_at or item.started_at or item.created_at,
+        duration_seconds=_action_duration_seconds(item, now=now),
+        message=message,
+        current=current_id is not None and item.id == current_id,
+        target_language=item.target_language,
+    )
+
+
 class JobService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -240,24 +268,35 @@ class JobService:
             query.order_by(JobRow.created_at.desc(), JobRow.id.desc()).limit(limit)
         ).all()
 
-        actions: list[JobActionOut] = []
         now = datetime.now(timezone.utc)
-        for item in related:
-            message = item.error
-            if not message and item.status == "skipped" and item.progress_detail:
-                message = item.progress_detail
-            actions.append(
-                JobActionOut(
-                    id=item.id,
-                    action=getattr(item, "job_kind", None) or "translate",
-                    status=item.status,
-                    datetime=item.completed_at or item.started_at or item.created_at,
-                    duration_seconds=_action_duration_seconds(item, now=now),
-                    message=message,
-                    current=item.id == job_id,
-                )
+        return [_job_row_to_action(item, current_id=job_id, now=now) for item in related]
+
+    def list_job_actions_for_media(self, media: MediaItemRow, limit: int = 200) -> list[JobActionOut]:
+        """Return every job run for a media file (tasks + legacy jobs)."""
+        clauses = [
+            JobRow.task_id.in_(
+                select(LocalizationTaskRow.id).where(LocalizationTaskRow.media_item_id == media.id)
             )
-        return actions
+        ]
+        if media.media_type == "episode" and media.bazarr_episode_id is not None:
+            clauses.append(
+                (JobRow.media_type == "episode") & (JobRow.bazarr_episode_id == media.bazarr_episode_id)
+            )
+        elif media.media_type == "movie" and media.bazarr_movie_id is not None:
+            clauses.append(
+                (JobRow.media_type == "movie") & (JobRow.bazarr_movie_id == media.bazarr_movie_id)
+            )
+        if media.path:
+            clauses.append(JobRow.media_path == media.path)
+
+        related = self.db.scalars(
+            select(JobRow)
+            .where(or_(*clauses))
+            .order_by(JobRow.created_at.desc(), JobRow.id.desc())
+            .limit(limit)
+        ).all()
+        now = datetime.now(timezone.utc)
+        return [_job_row_to_action(item, now=now) for item in related]
 
     def get_job_log(self, job_id: int) -> JobLogOut | None:
         row = self.db.get(JobRow, job_id)
@@ -1846,7 +1885,7 @@ class JobService:
                     + (
                         "Blocked by cost or monthly budget."
                         if reason == "blocked_by_cost_policy"
-                        else "Configure a compatible model in AI → Models."
+                        else "Configure a compatible model in Settings → Models."
                     ),
                     reason_code=reason,
                 )

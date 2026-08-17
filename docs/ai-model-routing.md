@@ -4,7 +4,7 @@ Subtitle AI v0.3-alpha1 routes translation jobs across **configured provider mod
 
 Canonical model identity is **`(provider_id, model_id)`**. In this milestone only **OpenRouter** is registered.
 
-Configure credentials under **AI → Providers**. Configure pools, strategy, budgets, and diagnostic exchange logging under **AI → Models & Routing**. Generic Settings contains only application options (Bazarr, languages, automation, media paths, concurrency). `openrouter_model` remains a compatibility field (first enabled preference).
+Configure credentials under **Settings → Models → Providers**. Configure pools, strategy, budgets, and diagnostic exchange logging under **Settings → Models → Models & Routing**. General Settings contains application options (Bazarr, languages, automation, media paths, concurrency). `openrouter_model` remains a compatibility field (first enabled preference).
 
 See also [ai-providers.md](ai-providers.md).
 
@@ -95,7 +95,7 @@ Model tests still count toward budget and usage analytics but never influence ad
 
 `ai_usage_records` is the historical AI cost source (dashboard, usage page, job stats). Rows store the pricing snapshot from the request. Job exchange logs remain for debug detail and are not used to reprice history from a live catalog.
 
-Full request/response bodies remain opt-in under **AI → Models & Routing → Diagnostics** (`openrouter_log_full_exchanges`, default off).
+Full request/response bodies remain opt-in under **Settings → Models → Providers** (`openrouter_log_full_exchanges`, default off).
 
 ## Privacy
 
@@ -111,6 +111,6 @@ Turning on `allow_paid_fallback` can incur OpenRouter charges as soon as every f
 | --- | --- |
 | `no_compatible_model` | Add a compatible model to the pool used by the current strategy |
 | `blocked_by_cost_policy` | Raise the per-job cap or monthly budget, or use a cheaper/free model |
-| Catalog **STALE** | Refresh on AI → Models & Routing; jobs still use last-known metadata |
+| Catalog **STALE** | Refresh on Settings → Models; jobs still use last-known metadata |
 | Existing install stopped translating | Confirm the seeded preference is still enabled; catalog miss should not block it |
 | Adaptive rank “insufficient” | Display-only; needs ≥10 translation samples and does not change routing |

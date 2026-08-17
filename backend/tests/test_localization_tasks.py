@@ -30,6 +30,7 @@ from app.localization.verification import BazarrVerificationService, Verificatio
 from app.media import MediaRef
 from app.media.bazarr_provider import BazarrMediaProvider, clear_search_cache
 from app.media.service import MediaItemService
+from app.jobs.service import JobService
 from app.services.settings import SettingsService
 
 
@@ -1538,3 +1539,54 @@ async def test_waiting_vs_blocked_messages(loc_env, monkeypatch):
     assert blocked is not None
     assert blocked.status == "blocked"
     assert blocked.error_message == "No usable media reference is available."
+
+
+def test_list_job_actions_for_media_includes_legacy_and_task_jobs(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=media.path or "",
+            media_title=media.title,
+            bazarr_movie_id=42,
+            source_subtitle_path="/media/Matrix/The Matrix.en.srt",
+            target_subtitle_path="/media/Matrix/The Matrix.pt-PT.srt",
+            target_language="pt-PT",
+            model="test",
+            status="completed",
+        )
+    )
+    db.add(
+        JobRow(
+            job_kind="request",
+            media_type="movie",
+            media_path=media.path or "",
+            media_title=media.title,
+            bazarr_movie_id=42,
+            source_subtitle_path="",
+            target_subtitle_path="",
+            target_language="en",
+            model="",
+            status="completed",
+        )
+    )
+    db.commit()
+
+    actions = JobService(db).list_job_actions_for_media(media)
+    kinds = {item.action for item in actions}
+    langs = {item.target_language for item in actions}
+    assert kinds == {"translate", "request"}
+    assert "pt-PT" in langs
+    assert "en" in langs

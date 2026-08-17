@@ -52,7 +52,7 @@ def user_message_for_provider_error(exc: Exception) -> str:
     if isinstance(exc, RateLimitError) or category == "rate_limit":
         return "The AI provider is temporarily rate-limiting requests."
     if isinstance(exc, AuthenticationError) or category == "auth_error":
-        return "AI provider authentication failed. Check credentials in AI → Providers."
+        return "AI provider authentication failed. Check credentials in Settings → Models."
     if isinstance(exc, ContextLimitError) or category == "context_overflow":
         return "This subtitle is too large for the selected model."
     if isinstance(exc, ProviderUnavailableError) or category in {
@@ -64,7 +64,7 @@ def user_message_for_provider_error(exc: Exception) -> str:
             return "The AI provider timed out. The task can be retried."
         return "The AI provider is unavailable. Try again later."
     if isinstance(exc, ModelNotFoundError) or category == "incompatible":
-        return "The selected model is not available. Check AI → Models & Routing."
+        return "The selected model is not available. Check Settings → Models."
     if isinstance(exc, InvalidRequestError) or category in {"invalid_response", "validation_error"}:
         if category == "validation_error" or "validation" in str(exc).lower():
             return "The translation failed quality checks and was not written."

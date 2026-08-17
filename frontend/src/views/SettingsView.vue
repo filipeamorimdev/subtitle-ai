@@ -213,10 +213,10 @@ function clearUsageStats() {
 <template>
   <section class="space-y-8">
     <div>
-      <h1 class="font-display text-2xl font-bold sm:text-3xl">Settings</h1>
+      <h2 class="font-display text-lg font-semibold">General</h2>
       <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-        How Subtitle AI is configured. AI keys, models, routing, and budgets live under
-        <RouterLink class="font-semibold text-accent hover:underline" to="/ai/models">AI → Models &amp; Routing</RouterLink>.
+        Bazarr, languages, automation, media paths, and cleanup. Model keys, pools, and budgets live under
+        <RouterLink class="font-semibold text-accent hover:underline" to="/settings/models">Models</RouterLink>.
       </p>
     </div>
 
@@ -422,7 +422,7 @@ function clearUsageStats() {
       <legend class="px-1 font-display text-lg font-semibold">Advanced</legend>
       <p class="text-sm text-ink-500">
         Application diagnostics and irreversible data cleanup. OpenRouter exchange logging is configured under
-        <RouterLink class="font-semibold text-accent hover:underline" to="/ai/models">AI → Models &amp; Routing</RouterLink>.
+        <RouterLink class="font-semibold text-accent hover:underline" to="/settings/models/providers">Models → Providers</RouterLink>.
       </p>
 
       <div class="space-y-3">

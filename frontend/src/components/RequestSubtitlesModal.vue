@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../services/api'
 import type { LanguageCatalogItem, MediaRef } from '../types'
+import { mediaHrefForTaskId } from '../utils/mediaNav'
 
 const props = defineProps<{
   open: boolean
@@ -152,7 +153,7 @@ async function submit() {
       })
       emit('created', task.id)
       emit('close')
-      await router.push(`/tasks/${task.id}`)
+      await router.push(`/media/${task.media_item_id}`)
     } catch (err) {
       const e = err as Error & { code?: string; taskId?: number }
       if (e.code === 'active_task_exists' && e.taskId) {
@@ -167,6 +168,17 @@ async function submit() {
     submitError.value = err instanceof Error ? err.message : String(err)
   } finally {
     submitting.value = false
+  }
+}
+
+async function openExisting() {
+  if (!existingTaskId.value) return
+  try {
+    const href = await mediaHrefForTaskId(existingTaskId.value)
+    emit('close')
+    await router.push(href)
+  } catch {
+    await router.push('/media')
   }
 }
 
@@ -292,7 +304,7 @@ onMounted(() => {
           v-if="existingTaskId"
           type="button"
           class="text-sm font-semibold text-accent hover:underline"
-          @click="router.push(`/tasks/${existingTaskId}`)"
+          @click="openExisting"
         >
           View existing task
         </button>

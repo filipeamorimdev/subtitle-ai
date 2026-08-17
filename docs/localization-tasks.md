@@ -23,12 +23,12 @@ Historical jobs without `task_id` remain valid legacy execution history.
 | | LocalizationTask | Job (execution) |
 | --- | --- | --- |
 | Represents | Desired outcome for one media + language + capability | One concrete unit of work |
-| Primary UI | Tasks list, media detail, dashboard | Secondary “Executions” on task detail / Jobs page |
+| Primary UI | Media list, media file page, dashboard | History on the media file page; job detail for logs |
 | Status | requested → planning → waiting_for_source → processing → verifying → completed | pending → processing → completed/failed/… |
 
 ## Manual on-demand request
 
-1. **Request subtitles** (Dashboard / Tasks / Candidates / Media detail)
+1. **Request subtitles** (Dashboard / Media / media file page)
 2. Search Bazarr media (or use pre-selected candidate)
 3. Choose language (dropdown or typed name/code)
 4. Backend normalizes language and creates/reuses an active task
@@ -79,6 +79,7 @@ Task cost is the sum of authoritative `ai_usage_records` for the task’s jobs (
 | GET | `/api/media/search?q=` |
 | GET/POST | `/api/media`, `/api/media/{id}` |
 | GET | `/api/media/{id}/localization` |
+| GET | `/api/media/{id}/actions` |
 | POST | `/api/media/{id}/localization-tasks` |
 | GET | `/api/localization-tasks`, `/api/localization-tasks/{id}` |
 | POST | `/api/localization-tasks/{id}/retry`, `.../cancel` |

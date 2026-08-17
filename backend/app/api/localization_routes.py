@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    JobActionOut,
     LanguageAvailabilityOut,
     LanguageCatalogOut,
     LocalizationTaskCreate,
@@ -20,7 +21,7 @@ from app.api.schemas import (
 from app.db import get_db
 from app.db.models import LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrError
-from app.jobs.service import job_to_out
+from app.jobs.service import JobService, job_to_out
 from app.languages import LanguageNormalizationError, list_languages, normalize_language
 from app.localization.planner import TaskPlanner
 from app.localization.service import (
@@ -334,6 +335,14 @@ async def get_media_localization(
         seen_codes.add(task.target_language_code)
 
     return MediaLocalizationOut(media_id=media_id, capability="subtitles", languages=languages)
+
+
+@router.get("/media/{media_id}/actions", response_model=list[JobActionOut])
+def get_media_actions(media_id: int, db: Session = Depends(get_db)) -> list[JobActionOut]:
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    return JobService(db).list_job_actions_for_media(media)
 
 
 @router.post("/media/{media_id}/localization-tasks", response_model=LocalizationTaskOut)

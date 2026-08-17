@@ -24,9 +24,11 @@ Each translation job writes a JSONL exchange log under:
 /config/logs/jobs/job-{id}-openrouter.jsonl
 ```
 
-By default only metadata is stored (model, attempt, status, token usage, errors). Enable **Log full OpenRouter exchanges** under **AI → Providers** to persist full request/response bodies for debugging. The toggle defaults to off. API keys are never written.
+By default only metadata is stored (model, attempt, status, token usage, errors). Enable **Log full OpenRouter exchanges** under **Settings → Models → Providers** to persist full request/response bodies for debugging. The toggle defaults to off. API keys are never written.
 
 ## Settings UI sections
+
+The Settings page has three tabs: **General** (below), **Models** (providers, pools, routing, budgets), and **Glossary** (term memory and suggested-term review).
 
 ### Bazarr
 
@@ -42,7 +44,7 @@ By default only metadata is stored (model, attempt, status, token usage, errors)
 - Automatic retries (0–20, default 3)
 - Run automatic scan now
 
-When disabled, Candidates stay click-only. When enabled, newly missing wanted items are processed automatically after the grace period and **can incur OpenRouter costs**.
+When disabled, Media stays click-only. When enabled, newly missing wanted items are processed automatically after the grace period and **can incur OpenRouter costs**.
 
 API:
 
@@ -67,18 +69,23 @@ API:
 ### Advanced
 
 - Clear jobs, glossaries, and usage stats
-- OpenRouter diagnostic exchange logging is **not** here; it lives under AI → Providers
+- OpenRouter diagnostic exchange logging lives under Settings → Models → Providers
 
-## AI Control Center
+## AI dashboard and model settings
 
-All AI behavior is configured under **AI**:
+AI **observability** lives on the AI dashboard (opened from Dashboard):
 
 | Page | Purpose |
 | --- | --- |
 | Overview | Status, monthly usage, budget, display-only adaptive ranking, cost over time, recent routing |
+| Usage | Period selector, requests/tokens/cost, success and failure rates, cost/requests by model, free vs paid, latency, paginated request history |
+
+AI **control** lives under **Settings → Models**:
+
+| Page | Purpose |
+| --- | --- |
 | Providers | API keys (masked), connection test, catalog refresh, OpenRouter diagnostics |
 | Models & Routing | Catalog, free/paid pools, priority, routing strategy, paid/free fallback, unknown-pricing policy, per-job cap, monthly budget, manual override |
-| Usage | Period selector, requests/tokens/cost, success and failure rates, cost/requests by model, free vs paid, latency, paginated request history |
 
 `GET /api/settings/openrouter/models` and `GET /api/ai/models` use a 6-hour catalog cache. Missing prices are **unknown**, never treated as free.
 

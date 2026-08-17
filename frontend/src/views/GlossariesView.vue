@@ -245,6 +245,14 @@ function parentName(scope: GlossaryScope) {
   return scopes.value.find((s) => s.id === scope.parent_scope_id)?.display_name || `#${scope.parent_scope_id}`
 }
 
+function setTab(next: 'scopes' | 'review') {
+  tab.value = next
+  const query = { ...route.query }
+  if (next === 'review') query.tab = 'review'
+  else delete query.tab
+  router.replace({ query })
+}
+
 onMounted(async () => {
   if (!store.settings) {
     await store.loadSettings().catch(() => undefined)
@@ -258,13 +266,21 @@ watch(
     loadAll().catch(() => undefined)
   },
 )
+
+watch(
+  () => route.query.tab,
+  (value) => {
+    if (value === 'review') tab.value = 'review'
+    else if (value === 'scopes' || value == null) tab.value = 'scopes'
+  },
+)
 </script>
 
 <template>
   <section class="space-y-6">
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div class="min-w-0">
-        <h1 class="font-display text-2xl font-bold sm:text-3xl">Glossaries</h1>
+        <h2 class="font-display text-xl font-bold sm:text-2xl">Glossary</h2>
         <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
           Persistent term memory for series, movies, and shared universes.
         </p>
@@ -274,7 +290,7 @@ watch(
           type="button"
           class="rounded-md px-3 py-2 text-sm font-medium"
           :class="tab === 'scopes' ? 'bg-accent text-white' : 'bg-ink-100 dark:bg-ink-800'"
-          @click="tab = 'scopes'"
+          @click="setTab('scopes')"
         >
           Scopes
         </button>
@@ -282,7 +298,7 @@ watch(
           type="button"
           class="rounded-md px-3 py-2 text-sm font-medium"
           :class="tab === 'review' ? 'bg-accent text-white' : 'bg-ink-100 dark:bg-ink-800'"
-          @click="tab = 'review'"
+          @click="setTab('review')"
         >
           Review
           <span v-if="suggested.length" class="ml-1 opacity-80">({{ suggested.length }})</span>

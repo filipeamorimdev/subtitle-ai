@@ -28,7 +28,7 @@ Source SRT
 - Locked user terms are never overwritten by LLM extraction
 - First extraction on an empty scope promotes terms to `active`; later new terms are `suggested` for review
 - Universe detection: curated title markers first, LLM classification fallback
-- UI: `/glossaries` for edit/lock and suggested-term review
+- UI: Settings → Glossary (`/settings/glossary`) for edit/lock and suggested-term review
 
 ## Prompt policy
 
