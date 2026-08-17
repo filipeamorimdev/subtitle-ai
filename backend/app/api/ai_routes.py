@@ -48,6 +48,7 @@ class ProviderUpdateIn(BaseModel):
     enabled: bool | None = None
     display_name: str | None = None
     openrouter_log_full_exchanges: bool | None = None
+    openrouter_temperature: float | None = Field(default=None, ge=0, le=2)
 
 
 def _routing_out(db: Session) -> AiRoutingOut:
@@ -62,6 +63,7 @@ def _routing_out(db: Session) -> AiRoutingOut:
         monthly_budget_amount_usd=public.monthly_budget_amount_usd,
         allow_manual_budget_override=public.allow_manual_budget_override,
         openrouter_log_full_exchanges=public.openrouter_log_full_exchanges,
+        openrouter_temperature=public.openrouter_temperature,
     )
 
 
@@ -170,9 +172,15 @@ def update_provider(
         enabled=payload.enabled,
         display_name=payload.display_name,
     )
-    if payload.openrouter_log_full_exchanges is not None and provider_id == OPENROUTER_PROVIDER_ID:
+    if (
+        (payload.openrouter_log_full_exchanges is not None or payload.openrouter_temperature is not None)
+        and provider_id == OPENROUTER_PROVIDER_ID
+    ):
         SettingsService(db).update(
-            SettingsUpdate(openrouter_log_full_exchanges=payload.openrouter_log_full_exchanges)
+            SettingsUpdate(
+                openrouter_log_full_exchanges=payload.openrouter_log_full_exchanges,
+                openrouter_temperature=payload.openrouter_temperature,
+            )
         )
     routing = _routing_out(db)
     return {
@@ -183,6 +191,7 @@ def update_provider(
         "api_key_masked": public.api_key_masked,
         "base_url": public.base_url,
         "openrouter_log_full_exchanges": routing.openrouter_log_full_exchanges,
+        "openrouter_temperature": routing.openrouter_temperature,
     }
 
 
@@ -547,6 +556,7 @@ def put_routing(payload: AiRoutingUpdate, db: Session = Depends(get_db)) -> AiRo
             clear_monthly_budget_amount=payload.clear_monthly_budget_amount,
             allow_manual_budget_override=payload.allow_manual_budget_override,
             openrouter_log_full_exchanges=payload.openrouter_log_full_exchanges,
+            openrouter_temperature=payload.openrouter_temperature,
         )
     )
     return _routing_out(db)

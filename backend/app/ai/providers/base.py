@@ -42,7 +42,7 @@ class AIProvider(ABC):
         *,
         model_id: str,
         messages: list[Message] | list[dict[str, str]],
-        temperature: float = 0.2,
+        temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
     ) -> AIResponse:

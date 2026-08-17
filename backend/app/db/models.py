@@ -35,6 +35,7 @@ class SettingsRow(Base):
     automatic_retry_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     maximum_automatic_retries: Mapped[int] = mapped_column(Integer, default=3)
     openrouter_log_full_exchanges: Mapped[bool] = mapped_column(Boolean, default=False)
+    openrouter_temperature: Mapped[float] = mapped_column(Float, default=0.0)
     routing_strategy: Mapped[str] = mapped_column(String(32), default="free_first")
     allow_paid_fallback: Mapped[bool] = mapped_column(Boolean, default=False)
     allow_free_fallback: Mapped[bool] = mapped_column(Boolean, default=True)

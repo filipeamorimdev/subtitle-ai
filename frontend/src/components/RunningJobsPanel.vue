@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../services/api'
 import type { Job, JobLog, LocalizationTask } from '../types'
-import { formatDateTime } from '../utils/datetime'
+import { formatDateTime, formatElapsed } from '../utils/datetime'
 import { jobStatusClass, taskStatusLabel } from '../utils/status'
 
 const props = defineProps<{
@@ -20,10 +20,25 @@ interface RunningRow {
   job: Job | null
 }
 
+const now = ref(Date.now())
 const logByJob = ref<Record<number, JobLog | null>>({})
 const logErrorByJob = ref<Record<number, string | null>>({})
 const logOpen = ref<Set<number>>(new Set())
 const logBusyId = ref<number | null>(null)
+let tick: number | undefined
+
+const iconBtnClass =
+  'inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800'
+
+onMounted(() => {
+  tick = window.setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (tick) window.clearInterval(tick)
+})
 
 const rows = computed<RunningRow[]>(() =>
   props.tasks.map((task) => {
@@ -35,6 +50,14 @@ const rows = computed<RunningRow[]>(() =>
     return { task, job }
   }),
 )
+
+function progressSummary(row: RunningRow) {
+  const start =
+    row.job?.started_at || row.task.started_at || row.job?.created_at || row.task.created_at
+  const elapsed = formatElapsed(start, now.value)
+  const pct = Math.round(Math.min(100, Math.max(0, row.job?.progress ?? 0)))
+  return `${elapsed} - ${pct}%`
+}
 
 function stepClass(state: string) {
   if (state === 'done') return 'text-emerald-700 dark:text-emerald-300'
@@ -108,10 +131,10 @@ watch(
 <template>
   <div class="rounded-xl border border-accent/30 bg-accent/5 p-5 dark:bg-accent/10">
     <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="font-display text-lg font-bold">Running</h2>
-      </div>
-      <p class="text-sm text-ink-500">{{ rows.length }} active</p>
+      <h2 class="font-display text-lg font-bold">Running</h2>
+      <p v-if="rows.length === 1" class="text-sm tabular-nums text-ink-500">
+        {{ progressSummary(rows[0]) }}
+      </p>
     </div>
 
     <ul class="mt-4 space-y-4">
@@ -134,6 +157,8 @@ watch(
           <button
             type="button"
             class="rounded-md border border-red-300 px-3 py-1.5 text-sm font-semibold text-red-700 disabled:opacity-50 dark:border-red-800 dark:text-red-300"
+            title="Cancel"
+            aria-label="Cancel"
             :disabled="busy"
             @click="emit('cancel', task.id)"
           >
@@ -153,20 +178,59 @@ watch(
               {{ job.job_kind }} #{{ job.id }}
               <span :class="jobStatusClass(job.status)"> · {{ job.status }}</span>
             </RouterLink>
-            <button
-              type="button"
-              class="rounded-md border border-ink-300 px-2 py-1 text-xs font-semibold dark:border-ink-600"
-              :disabled="logBusyId === job.id"
-              @click="toggleLog(job.id)"
-            >
-              {{
-                logOpen.has(job.id) ? 'Hide log' : logBusyId === job.id ? 'Loading…' : 'View log'
-              }}
-            </button>
+            <div class="flex shrink-0 items-center">
+              <p v-if="rows.length > 1" class="mr-2 tabular-nums text-ink-600 dark:text-ink-300">
+                {{ progressSummary({ task, job }) }}
+              </p>
+              <button
+                type="button"
+                :class="[iconBtnClass, logOpen.has(job.id) ? 'text-accent' : '']"
+                :disabled="logBusyId === job.id"
+                :title="logOpen.has(job.id) ? 'Hide log' : 'View logs'"
+                :aria-label="logOpen.has(job.id) ? 'Hide log' : 'View logs'"
+                @click="toggleLog(job.id)"
+              >
+                <svg
+                  class="h-4 w-4"
+                  :class="logBusyId === job.id ? 'animate-pulse' : ''"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
+                  <path d="M16 13H8" />
+                  <path d="M16 17H8" />
+                  <path d="M10 9H8" />
+                </svg>
+              </button>
+              <RouterLink
+                :class="iconBtnClass"
+                :to="`/jobs/${job.id}/stats`"
+                title="Usage stats"
+                aria-label="Usage stats"
+              >
+                <svg
+                  class="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 20V10" />
+                  <path d="M12 20V4" />
+                  <path d="M6 20v-6" />
+                </svg>
+              </RouterLink>
+            </div>
           </div>
-          <p class="mt-1 text-ink-600 dark:text-ink-300">
-            {{ job.progress_detail || `${job.progress}%` }}
-          </p>
           <div
             v-if="job.status === 'pending' || job.status === 'processing'"
             class="mt-2 h-1.5 overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800"

@@ -248,6 +248,8 @@ onUnmounted(() => {
             v-if="selectedTask && canRetryTask(selectedTask.status)"
             type="button"
             class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            title="Retry"
+            aria-label="Retry"
             :disabled="busy"
             @click="retryTask"
           >
@@ -257,6 +259,8 @@ onUnmounted(() => {
             v-if="selectedTask && canCancelTask(selectedTask.status) && !runningTasks.length"
             type="button"
             class="rounded-md border border-red-300 px-3 py-1.5 text-sm font-semibold text-red-700 dark:border-red-800 dark:text-red-300"
+            title="Cancel"
+            aria-label="Cancel"
             :disabled="busy"
             @click="cancelTask()"
           >
@@ -265,6 +269,8 @@ onUnmounted(() => {
           <button
             type="button"
             class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white"
+            title="Request subtitles"
+            aria-label="Request subtitles"
             @click="modalOpen = true"
           >
             Request subtitles

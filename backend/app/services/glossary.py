@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.ai.errors import AIProviderError
 from app.core.logging import get_logger
-from app.db.models import GlossaryScopeRow, GlossaryTermRow
+from app.db.models import GlossaryScopeRow, GlossaryTermRow, SettingsRow
 from app.services.glossary_universes import UniverseDef, match_universe, universe_keys
+from app.services.settings import clamp_openrouter_temperature
 from app.subtitles.models import SubtitleDocument
 from app.translation.openrouter.client import ChatResult, batch_base_model
 
@@ -232,6 +233,12 @@ def parse_universe_json(content: str) -> tuple[str | None, str | None, str | Non
 class GlossaryService:
     def __init__(self, db: Session) -> None:
         self.db = db
+
+    def _openrouter_temperature(self) -> float:
+        row = self.db.get(SettingsRow, 1)
+        return clamp_openrouter_temperature(
+            getattr(row, "openrouter_temperature", 0) if row is not None else 0
+        )
 
     def list_scopes(
         self,
@@ -815,7 +822,7 @@ class GlossaryService:
                     {"role": "system", "content": UNIVERSE_CLASSIFY_SYSTEM},
                     {"role": "user", "content": build_universe_classify_user_message(media_title)},
                 ],
-                temperature=0,
+                temperature=self._openrouter_temperature(),
             )
         except (AIProviderError, Exception) as exc:
             logger.warning("Universe classification failed: %s", exc)
@@ -860,7 +867,7 @@ class GlossaryService:
                     ),
                 },
             ],
-            temperature=0,
+            temperature=self._openrouter_temperature(),
         )
         return parse_terms_json(result.content), result
 

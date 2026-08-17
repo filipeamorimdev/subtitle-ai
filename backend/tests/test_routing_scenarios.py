@@ -85,7 +85,7 @@ def routing_env(tmp_path, monkeypatch):
 
     calls: list[str] = []
 
-    async def fake_chat(self, *, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(self, *, model, messages, temperature=0, max_tokens=None):
         calls.append(model)
         fail_for = getattr(fake_chat, "fail_for", set())
         if model in fail_for:

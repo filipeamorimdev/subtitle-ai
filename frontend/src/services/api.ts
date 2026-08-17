@@ -232,6 +232,7 @@ export const api = {
     openrouter_api_key?: string
     clear_openrouter_api_key?: boolean
     openrouter_log_full_exchanges?: boolean
+    openrouter_temperature?: number
   }) =>
     request<AiRouting>('/api/ai/routing', { method: 'PUT', body: JSON.stringify(payload) }),
   getAiBudget: () => request<AiOverview['budget']>('/api/ai/budget'),
@@ -245,6 +246,7 @@ export const api = {
       clear_base_url?: boolean
       enabled?: boolean
       openrouter_log_full_exchanges?: boolean
+      openrouter_temperature?: number
     },
   ) =>
     request(`/api/ai/providers/${encodeURIComponent(provider_id)}`, {

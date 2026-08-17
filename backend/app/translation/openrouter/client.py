@@ -117,7 +117,7 @@ class OpenRouterModelInfo:
 class BatchChatRequest:
     custom_id: str
     messages: list[dict[str, str]]
-    temperature: float = 0.2
+    temperature: float = 0
     max_tokens: int | None = None
 
 
@@ -352,7 +352,7 @@ class OpenRouterClient:
         *,
         model: str,
         messages: list[dict[str, str]],
-        temperature: float = 0.2,
+        temperature: float = 0,
         max_tokens: int | None = None,
     ) -> ChatResult:
         # Sync completions never use the :batch catalog slug.

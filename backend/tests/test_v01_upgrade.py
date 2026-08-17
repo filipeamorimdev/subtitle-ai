@@ -270,6 +270,7 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
         assert not settings.allow_unknown_pricing
         assert not settings.monthly_budget_enabled
         assert not settings.openrouter_log_full_exchanges
+        assert settings.openrouter_temperature == 0
         assert settings.routing_strategy == "paid_only"
 
         prefs = list(session.scalars(select(OpenRouterModelPreferenceRow)).all())
@@ -323,6 +324,7 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
         assert body["allow_paid_fallback"] is False
         assert body["automatic_fallback_enabled"] is False
         assert body["openrouter_log_full_exchanges"] is False
+        assert body["openrouter_temperature"] == 0
         assert body["path_mappings"] == [
             {"bazarr_prefix": "/movies", "local_prefix": "/data/movies"}
         ]

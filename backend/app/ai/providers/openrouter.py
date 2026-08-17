@@ -345,7 +345,7 @@ class OpenRouterProvider(AIProvider):
         *,
         model_id: str,
         messages: list[Message] | list[dict[str, str]],
-        temperature: float = 0.2,
+        temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
     ) -> AIResponse:
@@ -393,7 +393,7 @@ class OpenRouterProvider(AIProvider):
                     BatchChatRequest(
                         custom_id=str(item["custom_id"]),
                         messages=_messages_to_dicts(item["messages"]),
-                        temperature=float(item.get("temperature", 0.2)),
+                        temperature=float(item.get("temperature", 0)),
                         max_tokens=item.get("max_tokens"),
                     )
                 )

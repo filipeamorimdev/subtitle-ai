@@ -29,6 +29,7 @@ export interface Settings {
   automatic_retry_enabled: boolean
   maximum_automatic_retries: number
   openrouter_log_full_exchanges: boolean
+  openrouter_temperature: number
   routing_strategy: string
   allow_paid_fallback: boolean
   allow_free_fallback: boolean
@@ -60,6 +61,7 @@ export interface SettingsUpdate {
   automatic_retry_enabled?: boolean
   maximum_automatic_retries?: number
   openrouter_log_full_exchanges?: boolean
+  openrouter_temperature?: number
   routing_strategy?: string
   allow_paid_fallback?: boolean
   allow_free_fallback?: boolean
@@ -527,6 +529,7 @@ export interface AiRouting {
   monthly_budget_amount_usd: number | null
   allow_manual_budget_override: boolean
   openrouter_log_full_exchanges: boolean
+  openrouter_temperature: number
 }
 
 export interface AiPreference {

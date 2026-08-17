@@ -175,6 +175,7 @@ def init_db() -> None:
             ("automatic_retry_enabled", "ALTER TABLE settings ADD COLUMN automatic_retry_enabled BOOLEAN NOT NULL DEFAULT 1"),
             ("maximum_automatic_retries", "ALTER TABLE settings ADD COLUMN maximum_automatic_retries INTEGER NOT NULL DEFAULT 3"),
             ("openrouter_log_full_exchanges", "ALTER TABLE settings ADD COLUMN openrouter_log_full_exchanges BOOLEAN NOT NULL DEFAULT 0"),
+            ("openrouter_temperature", "ALTER TABLE settings ADD COLUMN openrouter_temperature FLOAT NOT NULL DEFAULT 0"),
             ("routing_strategy", "ALTER TABLE settings ADD COLUMN routing_strategy VARCHAR(32) NOT NULL DEFAULT 'free_first'"),
             ("allow_paid_fallback", "ALTER TABLE settings ADD COLUMN allow_paid_fallback BOOLEAN NOT NULL DEFAULT 0"),
             ("allow_free_fallback", "ALTER TABLE settings ADD COLUMN allow_free_fallback BOOLEAN NOT NULL DEFAULT 1"),

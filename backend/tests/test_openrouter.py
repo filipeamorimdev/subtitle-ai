@@ -400,7 +400,7 @@ async def test_translation_batch_model_repairs_via_sync(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_translation_non_batch_model_never_hits_batches_api(monkeypatch):
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         return ChatResult(
@@ -527,7 +527,7 @@ Mundo
 
 @pytest.mark.asyncio
 async def test_translation_service_success(monkeypatch):
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         return ChatResult(
@@ -558,7 +558,7 @@ async def test_translation_service_success(monkeypatch):
 async def test_translation_validation_retry(monkeypatch):
     calls = {"n": 0}
 
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         calls["n"] += 1
@@ -588,7 +588,7 @@ async def test_translation_validation_retry(monkeypatch):
 async def test_translation_targeted_repair_merges_partial(monkeypatch):
     calls = {"n": 0, "users": []}
 
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         calls["n"] += 1
@@ -644,7 +644,7 @@ Four
                 ids.append(block_id)
         return ids
 
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         calls["n"] += 1
@@ -672,7 +672,7 @@ Four
 
 @pytest.mark.asyncio
 async def test_translation_single_block_still_fails_hard(monkeypatch):
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         return ChatResult(content="broken", model=model, total_tokens=1)
@@ -696,7 +696,7 @@ Hello
 
 @pytest.mark.asyncio
 async def test_translation_markup_mismatch_is_warning(monkeypatch):
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         # Return translation without restoring italic tags (TAG0/TAG1 dropped).
@@ -725,7 +725,7 @@ async def test_translation_markup_mismatch_is_warning(monkeypatch):
 async def test_translation_retries_hard_block_individually(monkeypatch):
     calls = {"n": 0}
 
-    async def fake_chat(*, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(*, model, messages, temperature=0, max_tokens=None):
         from app.translation.openrouter.client import ChatResult
 
         calls["n"] += 1

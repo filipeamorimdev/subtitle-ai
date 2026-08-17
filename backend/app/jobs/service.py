@@ -2089,7 +2089,9 @@ class JobService:
                     attempt_number=index + 1,
                     provider_id=candidate.provider_id,
                 )
-                service = TranslationService(recording)
+                service = TranslationService(
+                    recording, temperature=float(public.openrouter_temperature)
+                )
 
                 current = self.db.get(JobRow, job_id)
                 if current:

@@ -26,6 +26,23 @@ def _int(value: object, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, parsed))
 
 
+OPENROUTER_TEMPERATURE_MIN = 0.0
+OPENROUTER_TEMPERATURE_MAX = 2.0
+DEFAULT_OPENROUTER_TEMPERATURE = 0.0
+
+
+def clamp_openrouter_temperature(
+    value: object, default: float = DEFAULT_OPENROUTER_TEMPERATURE
+) -> float:
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if parsed != parsed:  # NaN
+        return default
+    return max(OPENROUTER_TEMPERATURE_MIN, min(OPENROUTER_TEMPERATURE_MAX, parsed))
+
+
 def _micro_to_usd(value: object) -> float | None:
     if value is None:
         return None
@@ -62,6 +79,7 @@ class SettingsService:
                 automatic_retry_enabled=True,
                 maximum_automatic_retries=3,
                 openrouter_log_full_exchanges=False,
+                openrouter_temperature=DEFAULT_OPENROUTER_TEMPERATURE,
                 routing_strategy="free_first",
                 allow_paid_fallback=False,
                 allow_free_fallback=True,
@@ -135,6 +153,9 @@ class SettingsService:
             ),
             openrouter_log_full_exchanges=_bool(
                 getattr(row, "openrouter_log_full_exchanges", False), False
+            ),
+            openrouter_temperature=clamp_openrouter_temperature(
+                getattr(row, "openrouter_temperature", DEFAULT_OPENROUTER_TEMPERATURE)
             ),
             routing_strategy=getattr(row, "routing_strategy", None) or "free_first",
             allow_paid_fallback=_bool(getattr(row, "allow_paid_fallback", False), False),
@@ -222,6 +243,10 @@ class SettingsService:
             )
         if payload.openrouter_log_full_exchanges is not None:
             row.openrouter_log_full_exchanges = payload.openrouter_log_full_exchanges
+        if payload.openrouter_temperature is not None:
+            row.openrouter_temperature = clamp_openrouter_temperature(
+                payload.openrouter_temperature
+            )
         if payload.routing_strategy is not None:
             row.routing_strategy = payload.routing_strategy
         if payload.allow_paid_fallback is not None:

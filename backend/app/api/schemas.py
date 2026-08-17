@@ -40,6 +40,7 @@ class SettingsUpdate(BaseModel):
     automatic_retry_enabled: bool | None = None
     maximum_automatic_retries: int | None = Field(default=None, ge=0, le=20)
     openrouter_log_full_exchanges: bool | None = None
+    openrouter_temperature: float | None = Field(default=None, ge=0, le=2)
     routing_strategy: Literal["free_only", "paid_only", "free_first", "paid_first"] | None = None
     allow_paid_fallback: bool | None = None
     allow_free_fallback: bool | None = None
@@ -73,6 +74,7 @@ class SettingsOut(BaseModel):
     automatic_retry_enabled: bool = True
     maximum_automatic_retries: int = 3
     openrouter_log_full_exchanges: bool = False
+    openrouter_temperature: float = 0
     routing_strategy: str = "free_first"
     allow_paid_fallback: bool = False
     allow_free_fallback: bool = True
@@ -487,6 +489,7 @@ class AiRoutingOut(BaseModel):
     monthly_budget_amount_usd: float | None = None
     allow_manual_budget_override: bool = False
     openrouter_log_full_exchanges: bool = False
+    openrouter_temperature: float = 0
 
 
 class AiRoutingUpdate(BaseModel):
@@ -503,6 +506,7 @@ class AiRoutingUpdate(BaseModel):
     openrouter_api_key: str | None = None
     clear_openrouter_api_key: bool = False
     openrouter_log_full_exchanges: bool | None = None
+    openrouter_temperature: float | None = Field(default=None, ge=0, le=2)
 
 
 class AiModelPreferenceIn(BaseModel):

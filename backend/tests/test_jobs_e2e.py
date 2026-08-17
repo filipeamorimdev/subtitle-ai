@@ -156,7 +156,7 @@ def app_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
 
-    async def fake_chat(self, *, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(self, *, model, messages, temperature=0, max_tokens=None):
         system = next((m["content"] for m in messages if m["role"] == "system"), "")
         if "Classify media into a franchise universe" in system:
             content = '{"universe":"none"}'
@@ -350,3 +350,42 @@ def test_api_candidates_and_manual_job(app_env, monkeypatch):
         stats = client.get("/api/stats").json()
         assert stats["total"] >= 1
         assert stats["completed"] >= 1
+
+
+def test_openrouter_temperature_setting(app_env, monkeypatch):
+    async def noop_start():
+        return None
+
+    async def noop_stop():
+        return None
+
+    monkeypatch.setattr("app.jobs.worker.worker.start", noop_start)
+    monkeypatch.setattr("app.jobs.worker.worker.stop", noop_stop)
+    get_app_config.cache_clear()
+
+    app = create_app()
+    SessionLocal = app_env["SessionLocal"]
+
+    def override_db():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db] = override_db
+
+    with TestClient(app) as client:
+        settings = client.get("/api/settings").json()
+        assert settings["openrouter_temperature"] == 0
+        routing = client.get("/api/ai/routing").json()
+        assert routing["openrouter_temperature"] == 0
+
+        updated = client.put(
+            "/api/ai/providers/openrouter",
+            json={"openrouter_temperature": 0.4},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["openrouter_temperature"] == 0.4
+        assert client.get("/api/settings").json()["openrouter_temperature"] == 0.4
+        assert client.get("/api/ai/routing").json()["openrouter_temperature"] == 0.4

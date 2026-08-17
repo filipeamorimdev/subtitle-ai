@@ -375,6 +375,8 @@ function statsHref(item: JobAction) {
         <button
           type="button"
           class="rounded-md border border-ink-300 px-3 py-1.5 font-medium disabled:opacity-40 dark:border-ink-600"
+          title="Previous page"
+          aria-label="Previous page"
           :disabled="page <= 1"
           @click="page -= 1"
         >
@@ -386,6 +388,8 @@ function statsHref(item: JobAction) {
         <button
           type="button"
           class="rounded-md border border-ink-300 px-3 py-1.5 font-medium disabled:opacity-40 dark:border-ink-600"
+          title="Next page"
+          aria-label="Next page"
           :disabled="page >= totalPages"
           @click="page += 1"
         >

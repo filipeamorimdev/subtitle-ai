@@ -108,10 +108,11 @@ def _model_supports_batch(provider: _ChatLike, model_id: str) -> bool:
 class TranslationService:
     """Translates subtitle documents via a generic AIProvider."""
 
-    def __init__(self, provider: _ChatLike) -> None:
+    def __init__(self, provider: _ChatLike, *, temperature: float = 0) -> None:
         self.provider = provider
         # Alias kept for call sites / tests that still say `.client`.
         self.client = provider
+        self.temperature = temperature
 
     async def translate_document(
         self,
@@ -321,6 +322,7 @@ class TranslationService:
         **kwargs: Any,
     ) -> Any:
         """Call provider.chat_completion with both model_id and legacy model= support."""
+        kwargs.setdefault("temperature", self.temperature)
         try:
             return await self.provider.chat_completion(
                 model_id=model, messages=messages, **kwargs
@@ -363,6 +365,7 @@ class TranslationService:
                             "content": build_translate_user_message(source_blocks),
                         },
                     ],
+                    temperature=self.temperature,
                 )
             )
 

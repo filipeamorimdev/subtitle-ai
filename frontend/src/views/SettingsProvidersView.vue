@@ -27,6 +27,7 @@ const apiKey = ref('')
 const clearApiKey = ref(false)
 const testMessage = ref<string | null>(null)
 const logExchanges = ref(false)
+const temperature = ref(0)
 
 const upcomingProviders = [
   { id: 'anthropic', name: 'Anthropic' },
@@ -40,6 +41,8 @@ async function loadAi() {
     const [list, route] = await Promise.all([api.getAiProviders(), api.getAiRouting()])
     providers.value = list.providers
     logExchanges.value = Boolean(route.openrouter_log_full_exchanges)
+    temperature.value =
+      typeof route.openrouter_temperature === 'number' ? route.openrouter_temperature : 0
   } catch (err) {
     aiError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -90,6 +93,9 @@ async function saveOpenRouter() {
       api_key: apiKey.value || undefined,
       clear_api_key: clearApiKey.value,
       openrouter_log_full_exchanges: logExchanges.value,
+      openrouter_temperature: Number.isFinite(Number(temperature.value))
+        ? Math.min(2, Math.max(0, Number(temperature.value)))
+        : 0,
     })
     apiKey.value = ''
     clearApiKey.value = false
@@ -254,6 +260,20 @@ async function refreshModels() {
                 class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
                 placeholder="Leave blank to keep existing"
               />
+            </label>
+            <label class="mt-4 block text-sm">
+              <span class="text-ink-500">Temperature</span>
+              <input
+                v-model.number="temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              />
+              <span class="mt-1 block text-xs text-ink-500">
+                Sent on every OpenRouter request. 0 is deterministic; higher values add variation (max 2).
+              </span>
             </label>
             <label class="mt-2 flex items-center gap-2 text-sm">
               <input v-model="clearApiKey" type="checkbox" />

@@ -196,6 +196,8 @@ onMounted(() => {
         <button
           type="button"
           class="rounded-md px-2 py-1 text-sm text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800"
+          title="Close"
+          aria-label="Close"
           @click="emit('close')"
         >
           Close
@@ -213,6 +215,8 @@ onMounted(() => {
             <button
               type="button"
               class="shrink-0 text-sm text-accent hover:underline"
+              title="Change media"
+              aria-label="Change media"
               @click="clearSelection"
             >
               Change
@@ -278,6 +282,8 @@ onMounted(() => {
           v-if="existingTaskId"
           type="button"
           class="text-sm font-semibold text-accent hover:underline"
+          title="View existing task"
+          aria-label="View existing task"
           @click="openExisting"
         >
           View existing task
@@ -287,6 +293,8 @@ onMounted(() => {
           <button
             type="button"
             class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-medium dark:border-ink-600"
+            title="Cancel"
+            aria-label="Cancel"
             @click="emit('close')"
           >
             Cancel
@@ -294,6 +302,8 @@ onMounted(() => {
           <button
             type="button"
             class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
+            title="Request subtitles"
+            aria-label="Request subtitles"
             :disabled="!selected || !targetLanguage || submitting"
             @click="submit"
           >

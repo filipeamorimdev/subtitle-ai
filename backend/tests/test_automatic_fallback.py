@@ -138,7 +138,7 @@ def auto_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
 
-    async def fake_chat(self, *, model, messages, temperature=0.2, max_tokens=None):
+    async def fake_chat(self, *, model, messages, temperature=0, max_tokens=None):
         system = next((m["content"] for m in messages if m["role"] == "system"), "")
         if "Classify media into a franchise universe" in system:
             content = '{"universe":"none"}'

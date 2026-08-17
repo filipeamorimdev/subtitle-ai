@@ -95,6 +95,8 @@ const activeLinkClass = 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white
             <button
               class="rounded-md px-3 py-2 text-sm font-medium text-ink-600 hover:bg-ink-100 md:hidden dark:text-ink-200 dark:hover:bg-ink-800"
               type="button"
+              :title="navOpen ? 'Close menu' : 'Open menu'"
+              :aria-label="navOpen ? 'Close menu' : 'Open menu'"
               :aria-expanded="navOpen"
               aria-controls="primary-nav"
               @click="navOpen = !navOpen"
