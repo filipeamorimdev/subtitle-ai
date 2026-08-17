@@ -11,8 +11,8 @@ Module: `backend/app/integrations/bazarr/`
 | Wanted episodes | `GET /api/episodes/wanted` | IDs + missing languages only (no path) |
 | Movie details | `GET /api/movies?radarrid[]=` | Path + subtitle files for enrichment |
 | Episode details | `GET /api/episodes?episodeid[]=` | Path + subtitle files for enrichment |
-| Movie rescan | `GET /api/movies/scan?radarrid=` | Best effort; alternate POST subtitles action tried on failure |
-| Episode rescan | `GET /api/episodes/scan?episodeid=` | Best effort; alternate POST tried on failure |
+| Movie rescan | `PATCH /api/movies?radarrid=&action=scan-disk` | Same as Bazarr UI **Scan Disk**; re-indexes sidecars from disk |
+| Episode rescan | `PATCH /api/series?seriesid=&action=scan-disk` | No per-episode scan API; series Scan Disk runs `store_subtitles` for every episode |
 | Download movie subtitle | `PATCH /api/movies/subtitles` | `radarrid`, `language` (code2), `forced`, `hi` — Bazarr queues search |
 | Download episode subtitle | `PATCH /api/episodes/subtitles` | `seriesid`, `episodeid`, `language`, `forced`, `hi` — Bazarr queues search |
 
@@ -65,7 +65,7 @@ Bazarr paths are rewritten through configured mappings before disk checks.
 
 ## Limitations
 
-- Rescan endpoint names differ across Bazarr versions; failures after a successful write mark the job completed with a warning.
+- Series Scan Disk is synchronous and indexes every episode in the show; a large library can take longer than a single-file write.
 - DVD VobSub / DVB image subtitles are not OCR'd (Blu-ray PGS is).
 - Source-language download is best-effort: Bazarr may find nothing if providers have no match, and English need not be in the item's profile for the specific-language download API.
 - Automatic fallback is off by default and incurs OpenRouter costs when enabled.

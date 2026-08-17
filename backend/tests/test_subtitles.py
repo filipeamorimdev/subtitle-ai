@@ -121,13 +121,13 @@ def test_filenames():
     assert detect_language_from_filename("movie.en-US.srt") == "en"
     assert detect_language_from_filename("movie.en.hi.srt") == "en"
     assert detect_language_from_filename("movie.en.sdh.srt") == "en"
-    assert str(build_target_subtitle_path("movie.en.srt", "pt-PT")) == "movie.pt-PT.srt"
-    assert str(build_target_subtitle_path("movie.en.hi.srt", "pt-PT")) == "movie.pt-PT.srt"
-    assert str(build_target_subtitle_path("movie.srt", "pt-PT")) == "movie.pt-PT.srt"
-    assert str(build_target_subtitle_path("/media/x/movie.eng.srt", "pt-PT")).endswith("movie.pt-PT.srt")
+    assert str(build_target_subtitle_path("movie.en.srt", "pt-PT")) == "movie.pt.srt"
+    assert str(build_target_subtitle_path("movie.en.hi.srt", "pt-PT")) == "movie.pt.srt"
+    assert str(build_target_subtitle_path("movie.srt", "pt-PT")) == "movie.pt.srt"
+    assert str(build_target_subtitle_path("/media/x/movie.eng.srt", "pt-PT")).endswith("movie.pt.srt")
     # Never keep the source language in the target name (stacked tags / bad legacy names)
     assert (
-        str(build_target_subtitle_path("movie.en.pt-PT.srt", "pt-PT")) == "movie.pt-PT.srt"
+        str(build_target_subtitle_path("movie.en.pt-PT.srt", "pt-PT")) == "movie.pt.srt"
     )
     assert str(
         build_target_subtitle_path(
@@ -135,7 +135,7 @@ def test_filenames():
             "pt-PT",
         )
     ) == (
-        "Star Wars - Young Jedi Adventures - S02E02 - A Jedi or a Pirate WEBDL-1080p.pt-PT.srt"
+        "Star Wars - Young Jedi Adventures - S02E02 - A Jedi or a Pirate WEBDL-1080p.pt.srt"
     )
     # Prefer media stem when a video path is provided
     assert str(
@@ -144,25 +144,27 @@ def test_filenames():
             "pt-PT",
             media_path="/media/x/movie.mkv",
         )
-    ) == "/media/x/movie.pt-PT.srt"
+    ) == "/media/x/movie.pt.srt"
+    assert str(build_target_subtitle_path("movie.en.srt", "pt-BR")) == "movie.pt-BR.srt"
 
 
-def test_publish_bazarr_sidecar_copies_pt_pt_to_pt(tmp_path):
-    from app.subtitles.filenames import bazarr_alias_sidecar, publish_bazarr_sidecar
+def test_ensure_canonical_sidecar_collapses_pt_pt_duplicate(tmp_path):
+    from app.subtitles.filenames import ensure_canonical_sidecar
 
-    ietf = tmp_path / "Futurama - S07E14 - 2-D Blacktop Bluray-1080p.pt-PT.srt"
+    ietf = tmp_path / "Futurama - S07E16 - T. - The Terrestrial Bluray-1080p.pt-PT.srt"
+    canonical = tmp_path / "Futurama - S07E16 - T. - The Terrestrial Bluray-1080p.pt.srt"
     ietf.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n", encoding="utf-8")
-    alias = bazarr_alias_sidecar(ietf, "pt-PT")
-    assert alias == tmp_path / "Futurama - S07E14 - 2-D Blacktop Bluray-1080p.pt.srt"
-    published = publish_bazarr_sidecar(ietf, "pt-PT")
-    assert published == alias
-    assert alias.is_file()
-    assert alias.read_text(encoding="utf-8") == ietf.read_text(encoding="utf-8")
+    out = ensure_canonical_sidecar(ietf, "pt-PT")
+    assert out == canonical
+    assert canonical.is_file()
+    assert not ietf.exists()
 
-    alias.write_text("existing\n", encoding="utf-8")
-    again = publish_bazarr_sidecar(ietf, "pt-PT")
-    assert again == alias
-    assert alias.read_text(encoding="utf-8") == "existing\n"
+    canonical.write_text("canonical\n", encoding="utf-8")
+    ietf.write_text("duplicate\n", encoding="utf-8")
+    again = ensure_canonical_sidecar(ietf, "pt-PT")
+    assert again == canonical
+    assert not ietf.exists()
+    assert canonical.read_text(encoding="utf-8") == "canonical\n"
 
 
 def test_find_source_accepts_hi(tmp_path):

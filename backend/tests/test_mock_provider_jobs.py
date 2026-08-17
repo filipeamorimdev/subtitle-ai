@@ -183,7 +183,7 @@ async def test_mock_provider_completes_translation_and_persists_identity(mock_jo
     assert done.model == "mock-free"
     assert any(c.method == "chat_completion" for c in mock.call_history)
 
-    target = mock_job_env["media"] / "Example.pt-PT.srt"
+    target = mock_job_env["media"] / "Example.pt.srt"
     assert target.exists()
     assert "Olá" in target.read_text(encoding="utf-8")
 
@@ -273,7 +273,7 @@ async def test_mock_provider_full_localization_task_path(mock_job_env, monkeypat
     assert done.provider_id == "mock"
     assert done.model == "mock-free"
 
-    target = mock_job_env["media"] / "Example.pt-PT.srt"
+    target = mock_job_env["media"] / "Example.pt.srt"
     assert target.exists()
     assert target.stat().st_size > 0
     assert "Olá" in target.read_text(encoding="utf-8")

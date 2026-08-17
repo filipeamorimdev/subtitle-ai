@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 from pathlib import Path
 
 LANGUAGE_ALIASES: dict[str, str] = {
@@ -44,12 +43,11 @@ LANG_SUFFIX_RE = re.compile(
 PLAIN_SRT_RE = re.compile(r"^(?P<stem>.+)\.srt$", re.IGNORECASE)
 HI_FLAGS = frozenset({"hi", "sdh", "cc"})
 
-# Bazarr/Sonarr index ISO 639-1 (and Bazarr's ``pb`` for Brazilian). IETF tags
-# like ``pt-PT`` stay on disk for Subtitle AI, but players and Bazarr look for
-# ``.pt.srt`` — which is already this library's convention (see Season folders).
-BAZARR_SIDECAR_TAGS: dict[str, str] = {
+# On-disk sidecar tag for player/Bazarr compatibility. IETF ``pt-PT`` is the
+# task language, but this library and Jellyfin/Bazarr already use ``.pt.srt``.
+# Writing both names made Jellyfin list Portuguese twice.
+SIDECAR_LANGUAGE_TAGS: dict[str, str] = {
     "pt-PT": "pt",
-    "pt-BR": "pb",
 }
 
 
@@ -119,39 +117,73 @@ def build_target_subtitle_path(
 
     source = Path(source_path)
     stem = _subtitle_media_stem(source.name)
-    return source.with_name(f"{stem}.{target_language}.srt")
+    tag = sidecar_language_tag(target_language)
+    return source.with_name(f"{stem}.{tag}.srt")
+
+
+def sidecar_language_tag(language: str) -> str:
+    """Filename language tag: ``pt-PT`` → ``pt`` so Bazarr/Jellyfin see one file."""
+    lang = normalize_language_code(language) or (language or "").strip()
+    return SIDECAR_LANGUAGE_TAGS.get(lang, lang or "und")
 
 
 def build_external_subtitle_path(media_path: str | Path, language: str) -> Path:
     """Build sidecar SRT path next to a media file, e.g. Movie.mkv -> Movie.en.srt."""
     media = Path(media_path)
-    lang = normalize_language_code(language) or language
+    lang = sidecar_language_tag(language)
     return media.with_name(f"{media.stem}.{lang}.srt")
 
 
-def bazarr_alias_sidecar(sidecar: Path, language: str) -> Path | None:
-    """Bazarr-indexable sibling of an IETF sidecar, e.g. Movie.pt-PT.srt → Movie.pt.srt."""
+def _sidecar_dir_and_stem(path: Path) -> tuple[Path, str]:
+    path = Path(path)
+    if path.suffix.lower() == ".srt":
+        try:
+            return path.parent, _subtitle_media_stem(path.name)
+        except ValueError:
+            return path.parent, path.stem
+    return path.parent, path.stem
+
+
+def find_existing_sidecar(path: str | Path, language: str) -> Path | None:
+    """Non-empty sidecar for this language (canonical ``.pt.srt`` or leftover ``.pt-PT.srt``)."""
+    parent, stem = _sidecar_dir_and_stem(Path(path))
     lang = normalize_language_code(language) or language
-    alias = BAZARR_SIDECAR_TAGS.get(lang)
-    if not alias:
-        return None
-    stem = _subtitle_media_stem(sidecar.name)
-    dest = sidecar.with_name(f"{stem}.{alias}.srt")
-    if dest.resolve() == sidecar.resolve():
-        return None
-    return dest
+    tag = sidecar_language_tag(language)
+    names = [f"{stem}.{tag}.srt"]
+    if lang.lower() != tag.lower():
+        names.append(f"{stem}.{lang}.srt")
+    seen: set[Path] = set()
+    for name in names:
+        candidate = parent / name
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
 
 
-def publish_bazarr_sidecar(sidecar: str | Path, language: str) -> Path | None:
-    """Copy an IETF sidecar to the name Bazarr indexes, without overwriting an existing file."""
-    source = Path(sidecar)
-    dest = bazarr_alias_sidecar(source, language)
-    if dest is None or not source.is_file() or source.stat().st_size <= 0:
-        return None
-    if dest.is_file() and dest.stat().st_size > 0:
-        return dest
-    shutil.copy2(source, dest)
-    return dest
+def ensure_canonical_sidecar(path: str | Path, language: str) -> Path:
+    """Keep a single sidecar. Rename leftover IETF names, or delete them if canonical exists."""
+    parent, stem = _sidecar_dir_and_stem(Path(path))
+    tag = sidecar_language_tag(language)
+    lang = normalize_language_code(language) or language
+    canonical = parent / f"{stem}.{tag}.srt"
+    if lang.lower() == tag.lower():
+        return canonical
+    leftover = parent / f"{stem}.{lang}.srt"
+    if leftover.is_file() and leftover.stat().st_size > 0:
+        try:
+            same = leftover.resolve() == canonical.resolve()
+        except OSError:
+            same = leftover == canonical
+        if not same:
+            if not canonical.is_file() or canonical.stat().st_size <= 0:
+                leftover.replace(canonical)
+            else:
+                leftover.unlink()
+    return canonical
 
 
 def languages_compatible(a: str | None, b: str | None) -> bool:

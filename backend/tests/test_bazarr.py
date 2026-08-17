@@ -153,6 +153,55 @@ async def test_bazarr_download_subtitle(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_bazarr_rescan_uses_scan_disk_action(monkeypatch):
+    seen: list[tuple[str, str, dict]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, dict(request.url.params)))
+        if request.method == "PATCH" and request.url.path.endswith("/api/movies"):
+            assert request.url.params["radarrid"] == "10"
+            assert request.url.params["action"] == "scan-disk"
+            return httpx.Response(204)
+        if request.method == "PATCH" and request.url.path.endswith("/api/series"):
+            assert request.url.params["seriesid"] == "3"
+            assert request.url.params["action"] == "scan-disk"
+            return httpx.Response(204)
+        if request.url.path.endswith("/api/episodes"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "sonarrEpisodeId": 22,
+                            "sonarrSeriesId": 3,
+                            "path": "/tv/Show/S01E01.mkv",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404, text="missing")
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    client = BazarrClient("http://bazarr:6767", "secret")
+    await client.rescan_movie(10)
+    await client.rescan_episode(22, series_id=3)
+    await client.rescan_episode(22)
+    assert [call[0:2] for call in seen] == [
+        ("PATCH", "/api/movies"),
+        ("PATCH", "/api/series"),
+        ("GET", "/api/episodes"),
+        ("PATCH", "/api/series"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_request_subtitle_job_polls_until_found(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     config_dir.mkdir()

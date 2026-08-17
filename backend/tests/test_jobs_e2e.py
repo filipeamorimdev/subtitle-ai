@@ -105,6 +105,12 @@ def app_env(tmp_path, monkeypatch):
                     "total": 1,
                 },
             )
+        if request.method == "PATCH" and path.endswith("/api/movies"):
+            assert request.url.params.get("action") == "scan-disk"
+            return httpx.Response(204)
+        if request.method == "PATCH" and path.endswith("/api/series"):
+            assert request.url.params.get("action") == "scan-disk"
+            return httpx.Response(204)
         if path.endswith("/api/movies"):
             return httpx.Response(
                 200,
@@ -131,14 +137,13 @@ def app_env(tmp_path, monkeypatch):
                             "season": 1,
                             "episode": 1,
                             "sonarrEpisodeId": 22,
+                            "sonarrSeriesId": 3,
                             "subtitles": [["en", "/movies/Example/Example.en.srt"]],
                         }
                     ]
                 },
             )
-        if "scan" in path or path.endswith("/api/movies/subtitles") or path.endswith(
-            "/api/episodes/subtitles"
-        ):
+        if path.endswith("/api/movies/subtitles") or path.endswith("/api/episodes/subtitles"):
             return httpx.Response(200, json={"ok": True})
         return httpx.Response(404, text=path)
 
@@ -226,7 +231,7 @@ async def test_job_create_process_and_dedupe(app_env, monkeypatch):
     done = service.get_job(claimed.id)
     assert done is not None
     assert done.status == "completed"
-    target = app_env["media"] / "Example.pt-PT.srt"
+    target = app_env["media"] / "Example.pt.srt"
     assert target.exists()
     assert "Olá" in target.read_text(encoding="utf-8")
     assert app_env["source"].read_text(encoding="utf-8") == SAMPLE_SRT

@@ -101,6 +101,12 @@ def auto_env(tmp_path, monkeypatch):
             )
         if path.endswith("/api/episodes/wanted"):
             return httpx.Response(200, json={"data": [], "total": 0})
+        if request.method == "PATCH" and path.endswith("/api/movies"):
+            assert request.url.params.get("action") == "scan-disk"
+            return httpx.Response(204)
+        if request.method == "PATCH" and path.endswith("/api/series"):
+            assert request.url.params.get("action") == "scan-disk"
+            return httpx.Response(204)
         if path.endswith("/api/movies"):
             return httpx.Response(
                 200,
@@ -119,7 +125,7 @@ def auto_env(tmp_path, monkeypatch):
             )
         if path.endswith("/api/episodes"):
             return httpx.Response(200, json={"data": []})
-        if "scan" in path or path.endswith("/api/movies/subtitles"):
+        if path.endswith("/api/movies/subtitles"):
             return httpx.Response(200, json={"ok": True})
         return httpx.Response(404, text=path)
 
@@ -394,7 +400,7 @@ async def test_translate_verify_success_and_failure(auto_env, monkeypatch):
     assert done.status == "completed"
     assert done.reason_code != "bazarr_verify_failed"
     assert sleeps == [2.0, 5.0, 10.0] or sleeps[:1] == [2.0]
-    assert (auto_env["media"] / "Example.pt-PT.srt").exists()
+    assert (auto_env["media"] / "Example.pt.srt").exists()
     db.close()
 
 
@@ -481,7 +487,7 @@ async def test_verify_failure_does_not_retranslate(auto_env, monkeypatch):
     assert done is not None
     assert done.status == "completed"
     assert done.reason_code == "bazarr_verify_failed"
-    assert (auto_env["media"] / "Example.pt-PT.srt").exists()
+    assert (auto_env["media"] / "Example.pt.srt").exists()
     openrouter_after_translate = chat_calls["n"]
     assert openrouter_after_translate > 0
     verify_after_job = verify_calls["n"]

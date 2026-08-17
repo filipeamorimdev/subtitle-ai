@@ -25,6 +25,7 @@ from app.subtitles.filenames import (
     build_external_subtitle_path,
     build_target_subtitle_path,
     detect_language_from_filename,
+    find_existing_sidecar,
     find_source_srt_beside_media,
     language_matches,
     languages_compatible,
@@ -314,6 +315,9 @@ class CandidateService:
             reason: str | None = None
 
             media_target = build_external_subtitle_path(local_media, target)
+            existing_target = find_existing_sidecar(local_media, target)
+            if existing_target is not None:
+                media_target = existing_target
             if source_path:
                 target_path = str(
                     build_target_subtitle_path(source_path, target, media_path=local_media)

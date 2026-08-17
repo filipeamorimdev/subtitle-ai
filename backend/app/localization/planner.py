@@ -30,6 +30,7 @@ from app.services.candidates import CandidateService, candidate_key, to_bazarr_c
 from app.services.settings import SettingsService
 from app.subtitles.embedded import pick_extractable_track, probe_subtitle_tracks
 from app.subtitles.filenames import (
+    find_existing_sidecar,
     find_source_srt_beside_media,
     language_matches,
     languages_compatible,
@@ -112,8 +113,11 @@ class TaskPlanner:
             wrote = (
                 latest_written is not None
                 and latest_written.status == "completed"
-                and Path(latest_written.target_subtitle_path).is_file()
-                and Path(latest_written.target_subtitle_path).stat().st_size > 0
+                and find_existing_sidecar(
+                    latest_written.target_subtitle_path,
+                    latest_written.target_language or task.target_language_code,
+                )
+                is not None
             )
             if wrote:
                 self.tasks.update_checkpoints(
@@ -368,12 +372,16 @@ class TaskPlanner:
             return True
         if latest_translate is None or latest_translate.status != "completed":
             return False
-        target = Path(latest_translate.target_subtitle_path)
-        if target.is_file() and target.stat().st_size <= 0:
-            return False
-        if latest_translate.reason_code in {"bazarr_verify_failed", "bazarr_rescan_failed"}:
-            return True
-        return target.is_file() and target.stat().st_size > 0
+        existing = find_existing_sidecar(
+            latest_translate.target_subtitle_path,
+            latest_translate.target_language or task.target_language_code,
+        )
+        if existing is None:
+            target = Path(latest_translate.target_subtitle_path)
+            if target.is_file() and target.stat().st_size <= 0:
+                return False
+            return latest_translate.reason_code in {"bazarr_verify_failed", "bazarr_rescan_failed"}
+        return True
 
     async def _advance_verify(
         self,
@@ -485,11 +493,13 @@ class TaskPlanner:
             mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
             media_path = Path(apply_path_mapping(media.path, mappings))
             if media_path.exists():
-                from app.subtitles.filenames import build_external_subtitle_path
+                empty = find_existing_sidecar(media_path, target_language)
+                if empty is None:
+                    from app.subtitles.filenames import build_external_subtitle_path
 
-                direct = build_external_subtitle_path(media_path, target_language)
-                if direct.is_file() and direct.stat().st_size <= 0:
-                    return False
+                    direct = build_external_subtitle_path(media_path, target_language)
+                    if direct.is_file() and direct.stat().st_size <= 0:
+                        return False
         return await self._bazarr_target_present(media, target_language)
 
     async def _bazarr_target_present(self, media: MediaItemRow, target_language: str) -> bool:
@@ -569,10 +579,8 @@ class TaskPlanner:
         }
         if path:
             media_path = Path(path)
-            from app.subtitles.filenames import build_external_subtitle_path
-
-            target = build_external_subtitle_path(media_path, target_language)
-            if target.is_file() and target.stat().st_size > 0:
+            existing = find_existing_sidecar(media_path, target_language)
+            if existing is not None:
                 result["target_exists"] = True
                 return result
 

@@ -32,7 +32,6 @@ from app.api.schemas import (
 )
 from app.core.config import get_app_config
 from app.core.logging import get_logger
-from app.db import release_session_connection
 from app.db.models import (
     AiRoutingEventRow,
     AiUsageRecordRow,
@@ -73,10 +72,10 @@ from app.subtitles.filenames import (
     LANG_SUFFIX_RE,
     build_external_subtitle_path,
     build_target_subtitle_path,
+    ensure_canonical_sidecar,
     find_source_srt_beside_media,
     language_matches,
     normalize_language_code,
-    publish_bazarr_sidecar,
 )
 from app.subtitles.parsers.srt import parse_srt
 from app.subtitles.validation import validate_source
@@ -1647,7 +1646,6 @@ class JobService:
                 row.progress_detail = f"Still searching for {label} via Bazarr…"
                 self.db.add(row)
                 self.db.commit()
-                release_session_connection(self.db)
                 await asyncio.sleep(REQUEST_POLL_SECONDS)
 
             row = self.db.get(JobRow, job_id)
@@ -1833,10 +1831,6 @@ class JobService:
         try:
             if row.extract_stream_index is None:
                 raise EmbeddedError("Missing embedded stream index for extraction.")
-            media_path = row.media_path
-            stream_index = row.extract_stream_index
-            target_path = row.target_subtitle_path
-            language = row.source_language or "en"
             row.progress = 10
             row.progress_detail = (
                 "OCR embedded PGS subtitles (this can take several minutes)"
@@ -1845,13 +1839,12 @@ class JobService:
             )
             self.db.add(row)
             self.db.commit()
-            release_session_connection(self.db)
 
             await extract_embedded_track(
-                media_path,
-                stream_index,
-                target_path,
-                language=language,
+                row.media_path,
+                row.extract_stream_index,
+                row.target_subtitle_path,
+                language=row.source_language or "en",
             )
 
             current = self.db.get(JobRow, job_id)
@@ -2234,7 +2227,7 @@ class JobService:
             )
             target_path = Path(current.target_subtitle_path)
             write_srt_atomic(target_path, outcome.document, overwrite=False)
-            publish_bazarr_sidecar(target_path, current.target_language)
+            ensure_canonical_sidecar(target_path, current.target_language)
             self._set_task_checkpoints(task_id, write="done", sync="active")
 
             current.model = winning_model
@@ -2359,7 +2352,7 @@ class JobService:
         if row.media_type == "movie" and row.bazarr_movie_id is not None:
             await client.rescan_movie(row.bazarr_movie_id)
         elif row.media_type == "episode" and row.bazarr_episode_id is not None:
-            await client.rescan_episode(row.bazarr_episode_id)
+            await client.rescan_episode(row.bazarr_episode_id, row.bazarr_series_id)
         else:
             raise BazarrError("Missing Bazarr media identifiers for rescan")
 

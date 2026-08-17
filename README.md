@@ -227,7 +227,7 @@ Keep `/config` mounted across image upgrades. Recreate the container on the new 
 - SRT output. Embedded **text** tracks extract with ffmpeg. Blu-ray **PGS** image tracks are OCR'd with Tesseract (best-effort). DVD VobSub is not OCR'd yet.
 - OpenRouter only
 - No Whisper / speech-to-text
-- Bazarr rescan/verification is best-effort across versions
+- Bazarr rescan uses the same Scan Disk action as the Bazarr UI (`PATCH` `action=scan-disk`)
 
 ## Roadmap
 

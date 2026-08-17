@@ -42,6 +42,9 @@ class BazarrWantedItem:
 
 
 class BazarrClient:
+    # Scan Disk is synchronous and indexes every episode in a series.
+    _SCAN_DISK_TIMEOUT = 180.0
+
     def __init__(
         self,
         base_url: str,
@@ -70,10 +73,11 @@ class BazarrClient:
         *,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         url = urljoin(self.base_url, path.lstrip("/"))
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout if timeout is not None else self.timeout) as client:
                 response = await client.request(
                     method,
                     url,
@@ -182,36 +186,33 @@ class BazarrClient:
         return merged
 
     async def rescan_movie(self, radarr_id: int) -> None:
-        # Best-effort endpoints used across Bazarr versions
-        try:
-            await self._request(
-                "GET",
-                "/api/movies/scan",
-                params={"radarrid": radarr_id},
-            )
-            return
-        except BazarrError:
-            logger.warning("movies/scan failed; trying subtitles download sync endpoint")
-        await self._request(
-            "POST",
-            "/api/movies/subtitles",
-            params={"radarrid": radarr_id, "action": "scan"},
-        )
+        """Force Bazarr to re-index sidecar files from disk (UI: Scan Disk)."""
+        await self._scan_disk("/api/movies", {"radarrid": radarr_id})
 
-    async def rescan_episode(self, episode_id: int) -> None:
-        try:
-            await self._request(
-                "GET",
-                "/api/episodes/scan",
-                params={"episodeid": episode_id},
-            )
-            return
-        except BazarrError:
-            logger.warning("episodes/scan failed; trying alternate sync endpoint")
+    async def rescan_episode(self, episode_id: int, series_id: int | None = None) -> None:
+        """Force Bazarr to re-index sidecar files from disk (UI: Scan Disk).
+
+        Bazarr has no per-episode scan API. The UI action is PATCH /api/series
+        with action=scan-disk, which runs store_subtitles for every episode.
+        """
+        resolved_series_id = series_id
+        if resolved_series_id is None:
+            detail = await self.get_episode(episode_id)
+            raw = None
+            if isinstance(detail, dict):
+                raw = detail.get("sonarrSeriesId") or detail.get("seriesId")
+            if raw is not None:
+                resolved_series_id = int(raw)
+        if resolved_series_id is None:
+            raise BazarrError("Missing Bazarr series id for episode disk scan")
+        await self._scan_disk("/api/series", {"seriesid": resolved_series_id})
+
+    async def _scan_disk(self, path: str, ids: dict[str, int]) -> None:
         await self._request(
-            "POST",
-            "/api/episodes/subtitles",
-            params={"episodeid": episode_id, "action": "scan"},
+            "PATCH",
+            path,
+            params={**ids, "action": "scan-disk"},
+            timeout=self._SCAN_DISK_TIMEOUT,
         )
 
     async def download_movie_subtitle(
