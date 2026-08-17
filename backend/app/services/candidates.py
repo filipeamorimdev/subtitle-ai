@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +50,34 @@ def to_bazarr_code2(language: str) -> str:
 def candidate_key(media_type: str, media_path: str, target_language: str) -> str:
     raw = f"{media_type}|{media_path}|{target_language}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+CANDIDATE_CACHE_TTL_SECONDS = 15.0
+_CANDIDATE_CACHE: tuple[float, list[CandidateOut]] | None = None
+_CANDIDATE_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakKeyDictionary()
+
+
+def clear_candidate_cache() -> None:
+    global _CANDIDATE_CACHE
+    _CANDIDATE_CACHE = None
+
+
+def _candidate_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _CANDIDATE_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CANDIDATE_LOCKS[loop] = lock
+    return lock
+
+
+def _cached_candidates() -> list[CandidateOut] | None:
+    if _CANDIDATE_CACHE is None:
+        return None
+    cached_at, items = _CANDIDATE_CACHE
+    if time.monotonic() - cached_at >= CANDIDATE_CACHE_TTL_SECONDS:
+        return None
+    return [item.model_copy(deep=True) for item in items]
 
 
 def _track_to_out(track: EmbeddedTrack) -> EmbeddedSubtitleOut:
@@ -107,7 +137,22 @@ class CandidateService:
         self.db = db
         self.settings = SettingsService(db)
 
-    async def list_candidates(self) -> list[CandidateOut]:
+    async def list_candidates(self, *, force_refresh: bool = True) -> list[CandidateOut]:
+        global _CANDIDATE_CACHE
+        if not force_refresh:
+            cached = _cached_candidates()
+            if cached is not None:
+                return cached
+        async with _candidate_lock():
+            if not force_refresh:
+                cached = _cached_candidates()
+                if cached is not None:
+                    return cached
+            result = await self._fetch_candidates()
+            _CANDIDATE_CACHE = (time.monotonic(), result)
+            return [item.model_copy(deep=True) for item in result]
+
+    async def _fetch_candidates(self) -> list[CandidateOut]:
         public = self.settings.get_public()
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if not bazarr_url:

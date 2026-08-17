@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 from sqlalchemy import create_engine
@@ -501,3 +503,114 @@ async def test_request_job_skips_when_not_found(tmp_path, monkeypatch):
     assert done.status == "skipped"
     assert done.reason_code == "not_found"
     assert created.id == done.id
+
+
+@pytest.mark.asyncio
+async def test_candidate_list_cache_coalesces_polls(tmp_path, monkeypatch):
+    from app.services.candidates import CandidateService, clear_candidate_cache
+
+    clear_candidate_cache()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path))
+    get_app_config.cache_clear()
+
+    media_dir = tmp_path / "Example"
+    media_dir.mkdir()
+    (media_dir / "Example.mkv").write_text("x")
+    (media_dir / "Example.en.srt").write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nHello\n",
+        encoding="utf-8",
+    )
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    fernet = load_or_create_fernet(config_dir / "secret.key")
+    SettingsService(db, fernet=fernet).update(
+        SettingsUpdate(
+            bazarr_url="http://bazarr:6767",
+            bazarr_api_key="k",
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            source_languages=["en"],
+            path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
+        )
+    )
+
+    wanted_calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/movies/wanted"):
+            wanted_calls["n"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Example Movie",
+                            "radarrId": 10,
+                            "missing_subtitles": ["pt"],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/episodes/wanted"):
+            return httpx.Response(200, json={"data": [], "total": 0})
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Example Movie",
+                            "path": "/movies/Example/Example.mkv",
+                            "radarrId": 10,
+                            "subtitles": [
+                                {"code2": "en", "path": "/movies/Example/Example.en.srt"}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    svc = CandidateService(db)
+    concurrent = await asyncio.gather(
+        svc.list_candidates(force_refresh=False),
+        svc.list_candidates(force_refresh=False),
+    )
+    cached = await svc.list_candidates(force_refresh=False)
+    refreshed = await svc.list_candidates(force_refresh=True)
+    assert all(len(items) == 1 for items in (*concurrent, cached, refreshed))
+    assert wanted_calls["n"] == 2
+
+
+def test_sqlite_engine_uses_null_pool(tmp_path, monkeypatch):
+    from sqlalchemy.pool import NullPool
+
+    import app.db as db_module
+
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(tmp_path))
+    get_app_config.cache_clear()
+    db_module._engine = None
+    db_module._SessionLocal = None
+    engine = db_module.get_engine()
+    try:
+        assert isinstance(engine.pool, NullPool)
+    finally:
+        engine.dispose()
+        db_module._engine = None
+        db_module._SessionLocal = None
+        get_app_config.cache_clear()

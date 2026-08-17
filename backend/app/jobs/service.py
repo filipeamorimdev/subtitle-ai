@@ -32,6 +32,7 @@ from app.api.schemas import (
 )
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.db import release_session_connection
 from app.db.models import (
     AiRoutingEventRow,
     AiUsageRecordRow,
@@ -1646,6 +1647,7 @@ class JobService:
                 row.progress_detail = f"Still searching for {label} via Bazarr…"
                 self.db.add(row)
                 self.db.commit()
+                release_session_connection(self.db)
                 await asyncio.sleep(REQUEST_POLL_SECONDS)
 
             row = self.db.get(JobRow, job_id)
@@ -1831,6 +1833,10 @@ class JobService:
         try:
             if row.extract_stream_index is None:
                 raise EmbeddedError("Missing embedded stream index for extraction.")
+            media_path = row.media_path
+            stream_index = row.extract_stream_index
+            target_path = row.target_subtitle_path
+            language = row.source_language or "en"
             row.progress = 10
             row.progress_detail = (
                 "OCR embedded PGS subtitles (this can take several minutes)"
@@ -1839,12 +1845,13 @@ class JobService:
             )
             self.db.add(row)
             self.db.commit()
+            release_session_connection(self.db)
 
             await extract_embedded_track(
-                row.media_path,
-                row.extract_stream_index,
-                row.target_subtitle_path,
-                language=row.source_language or "en",
+                media_path,
+                stream_index,
+                target_path,
+                language=language,
             )
 
             current = self.db.get(JobRow, job_id)

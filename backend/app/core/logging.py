@@ -29,6 +29,9 @@ def setup_logging(level: str = "INFO") -> None:
         )
     )
     root.addHandler(handler)
+    # httpx INFO logs include full URLs (Bazarr apikey query param).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def get_logger(component: str) -> logging.LoggerAdapter[Any]:

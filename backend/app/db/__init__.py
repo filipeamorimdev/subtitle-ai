@@ -6,6 +6,7 @@ from collections.abc import Generator
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_app_config
 
@@ -23,9 +24,13 @@ def get_engine():
     if _engine is None:
         config = get_app_config()
         config.ensure_directories()
+        # SQLite cannot share a small QueuePool across FastAPI threads, the
+        # job worker, and long Bazarr/extract awaits. NullPool checks out a
+        # fresh connection per session and returns it on close.
         _engine = create_engine(
             config.database_url,
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": 30},
+            poolclass=NullPool,
             future=True,
         )
 
@@ -34,7 +39,7 @@ def get_engine():
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.close()
 
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False, future=True)
@@ -53,6 +58,14 @@ def get_db() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+def release_session_connection(session: Session) -> None:
+    """Commit so the current connection can return to the pool during awaits.
+
+    ORM objects stay attached (expired). Copy values needed during I/O first.
+    """
+    session.commit()
 
 
 def _ensure_jobs_provider_id_nullable(conn) -> None:

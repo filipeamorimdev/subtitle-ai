@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import replace
 from typing import Any
 
 from app.integrations.bazarr.client import BazarrClient, BazarrError
@@ -14,6 +15,8 @@ from app.subtitles.filenames import languages_compatible, normalize_language_cod
 BAZARR_PROVIDER_ID = "bazarr"
 _SEARCH_CACHE_TTL_SECONDS = 45.0
 _SEARCH_CACHE: dict[str, tuple[float, list[MediaRef]]] = {}
+_LOCALIZATION_CACHE_TTL_SECONDS = 10.0
+_LOCALIZATION_CACHE: dict[str, tuple[float, LocalizationState]] = {}
 
 
 def movie_external_id(radarr_id: int) -> str:
@@ -253,6 +256,15 @@ class BazarrMediaProvider:
 
     async def get_localization_state(self, media: MediaRef) -> LocalizationState:
         """Subtitle presence from Bazarr metadata (audio not implemented)."""
+        cache_key = (
+            f"{media.media_type}:{media.bazarr_movie_id or ''}:{media.bazarr_episode_id or ''}"
+        )
+        cached = _LOCALIZATION_CACHE.get(cache_key)
+        now = time.monotonic()
+        if cached and now - cached[0] < _LOCALIZATION_CACHE_TTL_SECONDS:
+            state = cached[1]
+            return replace(state, languages=list(state.languages))
+
         languages: list[LanguageAvailability] = []
         raw: dict[str, Any] | None = None
         if media.media_type == "movie" and media.bazarr_movie_id is not None:
@@ -314,8 +326,11 @@ class BazarrMediaProvider:
                 )
             )
 
-        return LocalizationState(capability="subtitles", languages=languages)
+        state = LocalizationState(capability="subtitles", languages=languages)
+        _LOCALIZATION_CACHE[cache_key] = (now, state)
+        return replace(state, languages=list(state.languages))
 
 
 def clear_search_cache() -> None:
     _SEARCH_CACHE.clear()
+    _LOCALIZATION_CACHE.clear()

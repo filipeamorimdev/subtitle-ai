@@ -187,7 +187,7 @@ def clear_usage_stats(db: Session = Depends(get_db)) -> ClearDataResult:
 @router.get("/candidates", response_model=list[CandidateOut])
 async def list_candidates(db: Session = Depends(get_db)) -> list[CandidateOut]:
     try:
-        return await CandidateService(db).list_candidates()
+        return await CandidateService(db).list_candidates(force_refresh=False)
     except BazarrError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -195,7 +195,7 @@ async def list_candidates(db: Session = Depends(get_db)) -> list[CandidateOut]:
 @router.post("/candidates/refresh", response_model=list[CandidateOut])
 async def refresh_candidates(db: Session = Depends(get_db)) -> list[CandidateOut]:
     try:
-        return await CandidateService(db).list_candidates()
+        return await CandidateService(db).list_candidates(force_refresh=True)
     except BazarrError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

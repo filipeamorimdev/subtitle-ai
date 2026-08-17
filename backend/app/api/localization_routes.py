@@ -18,7 +18,7 @@ from app.api.schemas import (
     MediaRefOut,
     TaskAiSummaryOut,
 )
-from app.db import get_db
+from app.db import get_db, release_session_connection
 from app.db.models import LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrError
 from app.jobs.service import JobService, job_to_out
@@ -195,6 +195,7 @@ async def search_media(
 ) -> list[MediaRefOut]:
     try:
         provider = _bazarr_provider(db)
+        release_session_connection(db)
         refs = await provider.search_media(q)
     except BazarrError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -286,11 +287,13 @@ async def get_media_localization(
     row = media_svc.get(media_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Media not found")
+    ref = media_svc.to_ref(row)
 
     languages: list[LanguageAvailabilityOut] = []
     try:
         provider = _bazarr_provider(db)
-        state = await provider.get_localization_state(media_svc.to_ref(row))
+        release_session_connection(db)
+        state = await provider.get_localization_state(ref)
         for item in state.languages:
             languages.append(
                 LanguageAvailabilityOut(
