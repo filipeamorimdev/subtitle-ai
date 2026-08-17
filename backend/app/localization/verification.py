@@ -18,7 +18,7 @@ from app.db.models import JobRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
 from app.services.settings import SettingsService
-from app.subtitles.filenames import build_external_subtitle_path
+from app.subtitles.filenames import build_external_subtitle_path, publish_bazarr_sidecar
 
 logger = get_logger("bazarr_verification")
 
@@ -44,6 +44,7 @@ class BazarrVerificationService:
 
     async def verify(self, media: MediaItemRow, target_language: str) -> VerificationResult:
         """Return whether the target subtitle is present and non-empty."""
+        self._publish_bazarr_alias(media, target_language)
         if not self._local_file_ok(media, target_language):
             return VerificationResult(
                 ok=False,
@@ -67,6 +68,7 @@ class BazarrVerificationService:
         target_language: str,
     ) -> VerificationResult:
         """Rescan Bazarr, then verify target presence."""
+        self._publish_bazarr_alias(media, target_language)
         try:
             await self._rescan(media)
         except BazarrError as exc:
@@ -94,6 +96,7 @@ class BazarrVerificationService:
     async def rescan_and_verify_job(self, row: JobRow) -> VerificationResult:
         """Job-row variant for the jobs UI / legacy non-task-backed retry."""
         media_like = _JobMediaAdapter(row)
+        publish_bazarr_sidecar(row.target_subtitle_path, row.target_language)
         try:
             await self._rescan(media_like)
         except BazarrError as exc:
@@ -120,6 +123,22 @@ class BazarrVerificationService:
                 message=USER_VERIFY_FAILED,
             )
         return VerificationResult(ok=True, present=True)
+
+    def _publish_bazarr_alias(
+        self,
+        media: MediaItemRow | _JobMediaAdapter,
+        target_language: str,
+    ) -> None:
+        path = getattr(media, "path", None)
+        if not path:
+            return
+        public = self.settings.get_public()
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        media_path = Path(apply_path_mapping(path, mappings))
+        publish_bazarr_sidecar(
+            build_external_subtitle_path(media_path, target_language),
+            target_language,
+        )
 
     def _local_file_ok(self, media: MediaItemRow | _JobMediaAdapter, target_language: str) -> bool:
         """False only when a local target file exists and is empty. Missing file defers to Bazarr."""

@@ -36,6 +36,22 @@ def test_target_subtitle_present_requires_actual_file():
     assert BazarrClient.target_subtitle_present({"subtitles": [], "missing_subtitles": []}, "de") is False
 
 
+def test_target_subtitle_present_matches_filename_and_display_name():
+    by_name = {
+        "subtitles": [
+            {"path": "/tv/ep.pt-PT.srt", "name": "Portuguese (Portugal)"},
+        ]
+    }
+    by_path = {
+        "subtitles": [
+            ["/xx", "/tv/Futurama - S07E14.pt-PT.srt"],
+        ]
+    }
+    assert BazarrClient.target_subtitle_present(by_name, "pt-PT") is True
+    assert BazarrClient.target_subtitle_present(by_path, "pt-PT") is True
+    assert BazarrClient.target_subtitle_present(by_path, "de") is False
+
+
 @pytest.mark.asyncio
 async def test_bazarr_wanted_and_connection(monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:

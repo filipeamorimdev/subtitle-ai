@@ -87,7 +87,7 @@ class JobWorker:
         for kind in JOB_KINDS:
             self._inflight[kind] = {task for task in self._inflight[kind] if not task.done()}
 
-    def _active_processing_ids(self) -> set[int]:
+    def _cancelled_inflight_ids(self) -> set[int]:
         if not self._tasks_by_job:
             return set()
         session = get_session_factory()()
@@ -95,7 +95,7 @@ class JobWorker:
             rows = session.scalars(
                 select(JobRow.id).where(
                     JobRow.id.in_(list(self._tasks_by_job)),
-                    JobRow.status == "processing",
+                    JobRow.status == "cancelled",
                 )
             ).all()
             return set(rows)
@@ -103,13 +103,19 @@ class JobWorker:
             session.close()
 
     def _reconcile_cancelled_slots(self) -> None:
-        """Drop slots held by tasks whose DB row is no longer processing (e.g. cancelled)."""
-        active = self._active_processing_ids()
+        """Cancel in-flight asyncio tasks whose DB row was cancelled.
+
+        Do not cancel jobs that have already been marked completed (or failed) in
+        the database: translate jobs commit ``completed`` before the Bazarr
+        verify backoff finishes, and cancelling that tail leaves tasks stuck
+        in ``verifying`` with no ``job_end`` / verify result.
+        """
+        cancelled = self._cancelled_inflight_ids()
         for job_id, task in list(self._tasks_by_job.items()):
-            if job_id in active or task.done():
+            if job_id not in cancelled or task.done():
                 continue
             logger.warning(
-                "Releasing worker slot for job_id=%s (no longer processing)",
+                "Releasing worker slot for cancelled job_id=%s",
                 job_id,
             )
             task.cancel()

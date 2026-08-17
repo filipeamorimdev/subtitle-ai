@@ -147,6 +147,24 @@ def test_filenames():
     ) == "/media/x/movie.pt-PT.srt"
 
 
+def test_publish_bazarr_sidecar_copies_pt_pt_to_pt(tmp_path):
+    from app.subtitles.filenames import bazarr_alias_sidecar, publish_bazarr_sidecar
+
+    ietf = tmp_path / "Futurama - S07E14 - 2-D Blacktop Bluray-1080p.pt-PT.srt"
+    ietf.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n", encoding="utf-8")
+    alias = bazarr_alias_sidecar(ietf, "pt-PT")
+    assert alias == tmp_path / "Futurama - S07E14 - 2-D Blacktop Bluray-1080p.pt.srt"
+    published = publish_bazarr_sidecar(ietf, "pt-PT")
+    assert published == alias
+    assert alias.is_file()
+    assert alias.read_text(encoding="utf-8") == ietf.read_text(encoding="utf-8")
+
+    alias.write_text("existing\n", encoding="utf-8")
+    again = publish_bazarr_sidecar(ietf, "pt-PT")
+    assert again == alias
+    assert alias.read_text(encoding="utf-8") == "existing\n"
+
+
 def test_find_source_accepts_hi(tmp_path):
     from app.subtitles.filenames import find_source_srt_beside_media
 

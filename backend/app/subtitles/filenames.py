@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 LANGUAGE_ALIASES: dict[str, str] = {
@@ -42,6 +43,14 @@ LANG_SUFFIX_RE = re.compile(
 )
 PLAIN_SRT_RE = re.compile(r"^(?P<stem>.+)\.srt$", re.IGNORECASE)
 HI_FLAGS = frozenset({"hi", "sdh", "cc"})
+
+# Bazarr/Sonarr index ISO 639-1 (and Bazarr's ``pb`` for Brazilian). IETF tags
+# like ``pt-PT`` stay on disk for Subtitle AI, but players and Bazarr look for
+# ``.pt.srt`` — which is already this library's convention (see Season folders).
+BAZARR_SIDECAR_TAGS: dict[str, str] = {
+    "pt-PT": "pt",
+    "pt-BR": "pb",
+}
 
 
 def normalize_language_code(value: str | None) -> str | None:
@@ -118,6 +127,31 @@ def build_external_subtitle_path(media_path: str | Path, language: str) -> Path:
     media = Path(media_path)
     lang = normalize_language_code(language) or language
     return media.with_name(f"{media.stem}.{lang}.srt")
+
+
+def bazarr_alias_sidecar(sidecar: Path, language: str) -> Path | None:
+    """Bazarr-indexable sibling of an IETF sidecar, e.g. Movie.pt-PT.srt → Movie.pt.srt."""
+    lang = normalize_language_code(language) or language
+    alias = BAZARR_SIDECAR_TAGS.get(lang)
+    if not alias:
+        return None
+    stem = _subtitle_media_stem(sidecar.name)
+    dest = sidecar.with_name(f"{stem}.{alias}.srt")
+    if dest.resolve() == sidecar.resolve():
+        return None
+    return dest
+
+
+def publish_bazarr_sidecar(sidecar: str | Path, language: str) -> Path | None:
+    """Copy an IETF sidecar to the name Bazarr indexes, without overwriting an existing file."""
+    source = Path(sidecar)
+    dest = bazarr_alias_sidecar(source, language)
+    if dest is None or not source.is_file() or source.stat().st_size <= 0:
+        return None
+    if dest.is_file() and dest.stat().st_size > 0:
+        return dest
+    shutil.copy2(source, dest)
+    return dest
 
 
 def languages_compatible(a: str | None, b: str | None) -> bool:

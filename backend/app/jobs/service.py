@@ -75,6 +75,7 @@ from app.subtitles.filenames import (
     find_source_srt_beside_media,
     language_matches,
     normalize_language_code,
+    publish_bazarr_sidecar,
 )
 from app.subtitles.parsers.srt import parse_srt
 from app.subtitles.validation import validate_source
@@ -2226,6 +2227,7 @@ class JobService:
             )
             target_path = Path(current.target_subtitle_path)
             write_srt_atomic(target_path, outcome.document, overwrite=False)
+            publish_bazarr_sidecar(target_path, current.target_language)
             self._set_task_checkpoints(task_id, write="done", sync="active")
 
             current.model = winning_model

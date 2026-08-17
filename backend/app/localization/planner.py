@@ -133,73 +133,13 @@ class TaskPlanner:
                 clear_error=True,
             )
 
-        # Verify path after successful translate with verify warning.
-        # Uses BazarrVerificationService — not JobService.retry_bazarr_sync().
-        verify_job = self._latest_verify_needed(task.id)
-        if verify_job is not None:
-            if task.status != "verifying":
-                self.tasks.transition(
-                    task,
-                    "verifying",
-                    substate="bazarr_sync",
-                    error_code="bazarr_verify_failed",
-                    error_message=USER_VERIFY_FAILED,
-                )
-                task = self.tasks.get(task.id)  # type: ignore[assignment]
-                assert task is not None
-            self.tasks.update_checkpoints(task.id, **mark_write_complete())
-            try:
-                result = await BazarrVerificationService(self.db).rescan_and_verify(
-                    media, task.target_language_code
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Verify retry failed task=%s error=%s", task.id, exc)
-                self.tasks.update_checkpoints(task.id, verify="failed")
-                return self.tasks.transition(
-                    task,
-                    "verifying",
-                    substate="bazarr_sync",
-                    error_code="bazarr_rescan_failed",
-                    error_message=USER_RESCAN_FAILED,
-                )
-            if result.ok:
-                verify_job.warning = None
-                verify_job.reason_code = None
-                self.db.add(verify_job)
-                self.db.commit()
-                self.tasks.update_checkpoints(task.id, sync="done", verify="done")
-                if await self._target_satisfied(media, task.target_language_code):
-                    return self.tasks.transition(task, "completed", substate=None, clear_error=True)
-            self.tasks.update_checkpoints(task.id, verify="failed")
-            return self.tasks.transition(
-                task,
-                "verifying",
-                substate="bazarr_sync",
-                error_code=result.reason_code or "bazarr_verify_failed",
-                error_message=result.message or USER_VERIFY_FAILED,
-            )
-
-        # Successful translate with file on disk → verifying / completed
+        # Written translate (or an existing verifying task) → rescan/verify.
+        # Must run even when the job has no bazarr_verify_failed reason_code:
+        # the worker can mark the job completed before verify finishes, and a
+        # later replan used to sit in verifying forever without calling Bazarr.
         latest_translate = self._latest_job(task.id, "translate")
-        if latest_translate and latest_translate.status == "completed":
-            target = Path(latest_translate.target_subtitle_path)
-            if target.is_file() and target.stat().st_size > 0:
-                if latest_translate.reason_code in {"bazarr_verify_failed", "bazarr_rescan_failed"}:
-                    self.tasks.update_checkpoints(task.id, **mark_write_complete())
-                    return self.tasks.transition(task, "verifying", substate="bazarr_sync")
-                if await self._target_satisfied(media, task.target_language_code):
-                    self._clear_verify_failure(task.id)
-                    self.tasks.update_checkpoints(
-                        task.id,
-                        translate="done",
-                        validate="done",
-                        write="done",
-                        sync="done",
-                        verify="done",
-                    )
-                    return self.tasks.transition(task, "completed", clear_error=True)
-                self.tasks.update_checkpoints(task.id, **mark_write_complete())
-                return self.tasks.transition(task, "verifying", substate="bazarr_sync")
+        if self._needs_verify(task, latest_translate):
+            return await self._advance_verify(task, media)
 
         # Failed translate → fail task unless this is an explicit retry (planning)
         if latest_translate and latest_translate.status == "failed":
@@ -232,7 +172,7 @@ class TaskPlanner:
         if snapshot.get("target_exists"):
             if await self._target_satisfied(media, task.target_language_code):
                 return self.tasks.transition(task, "completed", clear_error=True)
-            return self.tasks.transition(task, "verifying", substate="bazarr_sync")
+            return await self._advance_verify(task, media)
 
         # Attach any orphan active job for same candidate
         ckey = snapshot.get("candidate_key")
@@ -280,7 +220,7 @@ class TaskPlanner:
                 if job.status == "skipped" and job.reason_code == "target_exists":
                     if await self._target_satisfied(media, task.target_language_code):
                         return self.tasks.transition(task, "completed", clear_error=True)
-                    return self.tasks.transition(task, "verifying", substate="bazarr_sync")
+                    return await self._advance_verify(task, media)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Translate enqueue failed task=%s error=%s", task.id, exc)
                 return self.tasks.transition(
@@ -415,13 +355,64 @@ class TaskPlanner:
 
     def _clear_verify_failure(self, task_id: int) -> None:
         """Drop stale verify-failed markers once the target is actually present."""
-        row = self._latest_verify_needed(task_id)
-        if row is None:
+        row = self._latest_job(task_id, "translate")
+        if row is None or row.reason_code not in {"bazarr_verify_failed", "bazarr_rescan_failed"}:
             return
         row.warning = None
         row.reason_code = None
         self.db.add(row)
         self.db.commit()
+
+    def _needs_verify(self, task: LocalizationTaskRow, latest_translate: JobRow | None) -> bool:
+        if task.status == "verifying":
+            return True
+        if latest_translate is None or latest_translate.status != "completed":
+            return False
+        target = Path(latest_translate.target_subtitle_path)
+        if target.is_file() and target.stat().st_size <= 0:
+            return False
+        if latest_translate.reason_code in {"bazarr_verify_failed", "bazarr_rescan_failed"}:
+            return True
+        return target.is_file() and target.stat().st_size > 0
+
+    async def _advance_verify(
+        self,
+        task: LocalizationTaskRow,
+        media: MediaItemRow,
+    ) -> LocalizationTaskRow:
+        """Rescan Bazarr and complete or stay in verifying with a visible error."""
+        if task.status != "verifying":
+            self.tasks.transition(task, "verifying", substate="bazarr_sync")
+            task = self.tasks.get(task.id)  # type: ignore[assignment]
+            assert task is not None
+        self.tasks.update_checkpoints(task.id, **mark_write_complete())
+        try:
+            result = await BazarrVerificationService(self.db).rescan_and_verify(
+                media, task.target_language_code
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Verify retry failed task=%s error=%s", task.id, exc)
+            self.tasks.update_checkpoints(task.id, verify="failed")
+            return self.tasks.transition(
+                task,
+                "verifying",
+                substate="bazarr_sync",
+                error_code="bazarr_rescan_failed",
+                error_message=USER_RESCAN_FAILED,
+            )
+        if result.ok:
+            self._clear_verify_failure(task.id)
+            self.tasks.update_checkpoints(task.id, sync="done", verify="done")
+            if await self._target_satisfied(media, task.target_language_code):
+                return self.tasks.transition(task, "completed", substate=None, clear_error=True)
+        self.tasks.update_checkpoints(task.id, verify="failed")
+        return self.tasks.transition(
+            task,
+            "verifying",
+            substate="bazarr_sync",
+            error_code=result.reason_code or "bazarr_verify_failed",
+            error_message=result.message or USER_VERIFY_FAILED,
+        )
 
     def _active_job_for_task(self, task_id: int) -> JobRow | None:
         return self.db.scalar(
@@ -469,25 +460,6 @@ class TaskPlanner:
             .order_by(JobRow.created_at.desc(), JobRow.id.desc())
             .limit(1)
         )
-
-    def _latest_verify_needed(self, task_id: int) -> JobRow | None:
-        row = self.db.scalar(
-            select(JobRow)
-            .where(
-                JobRow.task_id == task_id,
-                JobRow.job_kind == "translate",
-                JobRow.status == "completed",
-                JobRow.reason_code.in_(["bazarr_verify_failed", "bazarr_rescan_failed"]),
-            )
-            .order_by(JobRow.created_at.desc(), JobRow.id.desc())
-            .limit(1)
-        )
-        if row is None:
-            return None
-        target = Path(row.target_subtitle_path)
-        if not target.is_file() or target.stat().st_size <= 0:
-            return None
-        return row
 
     def _sync_status_from_job(self, task: LocalizationTaskRow, job: JobRow) -> LocalizationTaskRow:
         kind = job.job_kind or "translate"

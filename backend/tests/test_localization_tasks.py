@@ -962,7 +962,16 @@ async def test_checkpoint_external_source_then_write_then_verify(loc_env, monkey
     async def present_after_write(self, media_row, target_language):
         return present["ok"]
 
+    async def fake_rescan(self, media, target_language):
+        return VerificationResult(
+            ok=present["ok"],
+            present=present["ok"],
+            reason_code=None if present["ok"] else "bazarr_verify_failed",
+            message=None if present["ok"] else "Target subtitle is not yet visible in Bazarr.",
+        )
+
     monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", present_after_write)
+    monkeypatch.setattr(BazarrVerificationService, "rescan_and_verify", fake_rescan)
     after_write = await TaskPlanner(db).plan(task.id)
     assert after_write is not None
     assert after_write.status == "verifying"
@@ -971,7 +980,7 @@ async def test_checkpoint_external_source_then_write_then_verify(loc_env, monkey
     assert cps["validate"] == "done"
     assert cps["write"] == "done"
     assert cps["sync"] == "active"
-    assert cps["verify"] == "active"
+    assert cps["verify"] == "failed"
 
     present["ok"] = True
     done = await TaskPlanner(db).plan(task.id)
@@ -1245,6 +1254,123 @@ async def test_verification_failure_marks_verify_failed_not_completed(loc_env, m
     assert planned.status == "verifying"
     cps = read_checkpoints(svc.get(task.id).metadata_json)
     assert cps["verify"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_written_translate_without_verify_reason_still_rescans(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media_path = media_dir / "The Matrix.mkv"
+    target = media_dir / "The Matrix.pt-PT.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_path),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=str(media_path),
+            source_subtitle_path=str(source),
+            target_subtitle_path=str(target),
+            model="test",
+            status="completed",
+            reason_code="glossary_review",
+            warning="glossary_suggested:2 new term(s) awaiting review",
+        )
+    )
+    db.commit()
+
+    calls = {"n": 0}
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def fake_rescan(self, media, target_language):
+        calls["n"] += 1
+        return VerificationResult(
+            ok=False,
+            present=False,
+            reason_code="bazarr_verify_failed",
+            message="Target subtitle is not yet visible in Bazarr.",
+        )
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(BazarrVerificationService, "rescan_and_verify", fake_rescan)
+
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "verifying"
+    assert planned.error_code == "bazarr_verify_failed"
+    assert calls["n"] == 1
+    job = db.scalars(select(JobRow).where(JobRow.task_id == task.id)).one()
+    assert job.reason_code == "glossary_review"
+
+
+def test_worker_does_not_cancel_completed_inflight_jobs(loc_env):
+    db, tmp_path, media_dir, source = loc_env
+    from app.jobs.worker import JobWorker
+
+    row = JobRow(
+        job_kind="translate",
+        media_type="movie",
+        media_path=str(media_dir / "The Matrix.mkv"),
+        source_subtitle_path=str(source),
+        target_subtitle_path=str(media_dir / "The Matrix.pt-PT.srt"),
+        model="test",
+        status="completed",
+        reason_code="glossary_review",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    cancelled_row = JobRow(
+        job_kind="translate",
+        media_type="movie",
+        media_path=str(media_dir / "The Matrix.mkv"),
+        source_subtitle_path=str(source),
+        target_subtitle_path=str(media_dir / "The Matrix.pt-PT.srt"),
+        model="test",
+        status="cancelled",
+        reason_code="cancelled",
+    )
+    db.add(cancelled_row)
+    db.commit()
+    db.refresh(cancelled_row)
+
+    worker = JobWorker()
+
+    class _FakeTask:
+        def __init__(self) -> None:
+            self._cancelled = False
+
+        def done(self) -> bool:
+            return False
+
+        def cancel(self) -> None:
+            self._cancelled = True
+
+        def cancelled(self) -> bool:
+            return self._cancelled
+
+    completed_task = _FakeTask()
+    cancelled_task = _FakeTask()
+    worker._tasks_by_job[row.id] = completed_task  # type: ignore[assignment]
+    worker._tasks_by_job[cancelled_row.id] = cancelled_task  # type: ignore[assignment]
+    worker._reconcile_cancelled_slots()
+    assert not completed_task.cancelled()
+    assert cancelled_task.cancelled()
 
 
 @pytest.mark.asyncio

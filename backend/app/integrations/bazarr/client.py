@@ -324,14 +324,27 @@ class BazarrClient:
         An empty missing-subtitles list is not proof of presence: Bazarr only lists
         languages it is configured to want. Requesting German on a title whose
         profile is EN/PT must not complete just because German is not "missing".
+
+        Language may be on ``code2``, a display name, or the sidecar filename
+        (Bazarr sometimes indexes ``.pt-PT.srt`` without a matching code2).
         """
         if not detail:
             return False
-        from app.subtitles.filenames import languages_compatible, normalize_language_code
+        from app.subtitles.filenames import (
+            detect_language_from_filename,
+            languages_compatible,
+            normalize_language_code,
+        )
 
         for sub in cls.parse_subtitles(detail):
-            code = normalize_language_code(sub.language_code)
-            if code and languages_compatible(code, target_language) and sub.path:
+            if not sub.path:
+                continue
+            candidates = [
+                normalize_language_code(sub.language_code),
+                normalize_language_code(sub.language_name),
+                detect_language_from_filename(sub.path),
+            ]
+            if any(code and languages_compatible(code, target_language) for code in candidates):
                 return True
         return False
 
