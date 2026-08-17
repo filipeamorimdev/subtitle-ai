@@ -30,6 +30,7 @@ const ACTION_LABELS: Record<string, string> = {
   repair: 'Repair',
   glossary_extract: 'Glossary extract',
   glossary_universe: 'Universe classify',
+  model_test: 'Translate',
   other: 'Other',
 }
 
@@ -48,7 +49,7 @@ function formatUsd(n: number | null | undefined, digits = 4): string {
 }
 
 function actionLabel(action: string): string {
-  return ACTION_LABELS[action] || action
+  return ACTION_LABELS[action] || action.replaceAll('_', ' ')
 }
 
 function modelColor(model: string): string {
@@ -108,7 +109,6 @@ const kpiCards = computed(() => {
     {
       label: 'Requests',
       value: formatTokens(t.requests),
-      hint: `${t.requests} API call${t.requests === 1 ? '' : 's'}`,
     },
     {
       label: 'Token volume',
@@ -118,7 +118,6 @@ const kpiCards = computed(() => {
     {
       label: 'Blended $/1M',
       value: formatUsd(t.blended_cost_per_million, 2),
-      hint: 'Cost per million tokens',
     },
   ]
 })
@@ -212,9 +211,8 @@ async function viewRequest(row: JobUsageExchange) {
         <h1 class="mt-1 break-words font-display text-2xl font-bold sm:text-3xl">
           {{ usage?.media_title || 'Job' }} usage
         </h1>
-        <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          Tokens and cost for every OpenRouter action in this job
-          <span v-if="usage"> · {{ usage.job_kind }} · {{ usage.status }}</span>
+        <p v-if="usage" class="mt-1 capitalize text-sm text-ink-600 sm:text-base dark:text-ink-300">
+          {{ usage.job_kind }} · {{ usage.status }}
         </p>
       </div>
       <RouterLink
@@ -239,7 +237,7 @@ async function viewRequest(row: JobUsageExchange) {
         >
           <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ card.label }}</div>
           <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ card.value }}</div>
-          <div class="mt-1 text-xs text-ink-500">{{ card.hint }}</div>
+          <div v-if="card.hint" class="mt-1 text-xs text-ink-500">{{ card.hint }}</div>
         </article>
       </div>
 
@@ -248,7 +246,6 @@ async function viewRequest(row: JobUsageExchange) {
           <div class="flex items-start justify-between gap-3">
             <div>
               <h2 class="font-display text-lg font-bold">Usage by model</h2>
-              <p class="mt-1 text-sm text-ink-500">Token share across models used in this job</p>
             </div>
             <p class="text-sm text-ink-500">{{ usage.by_model.length }} model{{ usage.by_model.length === 1 ? '' : 's' }}</p>
           </div>
@@ -289,7 +286,6 @@ async function viewRequest(row: JobUsageExchange) {
           <div class="flex items-start justify-between gap-3">
             <div>
               <h2 class="font-display text-lg font-bold">Usage by action</h2>
-              <p class="mt-1 text-sm text-ink-500">Glossary, translate, and repair calls</p>
             </div>
             <p class="text-sm text-ink-500">{{ usage.by_action.length }} kinds</p>
           </div>
@@ -371,7 +367,6 @@ async function viewRequest(row: JobUsageExchange) {
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="font-display text-lg font-bold">Exchanges</h2>
-            <p class="mt-1 text-sm text-ink-500">Per-call tokens and cost</p>
           </div>
           <p class="text-sm text-ink-500">{{ usage.exchanges.length }} total</p>
         </div>

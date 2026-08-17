@@ -21,6 +21,7 @@ from app.api.schemas import (
     JobCreate,
     JobLogOut,
     JobOut,
+    JobRequestLogOut,
     JobUsageActionOut,
     JobUsageExchangeOut,
     JobUsageModelOut,
@@ -51,7 +52,7 @@ from app.ai.errors import AIProviderError, user_message_for_provider_error
 from app.ai.providers.openrouter import OpenRouterProvider
 from app.ai.providers.registry import get_provider_registry
 from app.services.ai_budget import AiBudgetService, BudgetBlockedError
-from app.services.ai_usage import AiUsageService, RecordingAIProvider
+from app.services.ai_usage import AiUsageService, RecordingAIProvider, job_stats_action_label
 from app.services.candidates import CandidateService, candidate_key, to_bazarr_code2
 from app.services.glossary import GlossaryService
 from app.services.model_router import (
@@ -367,6 +368,56 @@ class JobService:
             entries=entries,
         )
 
+    def list_job_requests(self, job_id: int) -> list[JobUsageExchangeOut] | None:
+        """Return one summary row per OpenRouter exchange in the job log."""
+        row = self.db.get(JobRow, job_id)
+        if row is None:
+            return None
+        log = self.get_job_log(job_id)
+        assert log is not None
+        if not log.exists:
+            return []
+        exchanges = parse_exchanges(
+            log.entries or [],
+            fallback_model=row.model,
+            pricing_by_model={},
+        )
+        return [
+            JobUsageExchangeOut(
+                index=item["index"],
+                ts=item.get("ts") if isinstance(item.get("ts"), str) else None,
+                model=item["model"],
+                action=item["action"],
+                attempt=item.get("attempt"),
+                input_tokens=item["input_tokens"],
+                output_tokens=item["output_tokens"],
+                total_tokens=item["total_tokens"],
+                cost_usd=item.get("cost_usd"),
+                cost_estimated=bool(item.get("cost_estimated")),
+                status_code=item.get("status_code"),
+                ok=bool(item.get("ok")),
+                error=item.get("error") if isinstance(item.get("error"), str) else None,
+            )
+            for item in exchanges
+        ]
+
+    def get_job_request_log(self, job_id: int, index: int) -> JobRequestLogOut | None:
+        """Return the full exchange-log entry for one request (1-based index)."""
+        row = self.db.get(JobRow, job_id)
+        if row is None:
+            return None
+        log = self.get_job_log(job_id)
+        assert log is not None
+        exchanges = [entry for entry in (log.entries or []) if entry.get("event") == "exchange"]
+        if index < 1 or index > len(exchanges):
+            return None
+        return JobRequestLogOut(
+            job_id=job_id,
+            index=index,
+            exists=True,
+            entry=exchanges[index - 1],
+        )
+
     async def get_job_usage(self, job_id: int) -> JobUsageOut | None:
         """Compose job AI cost from ai_usage_records (authoritative snapshots).
 
@@ -431,14 +482,7 @@ class JobService:
                 cost = effective_cost_micro(ur)
                 cost_usd = micro_to_usd(cost)
                 sources.add(ur.pricing_source or "none")
-                action = ur.operation_type
-                # Map ranking ops to legacy Job Stats action labels.
-                if action == "translation_repair":
-                    action_label = "repair"
-                elif action == "translation" or action == "translation_retry":
-                    action_label = "translate"
-                else:
-                    action_label = action
+                action_label = job_stats_action_label(ur.operation_type)
 
                 for bucket, key in (
                     (by_model_map, ur.model_id),

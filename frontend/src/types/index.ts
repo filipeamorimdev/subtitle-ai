@@ -271,6 +271,13 @@ export interface JobLog {
   entries: Record<string, unknown>[] | null
 }
 
+export interface JobRequestLog {
+  job_id: number
+  index: number
+  exists: boolean
+  entry: Record<string, unknown> | null
+}
+
 export interface JobUsageExchange {
   index: number
   ts: string | null

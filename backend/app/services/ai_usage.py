@@ -40,11 +40,22 @@ def operation_from_messages(messages: list[dict] | None, *, default: str = "tran
         return "glossary_extract"
     if "translate only these" in joined and "missing subtitle blocks" in joined:
         return "translation_repair"
-    if "reply with exactly: ok" in joined or "ping" in joined:
-        return "model_test"
     if "professional audiovisual subtitle translator" in joined:
         return "translation"
+    # Connection tests send "Reply with exactly: ok" / user "ping". Do not
+    # substring-match "ping" — it is contained in "mapping" from translate prompts.
+    if "reply with exactly: ok" in joined:
+        return "model_test"
     return default
+
+
+def job_stats_action_label(operation_type: str) -> str:
+    """Map stored usage operation_type onto Job Stats action labels."""
+    if operation_type == "translation_repair":
+        return "repair"
+    if operation_type in {"translation", "translation_retry", "model_test"}:
+        return "translate"
+    return operation_type
 
 
 def _cost_usd_value(value: Decimal | float | None) -> float | None:

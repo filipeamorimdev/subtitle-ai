@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import SettingsPageHeader from '../components/SettingsPageHeader.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import type { AiProviderInfo } from '../types'
@@ -21,6 +22,7 @@ const providers = ref<AiProviderInfo[]>([])
 const aiError = ref<string | null>(null)
 const aiMessage = ref<string | null>(null)
 const aiLoading = ref(true)
+const aiSaving = ref(false)
 const apiKey = ref('')
 const clearApiKey = ref(false)
 const testMessage = ref<string | null>(null)
@@ -82,6 +84,7 @@ async function testBazarr() {
 async function saveOpenRouter() {
   aiMessage.value = null
   aiError.value = null
+  aiSaving.value = true
   try {
     await api.updateAiProvider('openrouter', {
       api_key: apiKey.value || undefined,
@@ -94,6 +97,8 @@ async function saveOpenRouter() {
     await loadAi()
   } catch (err) {
     aiError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    aiSaving.value = false
   }
 }
 
@@ -120,20 +125,26 @@ async function refreshModels() {
 
 <template>
   <section class="space-y-8">
-    <div>
-      <h2 class="font-display text-lg font-semibold">Providers</h2>
-      <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-        Subtitle sources and LLM accounts.
-      </p>
-    </div>
+    <SettingsPageHeader
+      title="Providers"
+      save-label="Save Bazarr"
+      form="settings-bazarr-form"
+      :saving="saving"
+    >
+      <template #actions>
+        <button
+          class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
+          type="button"
+          :disabled="aiLoading || aiSaving"
+          @click="saveOpenRouter"
+        >
+          {{ aiSaving ? 'Saving…' : 'Save provider' }}
+        </button>
+      </template>
+    </SettingsPageHeader>
 
     <section class="space-y-4">
-      <div>
-        <h3 class="font-display text-lg font-semibold">Media</h3>
-        <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-          Bazarr is the current library provider.
-        </p>
-      </div>
+      <h3 class="font-display text-lg font-semibold">Media</h3>
 
       <p
         v-if="bazarrMessage"
@@ -145,7 +156,7 @@ async function refreshModels() {
         {{ bazarrError }}
       </p>
 
-      <form class="space-y-4" @submit.prevent="saveBazarr">
+      <form id="settings-bazarr-form" class="space-y-4" @submit.prevent="saveBazarr">
         <fieldset
           class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
         >
@@ -187,14 +198,6 @@ async function refreshModels() {
             </span>
           </div>
         </fieldset>
-
-        <button
-          class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-          type="submit"
-          :disabled="saving"
-        >
-          {{ saving ? 'Saving…' : 'Save Bazarr' }}
-        </button>
       </form>
     </section>
 
@@ -202,7 +205,7 @@ async function refreshModels() {
       <div>
         <h3 class="font-display text-lg font-semibold">AI</h3>
         <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-          LLM accounts. v0.3-alpha1 implements OpenRouter only. Anthropic and OpenAI are reserved for later.
+          v0.3-alpha1 implements OpenRouter only. Anthropic and OpenAI are reserved for later.
           ChatGPT or Claude subscriptions are not API access.
         </p>
       </div>
@@ -232,12 +235,14 @@ async function refreshModels() {
                 </span>
               </p>
             </div>
-            <RouterLink
-              class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-              to="/settings/models"
-            >
-              Models &amp; Routing
-            </RouterLink>
+            <div class="flex flex-wrap items-center gap-2">
+              <RouterLink
+                class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+                to="/settings/models"
+              >
+                Models &amp; Routing
+              </RouterLink>
+            </div>
           </div>
 
           <template v-if="provider.provider_id === 'openrouter'">
@@ -280,13 +285,6 @@ async function refreshModels() {
                 @click="refreshModels"
               >
                 Refresh models
-              </button>
-              <button
-                class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white"
-                type="button"
-                @click="saveOpenRouter"
-              >
-                Save provider
               </button>
             </div>
           </template>

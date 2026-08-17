@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api } from '../services/api'
-import type { Job, JobLog } from '../types'
+import type { Job, JobLog, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
 import { mediaHrefForJob, mediaHrefForTaskId } from '../utils/mediaNav'
 
@@ -16,12 +16,39 @@ const logBusy = ref(false)
 const logVisible = ref(false)
 const jobLog = ref<JobLog | null>(null)
 const logError = ref<string | null>(null)
+const requests = ref<JobUsageExchange[]>([])
+const requestsError = ref<string | null>(null)
+const requestLogBusy = ref<number | null>(null)
+const requestLogModal = ref<{ title: string; body: string; error: string | null } | null>(null)
 const mediaHref = ref<string | null>(null)
 const retryingId = ref<number | null>(null)
 let timer: number | undefined
 let lastStatus: string | null = null
 
 const isTranslateJob = computed(() => (job.value?.job_kind || 'translate') === 'translate')
+
+const ACTION_LABELS: Record<string, string> = {
+  translate: 'Translate',
+  repair: 'Repair',
+  glossary_extract: 'Glossary extract',
+  glossary_universe: 'Universe classify',
+  other: 'Other',
+}
+
+function actionLabel(action: string): string {
+  return ACTION_LABELS[action] || action.replace(/_/g, ' ')
+}
+
+function formatTokens(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`
+  return String(n)
+}
+
+function requestTitle(row: JobUsageExchange): string {
+  return `#${row.index} ${actionLabel(row.action)} · ${row.model}`
+}
 
 const formattedLog = computed(() => {
   if (!jobLog.value?.exists) return ''
@@ -57,6 +84,16 @@ function notifyFinished(current: Job) {
   }
 }
 
+async function loadRequests() {
+  try {
+    requests.value = await api.getJobRequests(Number(props.id))
+    requestsError.value = null
+  } catch (err) {
+    requests.value = []
+    requestsError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 async function load() {
   try {
     job.value = await api.getJob(Number(props.id))
@@ -73,6 +110,7 @@ async function load() {
         mediaHref.value = '/media'
       }
     }
+    await loadRequests()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   }
@@ -107,6 +145,9 @@ watch(
     logVisible.value = false
     jobLog.value = null
     logError.value = null
+    requests.value = []
+    requestsError.value = null
+    requestLogModal.value = null
     await load()
     if (shouldOpenLog()) await fetchLog()
   },
@@ -192,6 +233,39 @@ async function toggleLog() {
     return
   }
   await fetchLog()
+}
+
+async function viewRequestLog(row: JobUsageExchange) {
+  if (requestLogBusy.value != null) return
+  requestLogBusy.value = row.index
+  try {
+    const log = await api.getJobRequestLog(Number(props.id), row.index)
+    if (!log.exists || !log.entry) {
+      requestLogModal.value = {
+        title: requestTitle(row),
+        body: '',
+        error: 'No log was recorded for this request.',
+      }
+      return
+    }
+    const entry = { ...log.entry }
+    if (typeof entry.ts === 'string') {
+      entry.ts = formatDateTime(entry.ts)
+    }
+    requestLogModal.value = {
+      title: requestTitle(row),
+      body: JSON.stringify(entry, null, 2),
+      error: null,
+    }
+  } catch (err) {
+    requestLogModal.value = {
+      title: requestTitle(row),
+      body: '',
+      error: err instanceof Error ? err.message : String(err),
+    }
+  } finally {
+    requestLogBusy.value = null
+  }
 }
 </script>
 
@@ -356,6 +430,119 @@ async function toggleLog() {
         <dd class="mt-1 text-amber-700 dark:text-amber-300">{{ job.warning }}</dd>
       </div>
     </dl>
+
+    <div class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="font-display text-lg font-bold">Requests</h2>
+          <p class="mt-1 text-sm text-ink-500">API calls made for this job</p>
+        </div>
+        <p class="text-sm text-ink-500">{{ requests.length }} total</p>
+      </div>
+
+      <p v-if="requestsError" class="mt-4 text-sm text-red-700 dark:text-red-300">
+        {{ requestsError }}
+      </p>
+      <p v-else-if="!requests.length" class="mt-4 text-sm text-ink-600 dark:text-ink-300">
+        No API requests recorded for this job yet.
+      </p>
+      <div v-else class="mt-4 overflow-x-auto">
+        <table class="min-w-full text-left text-sm">
+          <thead class="border-b border-ink-200 text-ink-500 dark:border-ink-800 dark:text-ink-300">
+            <tr>
+              <th class="py-2 pr-4 font-medium">#</th>
+              <th class="py-2 pr-4 font-medium">Time</th>
+              <th class="py-2 pr-4 font-medium">Action</th>
+              <th class="py-2 pr-4 font-medium">Model</th>
+              <th class="py-2 pr-4 font-medium">Tokens</th>
+              <th class="py-2 pr-4 font-medium">Status</th>
+              <th class="py-2 font-medium">Log</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in requests"
+              :key="row.index"
+              class="border-b border-ink-100 last:border-0 dark:border-ink-800/80"
+            >
+              <td class="py-3 pr-4 align-top text-ink-500">{{ row.index }}</td>
+              <td class="py-3 pr-4 align-top whitespace-nowrap text-ink-600 dark:text-ink-300">
+                {{ formatDateTime(row.ts) }}
+              </td>
+              <td class="py-3 pr-4 align-top capitalize">
+                {{ actionLabel(row.action) }}
+                <span v-if="row.attempt && row.attempt > 1" class="text-xs text-ink-500">
+                  · attempt {{ row.attempt }}
+                </span>
+              </td>
+              <td class="py-3 pr-4 align-top truncate max-w-[14rem]" :title="row.model">
+                {{ row.model }}
+              </td>
+              <td class="py-3 pr-4 align-top whitespace-nowrap">
+                {{ formatTokens(row.total_tokens) }}
+                <span class="text-ink-500">
+                  ({{ formatTokens(row.input_tokens) }}/{{ formatTokens(row.output_tokens) }})
+                </span>
+              </td>
+              <td class="py-3 pr-4 align-top">
+                <span v-if="row.ok" class="text-ink-600 dark:text-ink-300">
+                  {{ row.status_code || 'ok' }}
+                </span>
+                <span v-else class="text-red-700 dark:text-red-300">
+                  {{ row.error || row.status_code || 'failed' }}
+                </span>
+              </td>
+              <td class="py-3 align-top">
+                <button
+                  type="button"
+                  class="rounded-md border border-ink-300 px-2 py-1 text-xs font-semibold dark:border-ink-600"
+                  :disabled="requestLogBusy != null"
+                  @click="viewRequestLog(row)"
+                >
+                  {{ requestLogBusy === row.index ? 'Loading…' : 'View log' }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div
+      v-if="requestLogModal"
+      class="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/50 p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="request-log-title"
+      @click.self="requestLogModal = null"
+    >
+      <div
+        class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 id="request-log-title" class="break-words font-display text-lg font-bold">
+              {{ requestLogModal.title }}
+            </h2>
+            <p class="mt-1 text-sm text-ink-500">Request and response for this API call</p>
+          </div>
+          <button
+            type="button"
+            class="rounded-md px-2 py-1 text-sm text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800"
+            @click="requestLogModal = null"
+          >
+            Close
+          </button>
+        </div>
+        <p v-if="requestLogModal.error" class="mt-4 text-sm text-red-700 dark:text-red-300">
+          {{ requestLogModal.error }}
+        </p>
+        <pre
+          v-else
+          class="mt-4 min-h-0 flex-1 overflow-auto rounded-lg bg-ink-950 p-4 text-xs leading-relaxed text-ink-100"
+        >{{ requestLogModal.body }}</pre>
+      </div>
+    </div>
   </section>
   <p v-else class="text-ink-500">Loading job…</p>
 </template>

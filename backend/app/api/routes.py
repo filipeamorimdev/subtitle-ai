@@ -30,6 +30,8 @@ from app.api.schemas import (
     JobCreate,
     JobLogOut,
     JobOut,
+    JobRequestLogOut,
+    JobUsageExchangeOut,
     JobUsageOut,
     OpenRouterModelOut,
     OpenRouterModelsOut,
@@ -276,6 +278,22 @@ def get_job_log(job_id: int, db: Session = Depends(get_db)) -> JobLogOut:
     log = JobService(db).get_job_log(job_id)
     if not log:
         raise HTTPException(status_code=404, detail="Job not found")
+    return log
+
+
+@router.get("/jobs/{job_id}/requests", response_model=list[JobUsageExchangeOut])
+def list_job_requests(job_id: int, db: Session = Depends(get_db)) -> list[JobUsageExchangeOut]:
+    requests = JobService(db).list_job_requests(job_id)
+    if requests is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return requests
+
+
+@router.get("/jobs/{job_id}/requests/{index}", response_model=JobRequestLogOut)
+def get_job_request_log(job_id: int, index: int, db: Session = Depends(get_db)) -> JobRequestLogOut:
+    log = JobService(db).get_job_request_log(job_id, index)
+    if not log:
+        raise HTTPException(status_code=404, detail="Request log not found")
     return log
 
 

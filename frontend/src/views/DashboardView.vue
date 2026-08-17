@@ -216,75 +216,90 @@ onUnmounted(() => {
   <section class="space-y-8">
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 class="font-display text-2xl font-bold sm:text-3xl">Dashboard</h1>
-        <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          What Subtitle AI is doing right now.
-        </p>
+        <h1 class="font-display text-2xl font-bold sm:text-3xl">
+          <span class="mr-1 inline-block origin-bottom-right" :class="heroTone === 'healthy' ? 'dash-wiggle' : ''">🎬</span>
+          Dashboard
+        </h1>
       </div>
       <div class="flex flex-wrap gap-2">
         <button
-          class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          class="inline-flex items-center gap-1.5 rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
           type="button"
           :disabled="pipelineLoading || store.loading"
           @click="refreshDashboard"
         >
+          <span :class="pipelineLoading || store.loading ? 'inline-block animate-spin' : ''">🔄</span>
           {{ pipelineLoading || store.loading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <button
           type="button"
-          class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+          class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
           @click="modalOpen = true"
         >
-          Request subtitles
+          ✨ Request subtitles
         </button>
       </div>
     </div>
 
     <section
-      class="rounded-xl border px-5 py-4"
+      class="rounded-2xl border px-5 py-4 shadow-sm"
       :class="{
-        'border-emerald-300 bg-emerald-50/70 dark:border-emerald-900 dark:bg-emerald-950/30':
+        'border-emerald-300 bg-gradient-to-br from-emerald-50 to-lime-50 dark:border-emerald-800 dark:from-emerald-950/50 dark:to-ink-900/60':
           heroTone === 'healthy',
-        'border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60': heroTone === 'idle',
-        'border-amber-300 bg-amber-50/80 dark:border-amber-900 dark:bg-amber-950/30':
+        'border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 dark:border-sky-900 dark:from-sky-950/40 dark:to-ink-900/60':
+          heroTone === 'idle',
+        'border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50 dark:border-amber-800 dark:from-amber-950/40 dark:to-ink-900/60':
           heroTone === 'attention',
       }"
     >
       <div class="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div class="text-xs uppercase tracking-wide text-ink-500">Status</div>
-          <div class="mt-1 font-display text-2xl font-bold">
-            <span v-if="heroTone === 'attention'">⚠ Attention needed</span>
-            <span v-else-if="heroTone === 'idle'">● Idle</span>
-            <span v-else>● Healthy</span>
-          </div>
-          <ul v-if="attentionReasons.length" class="mt-2 space-y-1 text-sm text-ink-700 dark:text-ink-200">
-            <li v-for="reason in attentionReasons" :key="reason">{{ reason }}</li>
-          </ul>
-          <p v-else class="mt-2 text-sm text-ink-600 dark:text-ink-300">
-            Automation
-            {{ store.settings?.automatic_fallback_enabled ? 'on' : 'off' }}
-            · last scan
-            {{ automation?.last_scan_at ? formatDateTime(automation.last_scan_at) : 'never' }}
-          </p>
-        </div>
-        <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+        <div class="flex items-start gap-3">
+          <span
+            class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-2xl shadow-inner"
+            :class="{
+              'dash-wiggle bg-emerald-200/80 dark:bg-emerald-900/70': heroTone === 'healthy',
+              'dash-bob bg-sky-200/80 dark:bg-sky-900/70': heroTone === 'idle',
+              'dash-wiggle bg-amber-200/80 dark:bg-amber-900/70': heroTone === 'attention',
+            }"
+            aria-hidden="true"
+          >
+            {{ heroTone === 'attention' ? '😬' : heroTone === 'idle' ? '😴' : '🥳' }}
+          </span>
           <div>
-            <dt class="text-xs uppercase text-ink-500">Automation</dt>
+            <div class="text-xs uppercase tracking-wide text-ink-500">Status</div>
+            <div class="mt-1 font-display text-2xl font-bold">
+              <span v-if="heroTone === 'attention'">Uh-oh, attention needed</span>
+              <span v-else-if="heroTone === 'idle'">Idle — catching a nap</span>
+              <span v-else>Looking spicy</span>
+            </div>
+            <ul v-if="attentionReasons.length" class="mt-2 space-y-1 text-sm text-ink-700 dark:text-ink-200">
+              <li v-for="reason in attentionReasons" :key="reason">• {{ reason }}</li>
+            </ul>
+            <p v-else class="mt-2 text-sm text-ink-600 dark:text-ink-300">
+              Automation
+              {{ store.settings?.automatic_fallback_enabled ? 'on' : 'off' }}
+              · last scan
+              {{ automation?.last_scan_at ? formatDateTime(automation.last_scan_at) : 'never' }}
+            </p>
+          </div>
+        </div>
+        <dl class="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+          <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">⚙️ Automation</dt>
             <dd class="font-semibold">
               {{ store.settings?.automatic_fallback_enabled ? 'Enabled' : 'Disabled' }}
             </dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Active tasks</dt>
+          <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🏃 Active tasks</dt>
             <dd class="font-semibold">{{ currentLocalization.length }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Completed today</dt>
+          <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🎉 Completed today</dt>
             <dd class="font-semibold">{{ completedToday }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">AI jobs</dt>
+          <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🤖 AI jobs</dt>
             <dd class="font-semibold">{{ aiOverview?.active_jobs ?? 0 }}</dd>
           </div>
         </dl>
@@ -293,77 +308,130 @@ onUnmounted(() => {
 
     <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
       <RouterLink
-        class="rounded-xl border border-ink-200 bg-white/80 px-4 py-3 hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60"
+        class="group rounded-2xl border border-rose-200 bg-gradient-to-br from-rose-50 to-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-rose-400 hover:shadow-md dark:border-rose-900 dark:from-rose-950/40 dark:to-ink-900/60"
         to="/media?filter=needs-work"
       >
-        <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Missing subtitles</div>
-        <div class="mt-1 font-display text-2xl font-bold">
+        <div class="flex items-start justify-between gap-2">
+          <div class="text-[10px] uppercase tracking-wide text-rose-700 sm:text-xs dark:text-rose-300">
+            Missing subtitles
+          </div>
+          <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-200 text-lg shadow-inner transition group-hover:rotate-6 dark:bg-rose-900/80">
+            🙈
+          </span>
+        </div>
+        <div class="mt-1 font-display text-2xl font-bold text-rose-800 dark:text-rose-200">
           {{ pipelineLoaded ? candidateHealth.missing : '—' }}
         </div>
       </RouterLink>
       <RouterLink
-        class="rounded-xl border border-ink-200 bg-white/80 px-4 py-3 hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60"
+        class="group rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-sky-400 hover:shadow-md dark:border-sky-900 dark:from-sky-950/40 dark:to-ink-900/60"
         to="/media?filter=needs-work"
       >
-        <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Ready to translate</div>
-        <div class="mt-1 font-display text-2xl font-bold">
+        <div class="flex items-start justify-between gap-2">
+          <div class="text-[10px] uppercase tracking-wide text-sky-700 sm:text-xs dark:text-sky-300">
+            Ready to translate
+          </div>
+          <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-200 text-lg shadow-inner transition group-hover:rotate-6 dark:bg-sky-900/80">
+            🚀
+          </span>
+        </div>
+        <div class="mt-1 font-display text-2xl font-bold text-sky-800 dark:text-sky-200">
           {{ pipelineLoaded ? candidateHealth.ready : '—' }}
         </div>
       </RouterLink>
       <RouterLink
-        class="rounded-xl border border-ink-200 bg-white/80 px-4 py-3 hover:border-accent/50 dark:border-ink-800 dark:bg-ink-900/60"
+        class="group rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-violet-400 hover:shadow-md dark:border-violet-900 dark:from-violet-950/40 dark:to-ink-900/60"
         to="/ai/overview"
       >
-        <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">This month</div>
-        <div class="mt-1 font-display text-2xl font-bold">{{ formatUsd(monthCost) }}</div>
+        <div class="flex items-start justify-between gap-2">
+          <div class="text-[10px] uppercase tracking-wide text-violet-700 sm:text-xs dark:text-violet-300">
+            This month
+          </div>
+          <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-200 text-lg shadow-inner transition group-hover:rotate-6 dark:bg-violet-900/80">
+            💸
+          </span>
+        </div>
+        <div class="mt-1 font-display text-2xl font-bold text-violet-800 dark:text-violet-200">
+          {{ formatUsd(monthCost) }}
+        </div>
       </RouterLink>
       <RouterLink
-        class="rounded-xl border px-4 py-3 hover:border-accent/50"
+        class="group rounded-2xl border px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
         :class="
           (glossary?.awaiting_review || 0) > 0
-            ? 'border-amber-300 bg-amber-50/80 dark:border-amber-900 dark:bg-amber-950/30'
-            : 'border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60'
+            ? 'border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50 hover:border-amber-400 dark:border-amber-800 dark:from-amber-950/40 dark:to-ink-900/60'
+            : 'border-lime-200 bg-gradient-to-br from-lime-50 to-white hover:border-lime-400 dark:border-lime-900 dark:from-lime-950/30 dark:to-ink-900/60'
         "
         to="/settings/glossary?tab=review"
       >
-        <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Glossary review</div>
-        <div class="mt-1 font-display text-2xl font-bold">{{ glossary?.awaiting_review ?? '—' }}</div>
+        <div class="flex items-start justify-between gap-2">
+          <div
+            class="text-[10px] uppercase tracking-wide sm:text-xs"
+            :class="
+              (glossary?.awaiting_review || 0) > 0
+                ? 'text-amber-800 dark:text-amber-300'
+                : 'text-lime-800 dark:text-lime-300'
+            "
+          >
+            Glossary review
+          </div>
+          <span
+            class="flex h-9 w-9 items-center justify-center rounded-xl text-lg shadow-inner transition group-hover:rotate-6"
+            :class="
+              (glossary?.awaiting_review || 0) > 0
+                ? 'bg-amber-200 dark:bg-amber-900/80'
+                : 'bg-lime-200 dark:bg-lime-900/80'
+            "
+          >
+            {{ (glossary?.awaiting_review || 0) > 0 ? '📝' : '📚' }}
+          </span>
+        </div>
+        <div
+          class="mt-1 font-display text-2xl font-bold"
+          :class="
+            (glossary?.awaiting_review || 0) > 0
+              ? 'text-amber-800 dark:text-amber-200'
+              : 'text-lime-800 dark:text-lime-200'
+          "
+        >
+          {{ glossary?.awaiting_review ?? '—' }}
+        </div>
       </RouterLink>
     </div>
 
     <div class="grid gap-6 lg:grid-cols-2">
-      <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <section class="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50/80 to-white p-5 shadow-sm dark:border-violet-900 dark:from-violet-950/30 dark:to-ink-900/60">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">AI</h2>
+          <h2 class="font-display text-lg font-semibold">🤖 AI brain</h2>
           <RouterLink class="text-sm font-semibold text-accent hover:underline" to="/ai/overview">
-            Open AI dashboard
+            Open AI dashboard →
           </RouterLink>
         </div>
         <dl class="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-          <div>
-            <dt class="text-xs uppercase text-ink-500">This month</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">💰 This month</dt>
             <dd class="font-display text-xl font-bold">{{ formatUsd(monthCost) }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Today</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">☀️ Today</dt>
             <dd class="font-display text-xl font-bold">
               {{ formatUsd(aiOverview?.cards?.today?.cost_usd) }}
             </dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Requests</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">📬 Requests</dt>
             <dd class="font-display text-xl font-bold">{{ monthRequests ?? '—' }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Clean success</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">✨ Clean success</dt>
             <dd class="font-display text-xl font-bold">{{ formatPct(cleanSuccess) }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Best observed</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🏆 Best observed</dt>
             <dd class="truncate font-semibold" :title="bestModel || ''">{{ bestModel || '—' }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Budget</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">📊 Budget</dt>
             <dd class="font-semibold">
               <template v-if="aiOverview?.budget.enabled">
                 {{ (budgetPct || 0).toFixed(1) }}% used
@@ -373,9 +441,9 @@ onUnmounted(() => {
           </div>
         </dl>
         <template v-if="aiOverview?.budget.enabled">
-          <div class="mt-4 h-2.5 overflow-hidden rounded bg-ink-100 dark:bg-ink-800">
+          <div class="mt-4 h-2.5 overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
             <div
-              class="h-full bg-accent"
+              class="h-full rounded-full bg-gradient-to-r from-violet-500 to-accent"
               :style="{ width: `${Math.min(100, budgetPct || 0)}%` }"
             />
           </div>
@@ -386,36 +454,36 @@ onUnmounted(() => {
         </template>
       </section>
 
-      <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <section class="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50/80 to-white p-5 shadow-sm dark:border-amber-900 dark:from-amber-950/30 dark:to-ink-900/60">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">Glossary</h2>
+          <h2 class="font-display text-lg font-semibold">📚 Glossary stash</h2>
           <RouterLink class="text-sm font-semibold text-accent hover:underline" to="/settings/glossary">
-            Manage glossary
+            Manage glossary →
           </RouterLink>
         </div>
         <dl class="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Awaiting review</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">👀 Awaiting review</dt>
             <dd class="font-display text-xl font-bold">{{ glossary?.awaiting_review ?? '—' }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Active terms</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">✅ Active terms</dt>
             <dd class="font-display text-xl font-bold">{{ glossary?.active_terms ?? '—' }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Locked</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🔒 Locked</dt>
             <dd class="font-display text-xl font-bold">{{ glossary?.locked_terms ?? '—' }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Scopes</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🗂️ Scopes</dt>
             <dd class="font-display text-xl font-bold">{{ glossary?.scopes ?? '—' }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Universes</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🌌 Universes</dt>
             <dd class="font-semibold">{{ glossary?.universes ?? '—' }}</dd>
           </div>
-          <div>
-            <dt class="text-xs uppercase text-ink-500">Series / movies</dt>
+          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
+            <dt class="text-xs uppercase text-ink-500">🎞️ Series / movies</dt>
             <dd class="font-semibold">
               {{ glossary ? `${glossary.series} / ${glossary.movies}` : '—' }}
             </dd>
@@ -432,23 +500,23 @@ onUnmounted(() => {
             <span class="text-ink-500"> · {{ scope.suggested_count }} to review</span>
           </li>
         </ul>
-        <p v-else class="mt-4 text-sm text-ink-500">No suggested terms awaiting review.</p>
+        <p v-else class="mt-4 text-sm text-ink-500">No suggested terms awaiting review. Dictionary is napping.</p>
       </section>
     </div>
 
     <div class="grid gap-6 lg:grid-cols-2">
       <div class="space-y-3">
         <div class="flex items-baseline justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">Current localization</h2>
+          <h2 class="font-display text-lg font-semibold">🎙️ Current localization</h2>
           <RouterLink class="text-xs font-medium text-accent hover:underline" to="/media">
             View all
           </RouterLink>
         </div>
-        <div class="rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
+        <div class="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50/70 to-white shadow-sm dark:border-sky-900 dark:from-sky-950/30 dark:to-ink-900/60">
           <p v-if="!currentLocalization.length" class="px-4 py-8 text-center text-sm text-ink-500">
-            No current localization.
+            Nobody's in the booth. Go grab popcorn. 🍿
           </p>
-          <ul v-else class="divide-y divide-ink-100 dark:divide-ink-800">
+          <ul v-else class="divide-y divide-sky-100 dark:divide-ink-800">
             <li v-for="task in currentLocalization" :key="`cur-${task.id}`" class="px-4 py-3">
               <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(task.media_item_id)">
                 {{ task.media_title || `Media #${task.media_item_id}` }}
@@ -464,26 +532,26 @@ onUnmounted(() => {
       </div>
 
       <div class="space-y-3">
-        <h2 class="font-display text-lg font-semibold">Needs attention</h2>
+        <h2 class="font-display text-lg font-semibold">🚨 Needs attention</h2>
         <p
           v-if="pipelineError"
           class="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
         >
           {{ pipelineError }}
         </p>
-        <div class="rounded-xl border border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60">
+        <div class="rounded-2xl border border-rose-200 bg-gradient-to-br from-rose-50/70 to-white shadow-sm dark:border-rose-900 dark:from-rose-950/30 dark:to-ink-900/60">
           <p v-if="!failedTasks.length && bazarrOk && openRouterOk" class="px-4 py-8 text-center text-sm text-ink-500">
-            Nothing needs attention.
+            All quiet on the caption front. 😎
           </p>
-          <ul v-else class="divide-y divide-ink-100 dark:divide-ink-800">
+          <ul v-else class="divide-y divide-rose-100 dark:divide-ink-800">
             <li v-if="!bazarrOk" class="px-4 py-3 text-sm">
-              Bazarr is not configured.
+              🔌 Bazarr is not configured.
               <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/providers">
                 Open settings
               </RouterLink>
             </li>
             <li v-if="!openRouterOk" class="px-4 py-3 text-sm">
-              OpenRouter is not configured.
+              🔌 OpenRouter is not configured.
               <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/providers">
                 Open settings
               </RouterLink>
@@ -511,3 +579,33 @@ onUnmounted(() => {
     <RequestSubtitlesModal :open="modalOpen" @close="modalOpen = false" @created="loadTasks" />
   </section>
 </template>
+
+<style scoped>
+@keyframes dash-wiggle {
+  0%,
+  100% {
+    transform: rotate(-8deg);
+  }
+  50% {
+    transform: rotate(8deg);
+  }
+}
+
+@keyframes dash-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.dash-wiggle {
+  animation: dash-wiggle 1.6s ease-in-out infinite;
+}
+
+.dash-bob {
+  animation: dash-bob 2.2s ease-in-out infinite;
+}
+</style>

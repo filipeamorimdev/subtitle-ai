@@ -341,10 +341,6 @@ onUnmounted(() => {
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="font-display text-lg font-bold">History</h2>
-            <p class="mt-1 text-sm text-ink-500">
-              Request, extract, and translate runs for this
-              {{ media.media_type === 'episode' ? 'episode' : 'title' }}.
-            </p>
           </div>
           <p class="text-sm text-ink-500">{{ historyActions.length }} total</p>
         </div>

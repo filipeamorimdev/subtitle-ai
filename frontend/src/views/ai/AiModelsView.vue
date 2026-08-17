@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import SettingsPageHeader from '../../components/SettingsPageHeader.vue'
 import { api } from '../../services/api'
 import type { AiModelsPayload, AiPreference, OpenRouterModel } from '../../types'
 
@@ -13,6 +14,7 @@ const pickerQuery = ref('')
 const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid'>('compatible')
 const testResult = ref<Record<number, string>>({})
 const batchSize = ref(25)
+const saving = ref(false)
 
 const routing = reactive({
   routing_strategy: 'free_first',
@@ -93,6 +95,7 @@ async function load() {
 }
 
 async function saveRouting() {
+  saving.value = true
   message.value = null
   error.value = null
   try {
@@ -108,6 +111,8 @@ async function saveRouting() {
     await load()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -177,6 +182,32 @@ onMounted(load)
 
 <template>
   <div class="space-y-6">
+    <SettingsPageHeader
+      title="Models"
+      save-label="Save routing"
+      save-type="button"
+      :saving="saving"
+      :disabled="loading || !data"
+      @save="saveRouting"
+    >
+      <template #actions>
+        <RouterLink
+          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+          to="/settings/providers"
+        >
+          Manage providers
+        </RouterLink>
+        <button
+          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+          type="button"
+          :disabled="loading"
+          @click="refresh"
+        >
+          Refresh models
+        </button>
+      </template>
+    </SettingsPageHeader>
+
     <p v-if="error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">{{ error }}</p>
     <p v-if="message" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{{ message }}</p>
     <p v-if="loading" class="text-ink-500">Loading models…</p>
@@ -192,32 +223,14 @@ onMounted(load)
       </section>
 
       <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 class="font-display text-lg font-semibold">Catalog</h2>
-            <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-              Connection: {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
-              · Catalog: {{ catalogAge(data.catalog_age_seconds) }}
-              <span v-if="data.catalog_stale || data.pricing_freshness === 'stale'" class="text-amber-700">
-                (stale pricing)
-              </span>
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <RouterLink
-              class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-              to="/settings/providers"
-            >
-              Manage providers
-            </RouterLink>
-            <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="refresh">
-              Refresh models
-            </button>
-            <button class="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-white" type="button" @click="saveRouting">
-              Save routing
-            </button>
-          </div>
-        </div>
+        <h2 class="font-display text-lg font-semibold">Catalog</h2>
+        <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+          Connection: {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
+          · Catalog: {{ catalogAge(data.catalog_age_seconds) }}
+          <span v-if="data.catalog_stale || data.pricing_freshness === 'stale'" class="text-amber-700">
+            (stale pricing)
+          </span>
+        </p>
       </section>
 
       <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">

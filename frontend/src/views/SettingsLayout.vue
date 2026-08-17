@@ -22,9 +22,6 @@ function isActive(match: string) {
   <section class="space-y-6">
     <div>
       <h1 class="font-display text-2xl font-bold sm:text-3xl">Settings</h1>
-      <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-        Connections, languages, and how Subtitle AI runs.
-      </p>
     </div>
     <div class="flex flex-col gap-6 md:flex-row md:items-start">
       <aside class="shrink-0 md:w-56">

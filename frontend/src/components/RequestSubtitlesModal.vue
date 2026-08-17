@@ -192,9 +192,6 @@ onMounted(() => {
           <h2 id="request-subtitles-title" class="font-display text-xl font-bold">
             Request subtitles
           </h2>
-          <p class="mt-1 text-sm text-ink-500 dark:text-ink-300">
-            Pick any Bazarr movie or episode and a target language.
-          </p>
         </div>
         <button
           type="button"

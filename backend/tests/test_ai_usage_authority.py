@@ -121,3 +121,65 @@ async def test_job_usage_uses_snapshot_not_current_catalog(tmp_path, monkeypatch
     assert usage.totals.cost_usd == pytest.approx(0.0004)
     assert usage.totals.requests == 1
     assert usage.exchanges[0].cost_estimated is False
+
+
+def test_operation_from_messages_does_not_treat_mapping_as_model_test():
+    from app.services.ai_usage import job_stats_action_label, operation_from_messages
+    from app.translation.prompts import SYSTEM_PROMPT, build_translate_user_message
+
+    translate_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_translate_user_message([(1, "Hello")])},
+    ]
+    assert "ping" in SYSTEM_PROMPT.lower()  # contained in "mapping"
+    assert operation_from_messages(translate_messages) == "translation"
+
+    ping_messages = [
+        {"role": "system", "content": "Reply with exactly: ok"},
+        {"role": "user", "content": "ping"},
+    ]
+    assert operation_from_messages(ping_messages) == "model_test"
+    assert job_stats_action_label("model_test") == "translate"
+    assert job_stats_action_label("translation_repair") == "repair"
+    assert job_stats_action_label("glossary_extract") == "glossary_extract"
+
+
+@pytest.mark.asyncio
+async def test_job_usage_relabels_legacy_model_test_as_translate(tmp_path, monkeypatch):
+    db = _db(tmp_path, monkeypatch)
+    job = JobRow(
+        media_type="movie",
+        media_path="/media/movie.mkv",
+        media_title="Example",
+        source_subtitle_path="/media/movie.en.srt",
+        target_subtitle_path="/media/movie.pt-PT.srt",
+        source_language="en",
+        target_language="pt-PT",
+        model="openai/gpt-4o-mini",
+        status="processing",
+        job_kind="translate",
+    )
+    db.add(job)
+    db.commit()
+    db.add(
+        AiUsageRecordRow(
+            job_id=job.id,
+            operation_type="model_test",
+            trigger_type="manual",
+            model_id="nvidia/nemotron-3-nano-30b-a3b:free",
+            tier="free",
+            status="success",
+            input_tokens=1500,
+            output_tokens=7500,
+            total_tokens=9000,
+            estimated_cost_micro_usd=0,
+            actual_cost_micro_usd=0,
+            pricing_source="openrouter",
+        )
+    )
+    db.commit()
+
+    usage = await JobService(db).get_job_usage(job.id)
+    assert usage is not None
+    assert usage.exchanges[0].action == "translate"
+    assert {item.action for item in usage.by_action} == {"translate"}

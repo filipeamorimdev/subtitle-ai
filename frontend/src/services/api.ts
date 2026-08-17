@@ -16,7 +16,9 @@ import type {
   Job,
   JobAction,
   JobLog,
+  JobRequestLog,
   JobUsage,
+  JobUsageExchange,
   LanguageCatalogItem,
   LocalizationTask,
   MediaItem,
@@ -112,6 +114,9 @@ export const api = {
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
   getJobActions: (id: number) => request<JobAction[]>(`/api/jobs/${id}/actions`),
   getJobLog: (id: number) => request<JobLog>(`/api/jobs/${id}/log`),
+  getJobRequests: (id: number) => request<JobUsageExchange[]>(`/api/jobs/${id}/requests`),
+  getJobRequestLog: (id: number, index: number) =>
+    request<JobRequestLog>(`/api/jobs/${id}/requests/${index}`),
   getJobUsage: (id: number) => request<JobUsage>(`/api/jobs/${id}/usage`),
   createJob: (payload: { candidate_key?: string; source_subtitle_path?: string; target_language?: string }) =>
     request<Job>('/api/jobs', { method: 'POST', body: JSON.stringify(payload) }),

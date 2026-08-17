@@ -110,9 +110,6 @@ watch(
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="font-display text-lg font-bold">Running</h2>
-        <p class="mt-1 text-sm text-ink-500">
-          Live localization work for this title, including job progress and logs.
-        </p>
       </div>
       <p class="text-sm text-ink-500">{{ rows.length }} active</p>
     </div>

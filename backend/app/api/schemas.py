@@ -281,6 +281,13 @@ class JobLogOut(BaseModel):
     entries: list[dict[str, Any]] | None = None
 
 
+class JobRequestLogOut(BaseModel):
+    job_id: int
+    index: int
+    exists: bool = False
+    entry: dict[str, Any] | None = None
+
+
 class JobUsageExchangeOut(BaseModel):
     index: int
     ts: str | None = None

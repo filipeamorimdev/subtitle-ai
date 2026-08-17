@@ -193,6 +193,16 @@ def init_db() -> None:
             ):
                 if column not in usage_cols:
                     conn.execute(text(ddl))
+            # Legacy classifier matched "ping" inside "mapping" on translate prompts.
+            conn.execute(
+                text(
+                    """
+                    UPDATE ai_usage_records
+                    SET operation_type = 'translation'
+                    WHERE operation_type = 'model_test' AND job_id IS NOT NULL
+                    """
+                )
+            )
 
         routing_cols = {
             row[1] for row in conn.execute(text("PRAGMA table_info(ai_routing_events)")).fetchall()

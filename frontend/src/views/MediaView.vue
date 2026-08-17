@@ -421,9 +421,6 @@ onUnmounted(() => {
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h1 class="font-display text-2xl font-bold sm:text-3xl">Media</h1>
-        <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          Movies and episodes with localization history.
-        </p>
       </div>
       <div class="flex flex-wrap justify-end gap-2">
         <button

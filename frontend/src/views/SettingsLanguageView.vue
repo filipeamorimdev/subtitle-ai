@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import LanguageSelect from '../components/LanguageSelect.vue'
+import SettingsPageHeader from '../components/SettingsPageHeader.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import type { LanguageCatalogItem } from '../types'
@@ -76,12 +77,12 @@ async function save() {
 
 <template>
   <section class="space-y-8">
-    <div>
-      <h2 class="font-display text-lg font-semibold">Language</h2>
-      <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-        Defaults for source matching and new localization requests. Search by country, language, or code.
-      </p>
-    </div>
+    <SettingsPageHeader
+      title="Language"
+      save-label="Save language"
+      form="settings-language-form"
+      :saving="saving"
+    />
 
     <p v-if="message" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
       {{ message }}
@@ -90,7 +91,7 @@ async function save() {
       {{ error }}
     </p>
 
-    <form class="space-y-8" @submit.prevent="save">
+    <form id="settings-language-form" class="space-y-8" @submit.prevent="save">
       <fieldset class="min-w-0 space-y-4 overflow-visible rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Defaults</legend>
         <div class="block text-sm">
@@ -121,14 +122,6 @@ async function save() {
           </span>
         </div>
       </fieldset>
-
-      <button
-        class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-        type="submit"
-        :disabled="saving"
-      >
-        {{ saving ? 'Saving…' : 'Save language' }}
-      </button>
     </form>
   </section>
 </template>

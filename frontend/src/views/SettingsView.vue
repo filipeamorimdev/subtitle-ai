@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import SettingsPageHeader from '../components/SettingsPageHeader.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import type { AutomationStatus } from '../types'
@@ -144,12 +145,12 @@ function clearUsageStats() {
 
 <template>
   <section class="space-y-8">
-    <div>
-      <h2 class="font-display text-lg font-semibold">General</h2>
-      <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-        How this app runs — automation, worker concurrency, and cleanup.
-      </p>
-    </div>
+    <SettingsPageHeader
+      title="General"
+      save-label="Save settings"
+      form="settings-general-form"
+      :saving="saving"
+    />
 
     <p v-if="message" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
       {{ message }}
@@ -158,7 +159,7 @@ function clearUsageStats() {
       {{ error }}
     </p>
 
-    <form class="space-y-8" @submit.prevent="save">
+    <form id="settings-general-form" class="space-y-8" @submit.prevent="save">
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Automatic Subtitle Fallback</legend>
         <label class="flex items-start gap-2 text-sm">
@@ -229,9 +230,6 @@ function clearUsageStats() {
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Job concurrency</legend>
-        <p class="text-sm text-ink-500">
-          How many jobs of each type can run at the same time. Defaults are 1 per type (one translate, one extract, and one request in parallel).
-        </p>
         <div class="grid gap-4 sm:grid-cols-3">
           <label class="block text-sm">
             <span class="text-ink-500">Translate</span>
@@ -266,10 +264,6 @@ function clearUsageStats() {
         </div>
         <span class="block text-xs text-ink-500">Each limit accepts 1–20. Changes apply on the next worker poll.</span>
       </fieldset>
-
-      <button class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60" type="submit" :disabled="saving">
-        {{ saving ? 'Saving…' : 'Save settings' }}
-      </button>
     </form>
 
     <fieldset class="min-w-0 space-y-5 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">

@@ -281,9 +281,6 @@ watch(
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div class="min-w-0">
         <h2 class="font-display text-xl font-bold sm:text-2xl">Glossary</h2>
-        <p class="mt-1 text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          Persistent term memory for series, movies, and shared universes.
-        </p>
       </div>
       <div class="flex gap-2">
         <button
