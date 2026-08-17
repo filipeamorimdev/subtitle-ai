@@ -272,11 +272,11 @@ class BazarrMediaProvider:
                 if code:
                     missing_codes.add(code)
 
-        # Include common catalog languages for display.
-        from app.languages import list_languages
+        # Include featured catalog languages for display; full catalog is the dropdown.
+        from app.languages import list_featured_languages
 
         seen: set[str] = set()
-        for lang in list_languages():
+        for lang in list_featured_languages():
             if lang.code in seen:
                 continue
             seen.add(lang.code)

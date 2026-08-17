@@ -19,25 +19,25 @@ watch(
   },
 )
 
-const links = [
-  { to: '/', label: 'Dashboard' },
-  { to: '/media', label: 'Media' },
-  { to: '/settings', label: 'Settings' },
-]
+const links = [{ to: '/media', label: 'Media' }]
 
 function linkActive(to: string) {
   const path = route.path
-  if (to === '/') return path === '/' || path.startsWith('/ai')
   if (to === '/media') {
     return path.startsWith('/media') || path.startsWith('/tasks') || path.startsWith('/jobs')
   }
-  if (to === '/settings') return path.startsWith('/settings')
   return path === to || path.startsWith(`${to}/`)
 }
+
+const settingsActive = computed(() => route.path.startsWith('/settings'))
 
 const linkClass = computed(
   () =>
     'rounded-md px-3 py-2 text-sm font-medium text-ink-600 hover:bg-ink-100 dark:text-ink-200 dark:hover:bg-ink-800',
+)
+const iconLinkClass = computed(
+  () =>
+    'inline-flex items-center justify-center rounded-md p-2 text-ink-600 hover:bg-ink-100 dark:text-ink-200 dark:hover:bg-ink-800',
 )
 const activeLinkClass = 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white'
 </script>
@@ -55,7 +55,7 @@ const activeLinkClass = 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white
               Subtitle AI
             </RouterLink>
             <p class="hidden text-sm text-ink-500 sm:block dark:text-ink-300">
-              Media-centric subtitle localization
+              Your library, in your language
             </p>
           </div>
 
@@ -70,6 +70,28 @@ const activeLinkClass = 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white
                 {{ link.label }}
               </RouterLink>
             </nav>
+            <RouterLink
+              to="/settings"
+              title="Settings"
+              aria-label="Settings"
+              :class="[iconLinkClass, settingsActive ? activeLinkClass : '']"
+            >
+              <svg
+                class="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path
+                  d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"
+                />
+              </svg>
+            </RouterLink>
             <button
               class="rounded-md px-3 py-2 text-sm font-medium text-ink-600 hover:bg-ink-100 md:hidden dark:text-ink-200 dark:hover:bg-ink-800"
               type="button"

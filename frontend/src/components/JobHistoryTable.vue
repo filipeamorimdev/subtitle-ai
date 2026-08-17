@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { JobAction } from '../types'
 import { formatDateTime, formatDuration } from '../utils/datetime'
@@ -12,6 +13,7 @@ const props = withDefaults(
     linkCurrent?: boolean
     showRetry?: boolean
     retryingId?: number | null
+    pageSize?: number
   }>(),
   {
     error: null,
@@ -19,6 +21,7 @@ const props = withDefaults(
     linkCurrent: true,
     showRetry: true,
     retryingId: null,
+    pageSize: 0,
   },
 )
 
@@ -26,8 +29,43 @@ const emit = defineEmits<{
   retry: [id: number]
 }>()
 
+const page = ref(1)
+
+const totalPages = computed(() => {
+  if (!props.pageSize || props.actions.length === 0) return 1
+  return Math.max(1, Math.ceil(props.actions.length / props.pageSize))
+})
+
+const pagedActions = computed(() => {
+  if (!props.pageSize) return props.actions
+  const start = (page.value - 1) * props.pageSize
+  return props.actions.slice(start, start + props.pageSize)
+})
+
+const rangeLabel = computed(() => {
+  if (!props.actions.length || !props.pageSize) return ''
+  const start = (page.value - 1) * props.pageSize + 1
+  const end = Math.min(page.value * props.pageSize, props.actions.length)
+  return `${start}–${end} of ${props.actions.length}`
+})
+
+const showPager = computed(() => Boolean(props.pageSize) && totalPages.value > 1)
+
+watch(
+  () => [props.actions.length, props.pageSize] as const,
+  () => {
+    if (page.value > totalPages.value) page.value = totalPages.value
+    if (page.value < 1) page.value = 1
+  },
+)
+
 function shouldLink(item: JobAction) {
+  if (item.kind === 'task') return false
   return props.linkCurrent || !item.current
+}
+
+function actionKey(item: JobAction) {
+  return `${item.kind || 'job'}-${item.id}`
 }
 </script>
 
@@ -44,8 +82,8 @@ function shouldLink(item: JobAction) {
         {{ emptyMessage }}
       </p>
       <article
-        v-for="item in actions"
-        :key="`card-${item.id}`"
+        v-for="item in pagedActions"
+        :key="`card-${actionKey(item)}`"
         class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
         :class="item.current ? 'bg-accent/5 dark:bg-accent/10' : ''"
       >
@@ -59,17 +97,17 @@ function shouldLink(item: JobAction) {
             <span v-if="item.target_language" class="font-normal text-ink-500">
               {{ item.target_language }}
             </span>
-            <span class="text-ink-500">#{{ item.id }}</span>
+            <span v-if="item.kind !== 'task'" class="text-ink-500">#{{ item.id }}</span>
           </RouterLink>
           <span v-else class="min-w-0 flex-1 capitalize font-medium">
             {{ item.action }}
             <span v-if="item.target_language" class="font-normal text-ink-500">
               {{ item.target_language }}
             </span>
-            <span class="text-ink-500">#{{ item.id }}</span>
+            <span v-if="item.kind !== 'task'" class="text-ink-500">#{{ item.id }}</span>
           </span>
           <button
-            v-if="showRetry && canRetryJob(item.status)"
+            v-if="showRetry && item.kind !== 'task' && canRetryJob(item.status)"
             type="button"
             class="shrink-0 rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800"
             title="Retry"
@@ -142,8 +180,8 @@ function shouldLink(item: JobAction) {
             <td :colspan="showRetry ? 6 : 5" class="py-4 text-ink-500">{{ emptyMessage }}</td>
           </tr>
           <tr
-            v-for="item in actions"
-            :key="item.id"
+            v-for="item in pagedActions"
+            :key="actionKey(item)"
             class="border-b border-ink-100 last:border-0 dark:border-ink-800/80"
             :class="item.current ? 'bg-accent/5' : ''"
           >
@@ -157,14 +195,14 @@ function shouldLink(item: JobAction) {
                 <span v-if="item.target_language" class="font-normal text-ink-500">
                   {{ item.target_language }}
                 </span>
-                <span class="text-ink-500">#{{ item.id }}</span>
+                <span v-if="item.kind !== 'task'" class="text-ink-500">#{{ item.id }}</span>
               </RouterLink>
               <span v-else class="capitalize font-medium">
                 {{ item.action }}
                 <span v-if="item.target_language" class="font-normal text-ink-500">
                   {{ item.target_language }}
                 </span>
-                <span class="text-ink-500">#{{ item.id }}</span>
+                <span v-if="item.kind !== 'task'" class="text-ink-500">#{{ item.id }}</span>
               </span>
             </td>
             <td class="py-3 pr-4 align-top whitespace-nowrap text-ink-600 dark:text-ink-300">
@@ -188,7 +226,7 @@ function shouldLink(item: JobAction) {
             </td>
             <td v-if="showRetry" class="py-3 pl-2 align-top">
               <button
-                v-if="canRetryJob(item.status)"
+                v-if="item.kind !== 'task' && canRetryJob(item.status)"
                 type="button"
                 class="rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800"
                 title="Retry"
@@ -215,6 +253,34 @@ function shouldLink(item: JobAction) {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div
+      v-if="!error && showPager"
+      class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm"
+    >
+      <p class="text-ink-500">{{ rangeLabel }}</p>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="rounded-md border border-ink-300 px-3 py-1.5 font-medium disabled:opacity-40 dark:border-ink-600"
+          :disabled="page <= 1"
+          @click="page -= 1"
+        >
+          Previous
+        </button>
+        <span class="min-w-[6.5rem] text-center text-ink-600 dark:text-ink-300">
+          Page {{ page }} of {{ totalPages }}
+        </span>
+        <button
+          type="button"
+          class="rounded-md border border-ink-300 px-3 py-1.5 font-medium disabled:opacity-40 dark:border-ink-600"
+          :disabled="page >= totalPages"
+          @click="page += 1"
+        >
+          Next
+        </button>
+      </div>
     </div>
   </div>
 </template>

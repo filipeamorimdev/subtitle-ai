@@ -63,7 +63,7 @@ from app.services.model_router import (
 from app.services.settings import SettingsService
 from app.subtitles.embedded import (
     EmbeddedError,
-    extract_text_track,
+    extract_embedded_track,
     pick_extractable_track,
     probe_subtitle_tracks,
 )
@@ -205,6 +205,14 @@ def _action_duration_seconds(row: JobRow, *, now: datetime | None = None) -> flo
     return round((end - start).total_seconds(), 3)
 
 
+def _action_sort_datetime(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _job_row_to_action(
     item: JobRow,
     *,
@@ -223,6 +231,7 @@ def _job_row_to_action(
         message=message,
         current=current_id is not None and item.id == current_id,
         target_language=item.target_language,
+        kind="job",
     )
 
 
@@ -296,7 +305,31 @@ class JobService:
             .limit(limit)
         ).all()
         now = datetime.now(timezone.utc)
-        return [_job_row_to_action(item, now=now) for item in related]
+        actions = [_job_row_to_action(item, now=now) for item in related]
+        job_task_ids = {item.task_id for item in related if item.task_id is not None}
+        tasks = self.db.scalars(
+            select(LocalizationTaskRow)
+            .where(LocalizationTaskRow.media_item_id == media.id)
+            .order_by(LocalizationTaskRow.created_at.desc(), LocalizationTaskRow.id.desc())
+        ).all()
+        for task in tasks:
+            if task.id in job_task_ids:
+                continue
+            actions.append(
+                JobActionOut(
+                    id=task.id,
+                    action="localize",
+                    status=task.status,
+                    datetime=task.completed_at or task.started_at or task.created_at,
+                    duration_seconds=None,
+                    message=task.error_message,
+                    current=False,
+                    target_language=task.target_language_code,
+                    kind="task",
+                )
+            )
+        actions.sort(key=lambda row: (_action_sort_datetime(row.datetime), row.id), reverse=True)
+        return actions[:limit]
 
     def get_job_log(self, job_id: int) -> JobLogOut | None:
         row = self.db.get(JobRow, job_id)
@@ -945,7 +978,7 @@ class JobService:
         if not match:
             raise ValueError("Candidate not found. Refresh the list and try again.")
         if not match.can_extract or match.extract_stream_index is None:
-            raise ValueError(match.reason or "No extractable text subtitle track found.")
+            raise ValueError(match.reason or "No extractable subtitle track found.")
         if not is_under_roots(match.media_path, public.media_roots):
             raise ValueError("Media path is outside configured media roots.")
         media = Path(match.media_path)
@@ -1007,6 +1040,20 @@ class JobService:
         dkey = hashlib.sha256(
             f"extract|{match.media_path}|{language}|{match.extract_stream_index}".encode()
         ).hexdigest()
+        extract_track = next(
+            (
+                item
+                for item in match.embedded_subtitles
+                if item.stream_index == match.extract_stream_index
+            ),
+            None,
+        )
+        method = "tesseract-ocr" if extract_track and extract_track.kind == "image" else "ffmpeg-extract"
+        detail = (
+            "Queued for PGS OCR extraction"
+            if method == "tesseract-ocr"
+            else "Queued for extraction"
+        )
         row = JobRow(
             candidate_key=match.key,
             job_kind="extract",
@@ -1021,10 +1068,10 @@ class JobService:
             target_subtitle_path=str(output),
             source_language=language,
             target_language=language,
-            model="ffmpeg-extract",
+            model=method,
             status="pending",
             progress=0,
-            progress_detail="Queued for extraction",
+            progress_detail=detail,
             extract_stream_index=match.extract_stream_index,
             dedupe_key=dkey,
         )
@@ -1560,7 +1607,7 @@ class JobService:
                 await self._maybe_chain_automatic_translate(job_id, found_path)
                 return
 
-            # Fallback: extract an embedded text track when Bazarr finds nothing.
+            # Fallback: extract an embedded text or PGS track when Bazarr finds nothing.
             extracted = await self._extract_fallback_for_request(row, code2)
             if extracted:
                 row = self.db.get(JobRow, job_id)
@@ -1663,7 +1710,7 @@ class JobService:
         if output.exists() and output.stat().st_size > 0:
             return str(output)
         try:
-            await extract_text_track(media, track.stream_index, output)
+            await extract_embedded_track(media, track.stream_index, output, language=code2)
         except EmbeddedError as exc:
             get_logger("jobs").warning(
                 "Extract fallback failed job_id=%s error=%s",
@@ -1735,14 +1782,19 @@ class JobService:
             if row.extract_stream_index is None:
                 raise EmbeddedError("Missing embedded stream index for extraction.")
             row.progress = 10
-            row.progress_detail = "Extracting embedded text track"
+            row.progress_detail = (
+                "OCR embedded PGS subtitles (this can take several minutes)"
+                if (row.model or "").startswith("tesseract")
+                else "Extracting embedded text track"
+            )
             self.db.add(row)
             self.db.commit()
 
-            await extract_text_track(
+            await extract_embedded_track(
                 row.media_path,
                 row.extract_stream_index,
                 row.target_subtitle_path,
+                language=row.source_language or "en",
             )
 
             current = self.db.get(JobRow, job_id)
@@ -2302,8 +2354,10 @@ def _public_error(exc: Exception) -> str:
         "Target subtitle already exists": "Target subtitle already exists.",
         "No compatible source": "No compatible source subtitle was found.",
         "validation": "Translation response failed validation.",
-        "extractable": "No extractable text subtitle track found.",
+        "extractable": "No extractable subtitle track found.",
         "ffmpeg": "Embedded subtitle extraction failed.",
+        "tesseract": "PGS subtitle OCR failed.",
+        "OCR": "PGS subtitle OCR failed.",
     }
     for key, value in mapping.items():
         if key.lower() in message.lower():

@@ -1590,3 +1590,26 @@ def test_list_job_actions_for_media_includes_legacy_and_task_jobs(loc_env):
     assert kinds == {"translate", "request"}
     assert "pt-PT" in langs
     assert "en" in langs
+    assert all(item.kind == "job" for item in actions)
+
+
+def test_list_job_actions_for_media_includes_tasks_without_jobs(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="de")
+
+    actions = JobService(db).list_job_actions_for_media(media)
+    assert len(actions) == 1
+    row = actions[0]
+    assert row.kind == "task"
+    assert row.action == "localize"
+    assert row.target_language == "de"
+    assert row.id == task.id

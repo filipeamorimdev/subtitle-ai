@@ -484,8 +484,8 @@ onUnmounted(() => {
             </li>
             <li v-if="!openRouterOk" class="px-4 py-3 text-sm">
               OpenRouter is not configured.
-              <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/ai-providers">
-                Configure AI providers
+              <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/providers">
+                Open settings
               </RouterLink>
             </li>
             <li v-for="task in failedTasks" :key="`fail-${task.id}`" class="px-4 py-3">

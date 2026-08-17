@@ -49,4 +49,4 @@ Source SRT
 
 ## Formats
 
-v0.2 still supports **SRT only**.
+Output is **SRT**. Source SRT may come from disk, Bazarr, ffmpeg text-track extract, or Tesseract OCR of Blu-ray PGS image tracks.

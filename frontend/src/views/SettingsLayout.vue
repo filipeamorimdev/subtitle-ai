@@ -5,7 +5,6 @@ const route = useRoute()
 const tabs = [
   { to: '/settings/general', label: 'General', match: '/settings/general' },
   { to: '/settings/providers', label: 'Providers', match: '/settings/providers' },
-  { to: '/settings/ai-providers', label: 'AI providers', match: '/settings/ai-providers' },
   { to: '/settings/models', label: 'Models', match: '/settings/models' },
   { to: '/settings/language', label: 'Language', match: '/settings/language' },
   { to: '/settings/glossary', label: 'Glossary', match: '/settings/glossary' },

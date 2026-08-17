@@ -148,6 +148,8 @@ export interface LanguageCatalogItem {
   code: string
   display_name: string
   aliases: string[]
+  region?: string | null
+  flag?: string
 }
 
 export interface MediaRef {
@@ -254,6 +256,7 @@ export interface JobAction {
   message: string | null
   current: boolean
   target_language?: string | null
+  kind?: 'job' | 'task'
 }
 
 export interface JobLog {

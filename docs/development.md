@@ -7,6 +7,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+# Optional, for local PGS OCR: brew install tesseract tesseract-lang
 mkdir -p ../config
 SUBTITLE_AI_CONFIG_DIR=../config uvicorn app.main:app --reload --port 6768
 ```

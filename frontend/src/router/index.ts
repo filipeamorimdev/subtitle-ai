@@ -12,7 +12,6 @@ import SettingsView from '../views/SettingsView.vue'
 import TaskRedirectView from '../views/TaskRedirectView.vue'
 import AiLayout from '../views/ai/AiLayout.vue'
 import AiOverviewView from '../views/ai/AiOverviewView.vue'
-import AiProvidersView from '../views/ai/AiProvidersView.vue'
 import AiModelsView from '../views/ai/AiModelsView.vue'
 import AiUsageView from '../views/ai/AiUsageView.vue'
 
@@ -44,15 +43,15 @@ const router = createRouter({
       children: [
         { path: 'general', name: 'settings', component: SettingsView },
         { path: 'providers', name: 'settings-providers', component: SettingsProvidersView },
-        { path: 'ai-providers', name: 'settings-ai-providers', component: AiProvidersView },
+        { path: 'ai-providers', redirect: '/settings/providers' },
         { path: 'models', name: 'settings-models', component: AiModelsView },
         { path: 'language', name: 'settings-language', component: SettingsLanguageView },
         { path: 'glossary', name: 'settings-glossary', component: GlossariesView },
-        { path: 'models/providers', redirect: '/settings/ai-providers' },
+        { path: 'models/providers', redirect: '/settings/providers' },
         { path: 'models/routing', redirect: '/settings/models' },
       ],
     },
-    { path: '/ai/providers', redirect: '/settings/ai-providers' },
+    { path: '/ai/providers', redirect: '/settings/providers' },
     { path: '/ai/models', redirect: '/settings/models' },
     {
       path: '/ai',

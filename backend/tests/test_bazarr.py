@@ -22,6 +22,20 @@ def test_path_mapping():
     assert apply_path_mapping("/movies/Foo/file.mkv", mappings) == "/media/movies/Foo/file.mkv"
 
 
+def test_target_subtitle_present_requires_actual_file():
+    detail = {
+        "subtitles": [
+            {"code2": "en", "path": "/tv/ep.en.srt", "name": "English"},
+            {"code2": "fr", "path": "/tv/ep.fr.srt", "name": "French"},
+        ],
+        "missing_subtitles": [],
+    }
+    assert BazarrClient.target_subtitle_present(detail, "en") is True
+    assert BazarrClient.target_subtitle_present(detail, "fr") is True
+    assert BazarrClient.target_subtitle_present(detail, "de") is False
+    assert BazarrClient.target_subtitle_present({"subtitles": [], "missing_subtitles": []}, "de") is False
+
+
 @pytest.mark.asyncio
 async def test_bazarr_wanted_and_connection(monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:

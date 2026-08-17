@@ -298,9 +298,17 @@ class CandidateService:
             else:
                 reason_code = "no_source"
                 if can_extract:
-                    reason = "Embedded text subtitle available — extract to create a source SRT."
+                    if extract_track and extract_track.kind == "image":
+                        reason = (
+                            "Embedded image subtitle (PGS) — OCR extract to create a source SRT."
+                        )
+                    else:
+                        reason = "Embedded text subtitle available — extract to create a source SRT."
                 elif any(t.kind == "image" for t in embedded_tracks):
-                    reason = "not possible to translate"
+                    reason = (
+                        "Embedded image subtitles found, but OCR is unavailable "
+                        "(install Tesseract) or the codec is not PGS."
+                    )
                 elif embedded_tracks:
                     reason = "Embedded subtitles found, but none are extractable text tracks."
                 else:

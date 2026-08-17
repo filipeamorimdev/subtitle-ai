@@ -267,6 +267,7 @@ class JobActionOut(BaseModel):
     message: str | None = None
     current: bool = False
     target_language: str | None = None
+    kind: Literal["job", "task"] = "job"
 
 
 class JobLogOut(BaseModel):
@@ -532,6 +533,8 @@ class LanguageCatalogOut(BaseModel):
     code: str
     display_name: str
     aliases: list[str] = Field(default_factory=list)
+    region: str | None = None
+    flag: str = "🏳️"
 
 
 class MediaRefOut(BaseModel):

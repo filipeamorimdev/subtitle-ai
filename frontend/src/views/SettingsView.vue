@@ -276,7 +276,7 @@ function clearUsageStats() {
       <legend class="px-1 font-display text-lg font-semibold">Advanced</legend>
       <p class="text-sm text-ink-500">
         Irreversible data cleanup. Exchange logging is configured under
-        <RouterLink class="font-semibold text-accent hover:underline" to="/settings/ai-providers">AI providers</RouterLink>.
+        <RouterLink class="font-semibold text-accent hover:underline" to="/settings/providers">Providers</RouterLink>.
       </p>
 
       <div class="space-y-3">

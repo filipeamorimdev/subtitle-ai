@@ -329,7 +329,7 @@ watch(
       {{ error }}
     </p>
 
-    <div v-if="tab === 'review'" class="space-y-3">
+    <div v-if="tab === 'review'" class="min-w-0 space-y-3">
       <p
         v-if="!suggested.length"
         class="rounded-xl border border-ink-200 bg-white/80 px-4 py-8 text-sm text-ink-500 dark:border-ink-800 dark:bg-ink-900/60"
@@ -389,7 +389,7 @@ watch(
         </article>
       </div>
 
-      <div class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
+      <div class="hidden min-w-0 overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
         <table class="min-w-[48rem] w-full text-left text-sm">
           <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
             <tr>
@@ -471,8 +471,8 @@ watch(
       </div>
     </div>
 
-    <div v-else class="grid gap-6 lg:grid-cols-[280px_1fr]">
-      <aside class="space-y-4">
+    <div v-else class="grid min-w-0 gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <aside class="min-w-0 space-y-4">
         <div class="rounded-xl border border-ink-200 bg-white/80 p-3 dark:border-ink-800 dark:bg-ink-900/60">
           <h2 class="text-xs font-semibold uppercase tracking-wide text-ink-500">Universes</h2>
           <ul class="mt-2 space-y-1">
@@ -520,7 +520,7 @@ watch(
         </div>
       </aside>
 
-      <div v-if="selectedScope" class="space-y-4">
+      <div v-if="selectedScope" class="min-w-0 space-y-4">
         <div class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0">
@@ -556,44 +556,46 @@ watch(
         </div>
 
         <form
-          class="grid gap-3 rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60 md:grid-cols-[1fr_1fr_8rem_8rem_auto_auto]"
+          class="grid grid-cols-1 gap-3 rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2"
           @submit.prevent="addTerm"
         >
           <input
             v-model="newTerm.source"
-            class="rounded-md border border-ink-200 bg-white px-3 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
+            class="min-w-0 rounded-md border border-ink-200 bg-white px-3 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
             placeholder="Source term"
             required
           />
           <input
             v-model="newTerm.target"
-            class="rounded-md border border-ink-200 bg-white px-3 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
+            class="min-w-0 rounded-md border border-ink-200 bg-white px-3 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
             placeholder="Preferred target"
             required
           />
           <select
             v-model="newTerm.term_type"
-            class="rounded-md border border-ink-200 bg-white px-2 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
+            class="min-w-0 rounded-md border border-ink-200 bg-white px-2 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
           >
             <option v-for="type in termTypes" :key="type" :value="type">{{ type }}</option>
           </select>
           <select
             v-model="newTerm.policy"
-            class="rounded-md border border-ink-200 bg-white px-2 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
+            class="min-w-0 rounded-md border border-ink-200 bg-white px-2 py-2 text-sm dark:border-ink-700 dark:bg-ink-950"
           >
             <option v-for="policy in policies" :key="policy" :value="policy">{{ policy }}</option>
           </select>
-          <label class="flex items-center gap-2 text-sm">
-            <input v-model="newTerm.locked" type="checkbox" />
-            Lock
-          </label>
-          <button
-            type="submit"
-            class="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-            :disabled="busy"
-          >
-            Add term
-          </button>
+          <div class="flex flex-wrap items-center gap-3 sm:col-span-2">
+            <label class="flex items-center gap-2 text-sm">
+              <input v-model="newTerm.locked" type="checkbox" />
+              Lock
+            </label>
+            <button
+              type="submit"
+              class="rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              :disabled="busy"
+            >
+              Add term
+            </button>
+          </div>
         </form>
 
         <!-- Mobile / tablet term cards -->
@@ -681,7 +683,7 @@ watch(
           </article>
         </div>
 
-        <div class="hidden overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
+        <div class="hidden min-w-0 overflow-x-auto rounded-xl border border-ink-200 bg-white/80 lg:block dark:border-ink-800 dark:bg-ink-900/60">
           <table class="min-w-[52rem] w-full text-left text-sm">
             <thead class="border-b border-ink-200 bg-ink-50/80 text-ink-500 dark:border-ink-800 dark:bg-ink-950/50 dark:text-ink-300">
               <tr>

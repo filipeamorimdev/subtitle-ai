@@ -7,6 +7,7 @@ Subtitle AI is a single Docker service that combines:
 - An **asyncio worker** that processes jobs with configurable per-kind concurrency (default: one translate, one extract, and one request at a time)
 - An optional **automatic scanner** that enqueues the same jobs when automatic fallback is enabled
 - Integrations for **Bazarr** (wanted detection + rescan + verify) and an **AI provider layer** (OpenRouter adapter in v0.3-alpha1)
+- **ffmpeg** for text subtitle extract and PGS demux; **Tesseract** for PGS OCR
 
 ## Boundaries
 
@@ -45,7 +46,7 @@ See [localization-tasks.md](localization-tasks.md) for the media-centric task mo
 | `services/candidates` | Build UI candidates; never enqueue jobs |
 | `services/fallback` | Observation store, grace period, automatic next-action planner |
 | `jobs/scanner` | Background loop; no-op when automatic fallback is disabled |
-| `subtitles` | Parse, markup, validate, write SRT |
+| `subtitles` | Parse, markup, validate, write SRT; PGS demux + Tesseract OCR |
 | `ai/` | Generic provider types, registry, OpenRouter adapter, credentials |
 | `translation/` | Provider-agnostic TranslationService + prompts; OpenRouter HTTP client |
 | `services/model_router` | Deterministic free/paid pool selection and cost gating |
@@ -97,9 +98,9 @@ Budget reservations use a **process-wide lock** around check / insert / commit. 
 | --- | --- |
 | Dashboard | What is Subtitle AI doing right now? Includes AI cost/quality snapshot and glossary review counters. |
 | AI dashboard | Detailed AI observability (Overview / Usage), opened from Dashboard. |
-| Settings | How is Subtitle AI configured? General, Providers (Bazarr), AI providers, Models, Language, Glossary. |
+| Settings | How is Subtitle AI configured? General, Providers (Bazarr and AI), Models, Language, Glossary. |
 
-Provider credentials live under **Settings → AI providers**. Pools, strategy, and budgets live under **Settings → Models**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
+Provider credentials live under **Settings → Providers**. Pools, strategy, and budgets live under **Settings → Models**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
 
 ## Automatic fallback
 

@@ -54,8 +54,12 @@ export function canRetryJob(status: string) {
 export function jobStatusClass(status: string) {
   if (status === 'completed') return 'text-emerald-700 dark:text-emerald-300'
   if (status === 'failed') return 'text-red-700 dark:text-red-300'
-  if (status === 'cancelled' || status === 'skipped') return 'text-amber-700 dark:text-amber-300'
-  if (status === 'processing') return 'text-accent'
+  if (status === 'cancelled' || status === 'skipped' || status === 'blocked') {
+    return 'text-amber-700 dark:text-amber-300'
+  }
+  if (status === 'processing' || status === 'waiting_for_source' || status === 'planning' || status === 'requested' || status === 'verifying') {
+    return 'text-accent'
+  }
   return 'text-ink-700 dark:text-ink-200'
 }
 

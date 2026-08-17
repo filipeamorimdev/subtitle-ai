@@ -15,7 +15,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ffmpeg \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-por \
+        tesseract-ocr-spa \
+        tesseract-ocr-fra \
+        tesseract-ocr-deu \
+        tesseract-ocr-ita \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/pyproject.toml /app/backend/pyproject.toml

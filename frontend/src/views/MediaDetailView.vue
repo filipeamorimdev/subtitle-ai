@@ -31,7 +31,6 @@ const actions = ref<JobAction[]>([])
 const error = ref<string | null>(null)
 const actionError = ref<string | null>(null)
 const modalOpen = ref(false)
-const selectedLang = ref<string | null>(null)
 const busy = ref(false)
 const retryingId = ref<number | null>(null)
 let timer: number | undefined
@@ -43,11 +42,6 @@ const visibleLanguages = computed(() =>
 )
 
 const selectedTask = computed(() => {
-  if (!selectedLang.value) return fallbackTask.value
-  return tasks.value.find((task) => task.target_language_code === selectedLang.value) || null
-})
-
-const fallbackTask = computed(() => {
   return (
     tasks.value.find((task) => isActiveTaskStatus(task.status)) ||
     tasks.value.find((task) => canRetryTask(task.status)) ||
@@ -56,11 +50,13 @@ const fallbackTask = computed(() => {
   )
 })
 
-const visibleActions = computed(() => {
-  if (!selectedLang.value) return actions.value
-  return actions.value.filter(
-    (item) => !item.target_language || item.target_language === selectedLang.value,
-  )
+const historyActions = computed(() => {
+  return [...actions.value].sort((a, b) => {
+    const aTime = a.datetime || ''
+    const bTime = b.datetime || ''
+    if (aTime !== bTime) return bTime.localeCompare(aTime)
+    return b.id - a.id
+  })
 })
 
 const matchedCandidate = computed<Candidate | null>(() => {
@@ -132,19 +128,6 @@ function languageLabel(lang: LanguageAvailability) {
   return '—'
 }
 
-function selectLanguage(code: string) {
-  selectedLang.value = selectedLang.value === code ? null : code
-}
-
-function pickDefaultLanguage() {
-  if (selectedLang.value && visibleLanguages.value.some((lang) => lang.language_code === selectedLang.value)) {
-    return
-  }
-  const active = visibleLanguages.value.find((lang) => lang.task_status && isActiveTaskStatus(lang.task_status))
-  const withTask = visibleLanguages.value.find((lang) => lang.task_id)
-  selectedLang.value = active?.language_code || withTask?.language_code || null
-}
-
 async function load() {
   if (!Number.isFinite(mediaId.value)) {
     error.value = 'Invalid media id'
@@ -161,7 +144,6 @@ async function load() {
     localization.value = loc.languages
     tasks.value = taskList
     actions.value = history
-    pickDefaultLanguage()
     error.value = null
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
@@ -213,7 +195,6 @@ async function retryJob(jobId: number) {
 watch(
   () => props.id,
   () => {
-    selectedLang.value = null
     load().catch(() => undefined)
   },
 )
@@ -288,20 +269,15 @@ onUnmounted(() => {
       </p>
 
       <div class="flex flex-wrap gap-2">
-        <button
+        <span
           v-for="lang in visibleLanguages"
           :key="lang.language_code"
-          type="button"
           class="rounded-full border px-3 py-1 text-xs font-semibold"
-          :class="[
-            languageChipClass(lang.task_status, lang.available),
-            selectedLang === lang.language_code ? 'ring-2 ring-accent ring-offset-1 dark:ring-offset-ink-900' : '',
-          ]"
-          @click="selectLanguage(lang.language_code)"
+          :class="languageChipClass(lang.task_status, lang.available)"
         >
           {{ lang.language_name || lang.language_code }}
           <span class="ml-1 font-normal opacity-80">{{ languageLabel(lang) }}</span>
-        </button>
+        </span>
         <p v-if="!visibleLanguages.length" class="text-sm text-ink-500">
           No localized subtitles requested for this media.
         </p>
@@ -352,12 +328,13 @@ onUnmounted(() => {
               {{ media.media_type === 'episode' ? 'episode' : 'title' }}.
             </p>
           </div>
-          <p class="text-sm text-ink-500">{{ visibleActions.length }} total</p>
+          <p class="text-sm text-ink-500">{{ historyActions.length }} total</p>
         </div>
         <div class="mt-4">
           <JobHistoryTable
-            :actions="visibleActions"
+            :actions="historyActions"
             empty-message="No runs yet."
+            :page-size="5"
             :retrying-id="retryingId"
             @retry="retryJob"
           />
@@ -368,7 +345,6 @@ onUnmounted(() => {
     <RequestSubtitlesModal
       :open="modalOpen"
       :initial-media="modalMedia"
-      :initial-language="selectedLang"
       @close="modalOpen = false"
       @created="load"
     />

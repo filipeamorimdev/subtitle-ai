@@ -39,8 +39,8 @@ When no external source exists, candidates may still list **embedded** tracks:
 
 - Bazarr entries with `path: null` are shown as embedded badges.
 - `ffprobe` classifies codecs as text vs image when the media file is readable.
-- **Extract** (background job) uses `ffmpeg` to dump extractable text tracks to a sidecar `.srt`.
-- Image-based tracks (PGS / VobSub) are shown but not extractable in v0.1.
+- **Extract** (background job) uses `ffmpeg` to dump extractable **text** tracks to a sidecar `.srt`. Blu-ray **PGS** image tracks are demuxed and OCR'd with Tesseract when it is installed (Docker image includes English, Portuguese, Spanish, French, German, and Italian).
+- DVD VobSub / DVB image tracks are shown but not OCR'd.
 
 `can_translate` is false when:
 
@@ -66,6 +66,6 @@ Bazarr paths are rewritten through configured mappings before disk checks.
 ## Limitations
 
 - Rescan endpoint names differ across Bazarr versions; failures after a successful write mark the job completed with a warning.
-- Embedded/image subtitles (PGS/VobSub) are not extractable/translated in v0.1.
+- DVD VobSub / DVB image subtitles are not OCR'd (Blu-ray PGS is).
 - Source-language download is best-effort: Bazarr may find nothing if providers have no match, and English need not be in the item's profile for the specific-language download API.
 - Automatic fallback is off by default and incurs OpenRouter costs when enabled.

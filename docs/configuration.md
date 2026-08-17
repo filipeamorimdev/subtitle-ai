@@ -24,11 +24,11 @@ Each translation job writes a JSONL exchange log under:
 /config/logs/jobs/job-{id}-openrouter.jsonl
 ```
 
-By default only metadata is stored (model, attempt, status, token usage, errors). Enable **Log full OpenRouter exchanges** under **Settings → AI providers** to persist full request/response bodies for debugging. The toggle defaults to off. API keys are never written.
+By default only metadata is stored (model, attempt, status, token usage, errors). Enable **Log full OpenRouter exchanges** under **Settings → Providers** to persist full request/response bodies for debugging. The toggle defaults to off. API keys are never written.
 
 ## Settings UI sections
 
-The Settings sidebar has **General**, **Providers**, **AI providers**, **Models**, **Language**, and **Glossary**.
+The Settings sidebar has **General**, **Providers**, **Models**, **Language**, and **Glossary**.
 
 ### General
 
@@ -45,11 +45,11 @@ API:
 
 ### Providers
 
-- Bazarr URL, API key, Test Connection
-- Path mappings: `bazarr_prefix => local_prefix`
-- Media roots (read-only; auto-discovered from Docker mounts under `/data` and `/media`)
+Media:
 
-### AI providers
+- Bazarr URL, API key, Test Connection
+
+AI:
 
 - OpenRouter API key, connection test, catalog refresh, diagnostic exchange logging
 - Anthropic / OpenAI placeholders (not implemented)
@@ -81,7 +81,7 @@ AI **control** lives under Settings:
 
 | Page | Purpose |
 | --- | --- |
-| AI providers | API keys (masked), connection test, catalog refresh, OpenRouter diagnostics |
+| Providers | Bazarr connection; AI API keys (masked), connection test, catalog refresh, OpenRouter diagnostics |
 | Models | Catalog, free/paid pools, priority, routing strategy, fallback, cost caps, monthly budget, batch size |
 
 `GET /api/settings/openrouter/models` and `GET /api/ai/models` use a 6-hour catalog cache. Missing prices are **unknown**, never treated as free.

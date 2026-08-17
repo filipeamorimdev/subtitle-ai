@@ -22,7 +22,7 @@ from app.db import get_db
 from app.db.models import LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrError
 from app.jobs.service import JobService, job_to_out
-from app.languages import LanguageNormalizationError, list_languages, normalize_language
+from app.languages import LanguageNormalizationError, list_featured_languages, list_languages, normalize_language
 from app.localization.planner import TaskPlanner
 from app.localization.service import (
     ActiveTaskExistsError,
@@ -177,7 +177,13 @@ def _bazarr_provider(db: Session) -> BazarrMediaProvider:
 @router.get("/languages", response_model=list[LanguageCatalogOut])
 def get_languages() -> list[LanguageCatalogOut]:
     return [
-        LanguageCatalogOut(code=lang.code, display_name=lang.display_name, aliases=list(lang.aliases))
+        LanguageCatalogOut(
+            code=lang.code,
+            display_name=lang.display_name,
+            aliases=list(lang.aliases),
+            region=lang.region,
+            flag=lang.flag,
+        )
         for lang in list_languages()
     ]
 
@@ -295,7 +301,7 @@ async def get_media_localization(
             )
     except (BazarrError, HTTPException):
         # Fall back to catalog languages with unknown availability.
-        for lang in list_languages():
+        for lang in list_featured_languages():
             languages.append(
                 LanguageAvailabilityOut(
                     language_code=lang.code,

@@ -220,7 +220,7 @@ ISO_3166_1: frozenset[str] = frozenset(
     }
 )
 
-# Common region English names used in display strings.
+# Common region English names used in display strings (full table in countries.py).
 REGION_NAMES: dict[str, str] = {
     "BR": "Brazil",
     "CN": "China",
@@ -230,7 +230,7 @@ REGION_NAMES: dict[str, str] = {
     "GB": "United Kingdom",
     "IT": "Italy",
     "JP": "Japan",
-    "KR": "Korea",
+    "KR": "South Korea",
     "MX": "Mexico",
     "NL": "Netherlands",
     "PL": "Poland",
@@ -309,5 +309,6 @@ def language_name(code: str) -> str:
     return ISO_639_1.get(code.lower(), code)
 
 def region_name(code: str) -> str:
-    upper = code.upper()
-    return REGION_NAMES.get(upper, upper)
+    from app.languages.countries import country_name
+
+    return country_name(code)

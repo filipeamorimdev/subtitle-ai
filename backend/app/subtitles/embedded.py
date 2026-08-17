@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.core.logging import get_logger
 from app.subtitles.filenames import language_matches, normalize_language_code
+from app.subtitles.ocr import OcrError, ocr_available, pgs_sup_to_srt
 
 logger = get_logger("embedded")
 
@@ -28,15 +29,22 @@ TEXT_CODECS = {
     "tx3g",
 }
 
-IMAGE_CODECS = {
+PGS_CODECS = {
     "hdmv_pgs_subtitle",
     "pgssub",
+}
+
+IMAGE_CODECS = {
+    *PGS_CODECS,
     "dvd_subtitle",
     "dvdsub",
     "dvb_subtitle",
     "xsub",
     "vobsub",
 }
+
+TEXT_EXTRACT_TIMEOUT = 300.0
+PGS_EXTRACT_TIMEOUT = 1800.0
 
 
 class EmbeddedError(Exception):
@@ -83,6 +91,8 @@ def classify_codec(codec: str | None) -> tuple[str, bool]:
     key = codec.strip().lower()
     if key in TEXT_CODECS:
         return "text", True
+    if key in PGS_CODECS:
+        return "image", ocr_available()
     if key in IMAGE_CODECS:
         return "image", False
     # Unknown subtitle codecs: do not attempt extraction
@@ -183,9 +193,10 @@ def pick_extractable_track(
             preferred.append(track)
     if not preferred:
         return None
-    # Prefer non-forced, matching language, then lower stream index
+    # Prefer text over PGS OCR, then matching language, non-forced, non-HI.
     preferred.sort(
         key=lambda t: (
+            0 if t.kind == "text" else 1,
             0 if t.language and language_matches(t.language, source_languages) else 1,
             1 if t.forced else 0,
             0 if not t.hi else 1,
@@ -195,12 +206,129 @@ def pick_extractable_track(
     return preferred[0]
 
 
+async def extract_embedded_track(
+    media_path: str | Path,
+    stream_index: int,
+    output_path: str | Path,
+    *,
+    language: str | None = "en",
+    timeout: float | None = None,
+) -> Path:
+    """Extract a text track with ffmpeg, or OCR a PGS image track to SRT."""
+    tracks = await probe_subtitle_tracks(media_path)
+    track = next((item for item in tracks if item.stream_index == stream_index), None)
+    if track is None or track.kind == "text":
+        return await extract_text_track(
+            media_path,
+            stream_index,
+            output_path,
+            timeout=timeout or TEXT_EXTRACT_TIMEOUT,
+        )
+    codec = (track.codec or "").strip().lower()
+    if codec in PGS_CODECS:
+        return await extract_pgs_track(
+            media_path,
+            stream_index,
+            output_path,
+            language=language or track.language or "en",
+            timeout=timeout or PGS_EXTRACT_TIMEOUT,
+        )
+    raise EmbeddedError(
+        f"Embedded subtitle codec {track.codec or 'unknown'} cannot be extracted."
+    )
+
+
+async def extract_pgs_track(
+    media_path: str | Path,
+    stream_index: int,
+    output_path: str | Path,
+    *,
+    language: str | None = "en",
+    timeout: float = PGS_EXTRACT_TIMEOUT,
+) -> Path:
+    if not ocr_available():
+        raise EmbeddedError(
+            "Tesseract OCR is not installed; cannot extract image-based PGS subtitles."
+        )
+    media = Path(media_path)
+    output = Path(output_path)
+    if not media.is_file():
+        raise EmbeddedError("Media file is not readable on disk.")
+    if output.exists():
+        raise EmbeddedError(f"Output subtitle already exists: {output.name}")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="subtitle-ai-pgs-"))
+    sup_path = temp_dir / "track.sup"
+    try:
+        await _demux_pgs_stream(media, stream_index, sup_path, timeout=min(timeout, 180.0))
+        sup_bytes = sup_path.read_bytes()
+        if not sup_bytes:
+            raise EmbeddedError("Demuxed PGS track was empty.")
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    pgs_sup_to_srt,
+                    sup_bytes,
+                    output,
+                    language=language,
+                    overwrite=False,
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError as exc:
+            raise EmbeddedError(f"PGS OCR timed out for {media.name}") from exc
+        except OcrError as exc:
+            raise EmbeddedError(str(exc)) from exc
+        return output
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+async def _demux_pgs_stream(
+    media: Path,
+    stream_index: int,
+    sup_path: Path,
+    *,
+    timeout: float,
+) -> None:
+    if not shutil.which("ffmpeg"):
+        raise EmbeddedError("ffmpeg is not installed")
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(media),
+        "-map",
+        f"0:{stream_index}",
+        "-c",
+        "copy",
+        str(sup_path),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError as exc:
+        raise EmbeddedError(f"ffmpeg PGS demux timed out for {media.name}") from exc
+    except FileNotFoundError as exc:
+        raise EmbeddedError("ffmpeg is not installed") from exc
+
+    if proc.returncode != 0 or not sup_path.exists() or sup_path.stat().st_size == 0:
+        detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
+        raise EmbeddedError(f"ffmpeg PGS demux failed: {detail or 'empty output'}")
+
+
 async def extract_text_track(
     media_path: str | Path,
     stream_index: int,
     output_path: str | Path,
     *,
-    timeout: float = 300.0,
+    timeout: float = TEXT_EXTRACT_TIMEOUT,
 ) -> Path:
     media = Path(media_path)
     output = Path(output_path)

@@ -40,7 +40,7 @@ Example: `openrouter` + `meta-llama/llama-3.3-70b-instruct:free`.
 - Legacy `settings.openrouter_api_key_encrypted` remains for compatibility; new code prefers the provider account and falls back to the legacy column if needed.
 - Credential rotation replaces the encrypted key and invalidates cached connection health. There is **no** dual-key grace period.
 
-Manage keys under **Settings → AI providers**. Models no longer hosts the API-key form.
+Manage keys under **Settings → Providers**. Models no longer hosts the API-key form.
 
 ## Catalog and pricing
 

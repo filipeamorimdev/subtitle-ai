@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import LanguageSelect from './LanguageSelect.vue'
 import { api } from '../services/api'
 import type { LanguageCatalogItem, MediaRef } from '../types'
 import { mediaHrefForTaskId } from '../utils/mediaNav'
@@ -26,21 +27,9 @@ const selected = ref<MediaRef | null>(null)
 const languages = ref<LanguageCatalogItem[]>([])
 const languageChoice = ref('')
 const customLanguage = ref('')
-const languageFilter = ref('')
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
 const existingTaskId = ref<number | null>(null)
-
-const filteredLanguages = computed(() => {
-  const q = languageFilter.value.trim().toLowerCase()
-  if (!q) return languages.value
-  return languages.value.filter(
-    (l) =>
-      l.display_name.toLowerCase().includes(q) ||
-      l.code.toLowerCase().includes(q) ||
-      l.aliases.some((a) => a.toLowerCase().includes(q)),
-  )
-})
 
 const targetLanguage = computed(() => {
   const custom = customLanguage.value.trim()
@@ -58,7 +47,6 @@ watch(
     results.value = []
     query.value = ''
     customLanguage.value = ''
-    languageFilter.value = ''
     selected.value = props.initialMedia ?? null
     if (!languages.value.length) {
       try {
@@ -268,25 +256,14 @@ onMounted(() => {
         </div>
 
         <div>
-          <label class="block text-sm font-medium text-ink-700 dark:text-ink-200">
+          <span class="block text-sm font-medium text-ink-700 dark:text-ink-200">
             Target language
-          </label>
-          <input
-            v-model="languageFilter"
-            type="search"
-            class="mt-1.5 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
-            placeholder="Search languages…"
-            :disabled="!!customLanguage.trim()"
-          />
-          <select
+          </span>
+          <LanguageSelect
             v-model="languageChoice"
-            class="mt-2 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
-            :disabled="!!customLanguage.trim()"
-          >
-            <option v-for="lang in filteredLanguages" :key="lang.code" :value="lang.code">
-              {{ lang.display_name }}
-            </option>
-          </select>
+            :languages="languages"
+            placeholder="Select target language"
+          />
           <p class="mt-2 text-xs font-medium text-ink-500">or type:</p>
           <input
             v-model="customLanguage"
