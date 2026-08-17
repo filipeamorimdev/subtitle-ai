@@ -1,11 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '../services/api'
-import type { Candidate, Job, Settings, Stats } from '../types'
+import type { Candidate, Job, LocalizationTask, MediaItem, Settings, Stats } from '../types'
 
 export const useAppStore = defineStore('app', () => {
   const settings = ref<Settings | null>(null)
   const candidates = ref<Candidate[]>([])
+  const mediaItems = ref<MediaItem[]>([])
+  const localizationTasks = ref<LocalizationTask[]>([])
+  const mediaListLoaded = ref(false)
   const jobs = ref<Job[]>([])
   const stats = ref<Stats | null>(null)
   const loading = ref(false)
@@ -31,6 +34,16 @@ export const useAppStore = defineStore('app', () => {
   /** Load last cached candidate list without hitting Bazarr. */
   async function loadCandidatesCached() {
     candidates.value = await api.getCandidates()
+  }
+
+  async function loadMediaList() {
+    const [media, taskList] = await Promise.all([
+      api.listMedia(500),
+      api.getLocalizationTasks({ limit: 500 }),
+    ])
+    mediaItems.value = media
+    localizationTasks.value = taskList
+    mediaListLoaded.value = true
   }
 
   async function loadJobs(params?: { status?: string; limit?: number }) {
@@ -92,6 +105,9 @@ export const useAppStore = defineStore('app', () => {
   return {
     settings,
     candidates,
+    mediaItems,
+    localizationTasks,
+    mediaListLoaded,
     jobs,
     stats,
     loading,
@@ -99,6 +115,7 @@ export const useAppStore = defineStore('app', () => {
     loadSettings,
     loadCandidates,
     loadCandidatesCached,
+    loadMediaList,
     loadJobs,
     translateCandidate,
     extractCandidate,

@@ -1,18 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
-import JobHistoryTable from '../components/JobHistoryTable.vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api } from '../services/api'
-import type { Job, JobAction, JobLog } from '../types'
+import type { Job, JobLog } from '../types'
 import { formatDateTime } from '../utils/datetime'
 import { mediaHrefForJob, mediaHrefForTaskId } from '../utils/mediaNav'
 
 const props = defineProps<{ id: string }>()
+const route = useRoute()
 const router = useRouter()
 const job = ref<Job | null>(null)
-const actions = ref<JobAction[]>([])
 const error = ref<string | null>(null)
-const actionsError = ref<string | null>(null)
 const busy = ref(false)
 const logBusy = ref(false)
 const logVisible = ref(false)
@@ -59,19 +57,9 @@ function notifyFinished(current: Job) {
   }
 }
 
-async function loadActions() {
-  try {
-    actions.value = await api.getJobActions(Number(props.id))
-    actionsError.value = null
-  } catch (err) {
-    actionsError.value = err instanceof Error ? err.message : String(err)
-  }
-}
-
 async function load() {
   try {
     job.value = await api.getJob(Number(props.id))
-    await loadActions()
     if (job.value.task_id) {
       try {
         mediaHref.value = await mediaHrefForTaskId(job.value.task_id)
@@ -90,8 +78,15 @@ async function load() {
   }
 }
 
+function shouldOpenLog() {
+  const q = route.query.log
+  const value = Array.isArray(q) ? q[0] : q
+  return value === '1' || value === 'true' || value === ''
+}
+
 onMounted(async () => {
   await load()
+  if (shouldOpenLog()) await fetchLog()
   if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => undefined)
   }
@@ -108,13 +103,12 @@ onUnmounted(() => {
 
 watch(
   () => props.id,
-  () => {
+  async () => {
     logVisible.value = false
     jobLog.value = null
     logError.value = null
-    actions.value = []
-    actionsError.value = null
-    load()
+    await load()
+    if (shouldOpenLog()) await fetchLog()
   },
 )
 
@@ -159,7 +153,6 @@ async function cancel() {
   error.value = null
   try {
     job.value = await api.cancelJob(Number(props.id))
-    await loadActions()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -172,7 +165,6 @@ async function retrySync() {
   error.value = null
   try {
     job.value = await api.retryBazarrSync(Number(props.id))
-    await loadActions()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -180,11 +172,7 @@ async function retrySync() {
   }
 }
 
-async function toggleLog() {
-  if (logVisible.value) {
-    logVisible.value = false
-    return
-  }
+async function fetchLog() {
   logBusy.value = true
   logError.value = null
   try {
@@ -196,6 +184,14 @@ async function toggleLog() {
   } finally {
     logBusy.value = false
   }
+}
+
+async function toggleLog() {
+  if (logVisible.value) {
+    logVisible.value = false
+    return
+  }
+  await fetchLog()
 }
 </script>
 
@@ -360,29 +356,6 @@ async function toggleLog() {
         <dd class="mt-1 text-amber-700 dark:text-amber-300">{{ job.warning }}</dd>
       </div>
     </dl>
-
-    <div class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 class="font-display text-lg font-bold">Actions</h2>
-          <p class="mt-1 text-sm text-ink-500">
-            Every request, extract, and translate run for this
-            {{ job.media_type === 'episode' ? 'episode' : 'media item' }}.
-          </p>
-        </div>
-        <p class="text-sm text-ink-500">{{ actions.length }} total</p>
-      </div>
-
-      <div class="mt-4">
-        <JobHistoryTable
-          :actions="actions"
-          :error="actionsError"
-          :link-current="false"
-          :retrying-id="retryingId"
-          @retry="retryAction"
-        />
-      </div>
-    </div>
   </section>
   <p v-else class="text-ink-500">Loading job…</p>
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
 import { api } from '../services/api'
@@ -39,10 +40,9 @@ interface MediaRow {
 }
 
 const store = useAppStore()
+const { mediaItems, localizationTasks, mediaListLoaded } = storeToRefs(store)
 const route = useRoute()
 const router = useRouter()
-const mediaItems = ref<MediaItem[]>([])
-const tasks = ref<LocalizationTask[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const actionError = ref<string | null>(null)
@@ -139,7 +139,7 @@ const rows = computed(() => {
     index(row)
   }
 
-  for (const task of tasks.value) {
+  for (const task of localizationTasks.value) {
     let row = byId.get(task.media_item_id)
     if (!row) {
       row = emptyRow({
@@ -292,13 +292,7 @@ async function load(refreshCandidates = false, silent = false) {
     const candidatePromise = refreshCandidates
       ? store.loadCandidates()
       : store.loadCandidatesCached().catch(() => store.loadCandidates())
-    const [media, taskList] = await Promise.all([
-      api.listMedia(500),
-      api.getLocalizationTasks({ limit: 500 }),
-      candidatePromise,
-    ])
-    mediaItems.value = media
-    tasks.value = taskList
+    await Promise.all([store.loadMediaList(), candidatePromise])
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -369,7 +363,7 @@ async function localizeRows(items: MediaRow[]) {
     selectedKeys.value = new Set()
     actionInfo.value = `Localize: queued ${created}`
     if (errors.length) actionError.value = errors.slice(0, 5).join(' · ')
-    await load()
+    await load(false, mediaListLoaded.value)
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -411,7 +405,7 @@ watch(filteredRows, pruneSelected)
 onMounted(async () => {
   syncFilterFromRoute()
   await store.loadSettings().catch(() => undefined)
-  await load()
+  await load(false, mediaListLoaded.value)
   timer = window.setInterval(() => {
     load(false, true).catch(() => undefined)
   }, 8000)
@@ -595,7 +589,7 @@ onUnmounted(() => {
       :initial-media="requestMedia"
       :initial-language="requestLanguage"
       @close="modalOpen = false"
-      @created="load()"
+      @created="load(false, mediaListLoaded)"
     />
   </section>
 </template>

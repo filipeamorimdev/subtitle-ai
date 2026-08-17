@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../services/api'
-import type { JobUsage, JobUsageExchange } from '../types'
+import type { JobLog, JobUsage, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{ id: string }>()
@@ -10,6 +10,9 @@ const props = defineProps<{ id: string }>()
 const usage = ref<JobUsage | null>(null)
 const error = ref<string | null>(null)
 const loading = ref(true)
+const jobLog = ref<JobLog | null>(null)
+const requestBusy = ref(false)
+const requestModal = ref<{ title: string; body: string; error: string | null } | null>(null)
 
 const MODEL_COLORS = [
   '#34d399',
@@ -81,13 +84,15 @@ const maxActionTokens = computed(() =>
   Math.max(1, ...(usage.value?.by_action.map((a) => a.total_tokens) || [1])),
 )
 
+const CHART_HEIGHT_PX = 160
+
 const exchangeBars = computed(() => {
   const rows = usage.value?.exchanges || []
   if (!rows.length) return []
   const max = Math.max(1, ...rows.map((r) => r.total_tokens || r.cost_usd || 0))
   return rows.map((row) => ({
     ...row,
-    heightPct: Math.max(4, ((row.total_tokens || 0) / max) * 100),
+    heightPx: Math.max(6, ((row.total_tokens || 0) / max) * CHART_HEIGHT_PX),
   }))
 })
 
@@ -132,18 +137,68 @@ async function load() {
 }
 
 onMounted(load)
-watch(() => props.id, load)
-
-function statusClass(status: string) {
-  if (status === 'completed') return 'text-emerald-700 dark:text-emerald-300'
-  if (status === 'failed') return 'text-red-700 dark:text-red-300'
-  if (status === 'cancelled' || status === 'skipped') return 'text-amber-700 dark:text-amber-300'
-  if (status === 'processing') return 'text-accent'
-  return 'text-ink-700 dark:text-ink-200'
-}
+watch(() => props.id, () => {
+  jobLog.value = null
+  requestModal.value = null
+  load()
+})
 
 function exchangeTitle(row: JobUsageExchange): string {
   return `#${row.index} ${actionLabel(row.action)} · ${row.model}`
+}
+
+function logTimestamp(value: unknown): string {
+  return String(value ?? '')
+    .replace('T', ' ')
+    .slice(0, 19)
+}
+
+function findExchangeRequest(entries: Record<string, unknown>[] | null | undefined, row: JobUsageExchange): unknown {
+  const exchanges = (entries || []).filter((entry) => entry.event === 'exchange')
+  const rowTs = logTimestamp(row.ts)
+  const matched =
+    (rowTs ? exchanges.find((entry) => logTimestamp(entry.ts) === rowTs) : undefined) ||
+    exchanges[row.index - 1]
+  return matched?.request ?? null
+}
+
+async function viewRequest(row: JobUsageExchange) {
+  requestBusy.value = true
+  try {
+    if (!jobLog.value) {
+      jobLog.value = await api.getJobLog(Number(props.id))
+    }
+    if (!jobLog.value.exists) {
+      requestModal.value = {
+        title: exchangeTitle(row),
+        body: '',
+        error: 'No OpenRouter log for this job. Enable exchange logging and rerun to inspect requests.',
+      }
+      return
+    }
+    const request = findExchangeRequest(jobLog.value.entries, row)
+    if (request == null) {
+      requestModal.value = {
+        title: exchangeTitle(row),
+        body: '',
+        error: 'No request payload was recorded for this exchange.',
+      }
+      return
+    }
+    requestModal.value = {
+      title: exchangeTitle(row),
+      body: JSON.stringify(request, null, 2),
+      error: null,
+    }
+  } catch (err) {
+    requestModal.value = {
+      title: exchangeTitle(row),
+      body: '',
+      error: err instanceof Error ? err.message : String(err),
+    }
+  } finally {
+    requestBusy.value = false
+  }
 }
 </script>
 
@@ -293,7 +348,7 @@ function exchangeTitle(row: JobUsageExchange): string {
           </template>
           <template v-else>Log exists but has no exchange entries yet.</template>
         </p>
-        <div v-else class="mt-6 flex h-40 items-end gap-1 overflow-x-auto pb-1">
+        <div v-else class="mt-6 flex items-end gap-1 overflow-x-auto pb-1" :style="{ height: `${CHART_HEIGHT_PX}px` }">
           <div
             v-for="bar in exchangeBars"
             :key="bar.index"
@@ -303,7 +358,7 @@ function exchangeTitle(row: JobUsageExchange): string {
             <div
               class="w-full rounded-t-sm transition-opacity group-hover:opacity-80"
               :style="{
-                height: `${bar.heightPct}%`,
+                height: `${bar.heightPx}px`,
                 backgroundColor: actionColor(bar.action),
                 opacity: bar.ok ? 1 : 0.35,
               }"
@@ -330,12 +385,13 @@ function exchangeTitle(row: JobUsageExchange): string {
                 <th class="py-2 pr-4 font-medium">Action</th>
                 <th class="py-2 pr-4 font-medium">Model</th>
                 <th class="py-2 pr-4 font-medium">Tokens</th>
-                <th class="py-2 font-medium">Cost</th>
+                <th class="py-2 pr-4 font-medium">Cost</th>
+                <th class="py-2 font-medium">Request</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!usage.exchanges.length">
-                <td colspan="6" class="py-4 text-ink-500">No exchanges recorded.</td>
+                <td colspan="7" class="py-4 text-ink-500">No exchanges recorded.</td>
               </tr>
               <tr
                 v-for="row in usage.exchanges"
@@ -367,74 +423,61 @@ function exchangeTitle(row: JobUsageExchange): string {
                     ({{ formatTokens(row.input_tokens) }}/{{ formatTokens(row.output_tokens) }})
                   </span>
                 </td>
-                <td class="py-3 align-top whitespace-nowrap">
+                <td class="py-3 pr-4 align-top whitespace-nowrap">
                   {{ formatUsd(row.cost_usd) }}
                   <span v-if="row.cost_estimated" class="text-xs text-ink-500">est.</span>
                 </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 class="font-display text-lg font-bold">Related media actions</h2>
-            <p class="mt-1 text-sm text-ink-500">
-              Request / extract / translate runs for the same media, with token rollups
-            </p>
-          </div>
-          <p class="text-sm text-ink-500">{{ usage.related_actions.length }} total</p>
-        </div>
-
-        <div class="mt-4 overflow-x-auto">
-          <table class="min-w-full text-left text-sm">
-            <thead class="border-b border-ink-200 text-ink-500 dark:border-ink-800 dark:text-ink-300">
-              <tr>
-                <th class="py-2 pr-4 font-medium">Action</th>
-                <th class="py-2 pr-4 font-medium">Status</th>
-                <th class="py-2 pr-4 font-medium">Model</th>
-                <th class="py-2 pr-4 font-medium">Tokens</th>
-                <th class="py-2 font-medium">Est. cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="item in usage.related_actions"
-                :key="item.id"
-                class="border-b border-ink-100 last:border-0 dark:border-ink-800/80"
-                :class="item.current ? 'bg-accent/5' : ''"
-              >
-                <td class="py-3 pr-4 align-top">
-                  <RouterLink
-                    v-if="!item.current"
-                    class="capitalize text-accent hover:underline"
-                    :to="`/jobs/${item.id}/stats`"
+                <td class="py-3 align-top">
+                  <button
+                    type="button"
+                    class="rounded-md border border-ink-300 px-2 py-1 text-xs font-semibold dark:border-ink-600"
+                    :disabled="requestBusy"
+                    @click="viewRequest(row)"
                   >
-                    {{ item.action }}
-                    <span class="text-ink-500">#{{ item.id }}</span>
-                  </RouterLink>
-                  <span v-else class="capitalize font-medium">
-                    {{ item.action }}
-                    <span class="text-ink-500">#{{ item.id }}</span>
-                  </span>
+                    View request
+                  </button>
                 </td>
-                <td class="py-3 pr-4 align-top capitalize" :class="statusClass(item.status)">
-                  {{ item.status }}
-                </td>
-                <td class="py-3 pr-4 align-top truncate max-w-[14rem]" :title="item.model">
-                  {{ item.model }}
-                </td>
-                <td class="py-3 pr-4 align-top whitespace-nowrap">
-                  {{ item.total_tokens != null ? formatTokens(item.total_tokens) : '—' }}
-                </td>
-                <td class="py-3 align-top whitespace-nowrap">{{ formatUsd(item.cost_usd) }}</td>
               </tr>
             </tbody>
           </table>
         </div>
       </section>
     </template>
+
+    <div
+      v-if="requestModal"
+      class="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/50 p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="exchange-request-title"
+      @click.self="requestModal = null"
+    >
+      <div
+        class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 id="exchange-request-title" class="break-words font-display text-lg font-bold">
+              {{ requestModal.title }}
+            </h2>
+            <p class="mt-1 text-sm text-ink-500">OpenRouter request for this exchange</p>
+          </div>
+          <button
+            type="button"
+            class="rounded-md px-2 py-1 text-sm text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800"
+            @click="requestModal = null"
+          >
+            Close
+          </button>
+        </div>
+        <p v-if="requestModal.error" class="mt-4 text-sm text-red-700 dark:text-red-300">
+          {{ requestModal.error }}
+        </p>
+        <pre
+          v-else
+          class="mt-4 min-h-0 flex-1 overflow-auto rounded-lg bg-ink-950 p-4 text-xs leading-relaxed text-ink-100"
+        >{{ requestModal.body }}</pre>
+      </div>
+    </div>
   </section>
 </template>

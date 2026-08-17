@@ -59,13 +59,28 @@ watch(
   },
 )
 
+const iconBtnClass =
+  'inline-flex shrink-0 items-center justify-center rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800'
+
+function isJobItem(item: JobAction) {
+  return item.kind !== 'task'
+}
+
 function shouldLink(item: JobAction) {
-  if (item.kind === 'task') return false
+  if (!isJobItem(item)) return false
   return props.linkCurrent || !item.current
 }
 
 function actionKey(item: JobAction) {
   return `${item.kind || 'job'}-${item.id}`
+}
+
+function logsHref(item: JobAction) {
+  return `/jobs/${item.id}?log=1`
+}
+
+function statsHref(item: JobAction) {
+  return `/jobs/${item.id}/stats`
 }
 </script>
 
@@ -106,30 +121,78 @@ function actionKey(item: JobAction) {
             </span>
             <span v-if="item.kind !== 'task'" class="text-ink-500">#{{ item.id }}</span>
           </span>
-          <button
-            v-if="showRetry && item.kind !== 'task' && canRetryJob(item.status)"
-            type="button"
-            class="shrink-0 rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800"
-            title="Retry"
-            aria-label="Retry"
-            :disabled="retryingId === item.id"
-            @click="emit('retry', item.id)"
-          >
-            <svg
-              class="h-4 w-4"
-              :class="retryingId === item.id ? 'animate-spin' : ''"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
+          <div class="flex shrink-0 items-center">
+            <RouterLink
+              v-if="isJobItem(item)"
+              :class="iconBtnClass"
+              :to="logsHref(item)"
+              title="View logs"
+              aria-label="View logs"
             >
-              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-              <path d="M21 3v6h-6" />
-            </svg>
-          </button>
+              <svg
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <path d="M14 2v6h6" />
+                <path d="M16 13H8" />
+                <path d="M16 17H8" />
+                <path d="M10 9H8" />
+              </svg>
+            </RouterLink>
+            <RouterLink
+              v-if="isJobItem(item)"
+              :class="iconBtnClass"
+              :to="statsHref(item)"
+              title="Usage stats"
+              aria-label="Usage stats"
+            >
+              <svg
+                class="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M18 20V10" />
+                <path d="M12 20V4" />
+                <path d="M6 20v-6" />
+              </svg>
+            </RouterLink>
+            <button
+              v-if="showRetry && isJobItem(item) && canRetryJob(item.status)"
+              type="button"
+              :class="iconBtnClass"
+              title="Retry"
+              aria-label="Retry"
+              :disabled="retryingId === item.id"
+              @click="emit('retry', item.id)"
+            >
+              <svg
+                class="h-4 w-4"
+                :class="retryingId === item.id ? 'animate-spin' : ''"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                <path d="M21 3v6h-6" />
+              </svg>
+            </button>
+          </div>
         </div>
         <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
           <div>
@@ -170,14 +233,14 @@ function actionKey(item: JobAction) {
             <th class="py-2 pr-4 font-medium">Duration</th>
             <th class="py-2 pr-4 font-medium">Status</th>
             <th class="py-2 font-medium">Message</th>
-            <th v-if="showRetry" class="w-12 py-2 font-medium">
+            <th class="whitespace-nowrap py-2 pl-2 font-medium">
               <span class="sr-only">Actions</span>
             </th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!actions.length">
-            <td :colspan="showRetry ? 6 : 5" class="py-4 text-ink-500">{{ emptyMessage }}</td>
+            <td colspan="6" class="py-4 text-ink-500">{{ emptyMessage }}</td>
           </tr>
           <tr
             v-for="item in pagedActions"
@@ -224,31 +287,79 @@ function actionKey(item: JobAction) {
             >
               {{ item.message || '—' }}
             </td>
-            <td v-if="showRetry" class="py-3 pl-2 align-top">
-              <button
-                v-if="item.kind !== 'task' && canRetryJob(item.status)"
-                type="button"
-                class="rounded-md p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-accent disabled:opacity-50 dark:hover:bg-ink-800"
-                title="Retry"
-                aria-label="Retry"
-                :disabled="retryingId === item.id"
-                @click="emit('retry', item.id)"
-              >
-                <svg
-                  class="h-4 w-4"
-                  :class="retryingId === item.id ? 'animate-spin' : ''"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
+            <td class="whitespace-nowrap py-3 pl-2 align-top">
+              <div class="flex items-center justify-end">
+                <RouterLink
+                  v-if="isJobItem(item)"
+                  :class="iconBtnClass"
+                  :to="logsHref(item)"
+                  title="View logs"
+                  aria-label="View logs"
                 >
-                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                  <path d="M21 3v6h-6" />
-                </svg>
-              </button>
+                  <svg
+                    class="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <path d="M14 2v6h6" />
+                    <path d="M16 13H8" />
+                    <path d="M16 17H8" />
+                    <path d="M10 9H8" />
+                  </svg>
+                </RouterLink>
+                <RouterLink
+                  v-if="isJobItem(item)"
+                  :class="iconBtnClass"
+                  :to="statsHref(item)"
+                  title="Usage stats"
+                  aria-label="Usage stats"
+                >
+                  <svg
+                    class="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M18 20V10" />
+                    <path d="M12 20V4" />
+                    <path d="M6 20v-6" />
+                  </svg>
+                </RouterLink>
+                <button
+                  v-if="showRetry && isJobItem(item) && canRetryJob(item.status)"
+                  type="button"
+                  :class="iconBtnClass"
+                  title="Retry"
+                  aria-label="Retry"
+                  :disabled="retryingId === item.id"
+                  @click="emit('retry', item.id)"
+                >
+                  <svg
+                    class="h-4 w-4"
+                    :class="retryingId === item.id ? 'animate-spin' : ''"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                    <path d="M21 3v6h-6" />
+                  </svg>
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
