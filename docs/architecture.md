@@ -97,9 +97,9 @@ Budget reservations use a **process-wide lock** around check / insert / commit. 
 | --- | --- |
 | Dashboard | What is Subtitle AI doing right now? Includes AI cost/quality snapshot and glossary review counters. |
 | AI dashboard | Detailed AI observability (Overview / Usage), opened from Dashboard. |
-| Settings | How is Subtitle AI configured? General (Bazarr, languages, automation, media paths, concurrency), Models (keys, pools, routing, budgets), Glossary. |
+| Settings | How is Subtitle AI configured? General, Providers (Bazarr), AI providers, Models, Language, Glossary. |
 
-Provider credentials live under **Settings → Models → Providers**. Pools, strategy, and budgets live under **Settings → Models → Models & Routing**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
+Provider credentials live under **Settings → AI providers**. Pools, strategy, and budgets live under **Settings → Models**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
 
 ## Automatic fallback
 

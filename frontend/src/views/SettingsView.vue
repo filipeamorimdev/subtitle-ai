@@ -1,20 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
-import type { AutomationStatus, PathMapping } from '../types'
+import type { AutomationStatus } from '../types'
 import { formatDateTime } from '../utils/datetime'
-
-const LANGUAGES = [
-  { code: 'en', name: 'English' },
-  { code: 'pt-PT', name: 'Portuguese (Portugal)' },
-  { code: 'pt-BR', name: 'Portuguese (Brazil)' },
-  { code: 'es', name: 'Spanish' },
-  { code: 'fr', name: 'French' },
-  { code: 'de', name: 'German' },
-  { code: 'it', name: 'Italian' },
-]
 
 const store = useAppStore()
 const message = ref<string | null>(null)
@@ -22,17 +12,9 @@ const error = ref<string | null>(null)
 const saving = ref(false)
 const clearing = ref(false)
 const scanning = ref(false)
-const bazarrTest = ref<string | null>(null)
 const automationStatus = ref<AutomationStatus | null>(null)
 
 const form = reactive({
-  bazarr_url: '',
-  bazarr_api_key: '',
-  clear_bazarr_api_key: false,
-  target_language_code: 'pt-PT',
-  target_language_name: 'Portuguese (Portugal)',
-  source_language_code: 'en',
-  batch_size: 25,
   max_concurrent_translate: 1,
   max_concurrent_extract: 1,
   max_concurrent_request: 1,
@@ -41,24 +23,7 @@ const form = reactive({
   bazarr_grace_period_minutes: 10,
   automatic_retry_enabled: true,
   maximum_automatic_retries: 3,
-  path_mappings: '' as string,
 })
-
-function mappingsToText(mappings: PathMapping[]) {
-  return mappings.map((m) => `${m.bazarr_prefix} => ${m.local_prefix}`).join('\n')
-}
-
-function textToMappings(text: string): PathMapping[] {
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [bazarr_prefix, local_prefix] = line.split('=>').map((part) => part.trim())
-      return { bazarr_prefix, local_prefix }
-    })
-    .filter((m) => m.bazarr_prefix && m.local_prefix)
-}
 
 async function loadAutomationStatus() {
   try {
@@ -72,11 +37,6 @@ onMounted(async () => {
   await store.loadSettings()
   const s = store.settings
   if (!s) return
-  form.bazarr_url = s.bazarr_url || ''
-  form.target_language_code = s.target_language.code
-  form.target_language_name = s.target_language.name
-  form.source_language_code = s.source_languages?.[0] || 'en'
-  form.batch_size = s.batch_size
   form.max_concurrent_translate = s.max_concurrent_translate
   form.max_concurrent_extract = s.max_concurrent_extract
   form.max_concurrent_request = s.max_concurrent_request
@@ -85,20 +45,8 @@ onMounted(async () => {
   form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
   form.automatic_retry_enabled = s.automatic_retry_enabled ?? true
   form.maximum_automatic_retries = s.maximum_automatic_retries ?? 3
-  form.path_mappings = mappingsToText(s.path_mappings || [])
   await loadAutomationStatus()
 })
-
-const sourceLanguageOptions = computed(() => {
-  const code = form.source_language_code
-  if (!code || LANGUAGES.some((l) => l.code === code)) return LANGUAGES
-  return [{ code, name: code }, ...LANGUAGES]
-})
-
-function onTargetChange() {
-  const match = LANGUAGES.find((l) => l.code === form.target_language_code)
-  if (match) form.target_language_name = match.name
-}
 
 async function save() {
   saving.value = true
@@ -106,13 +54,6 @@ async function save() {
   error.value = null
   try {
     await api.updateSettings({
-      bazarr_url: form.bazarr_url,
-      bazarr_api_key: form.bazarr_api_key || undefined,
-      clear_bazarr_api_key: form.clear_bazarr_api_key,
-      target_language_code: form.target_language_code,
-      target_language_name: form.target_language_name,
-      source_languages: [form.source_language_code || 'en'],
-      batch_size: Number(form.batch_size) || 25,
       max_concurrent_translate: Number(form.max_concurrent_translate) || 1,
       max_concurrent_extract: Number(form.max_concurrent_extract) || 1,
       max_concurrent_request: Number(form.max_concurrent_request) || 1,
@@ -121,10 +62,7 @@ async function save() {
       bazarr_grace_period_minutes: Number(form.bazarr_grace_period_minutes) || 0,
       automatic_retry_enabled: form.automatic_retry_enabled,
       maximum_automatic_retries: Number(form.maximum_automatic_retries) || 0,
-      path_mappings: textToMappings(form.path_mappings),
     })
-    form.bazarr_api_key = ''
-    form.clear_bazarr_api_key = false
     await store.loadSettings()
     await loadAutomationStatus()
     message.value = 'Settings saved.'
@@ -152,12 +90,6 @@ async function runAutomaticScan() {
   } finally {
     scanning.value = false
   }
-}
-
-async function testBazarr() {
-  bazarrTest.value = null
-  const result = await api.testBazarr()
-  bazarrTest.value = result.message
 }
 
 async function runClear(action: () => Promise<{ message: string }>, confirmText: string) {
@@ -215,8 +147,7 @@ function clearUsageStats() {
     <div>
       <h2 class="font-display text-lg font-semibold">General</h2>
       <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-        Bazarr, languages, automation, media paths, and cleanup. Model keys, pools, and budgets live under
-        <RouterLink class="font-semibold text-accent hover:underline" to="/settings/models">Models</RouterLink>.
+        How this app runs — automation, worker concurrency, and cleanup.
       </p>
     </div>
 
@@ -229,38 +160,13 @@ function clearUsageStats() {
 
     <form class="space-y-8" @submit.prevent="save">
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <legend class="px-1 font-display text-lg font-semibold">Bazarr</legend>
-        <label class="block text-sm">
-          <span class="text-ink-500">URL</span>
-          <input v-model="form.bazarr_url" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="http://bazarr:6767" />
-        </label>
-        <label class="block text-sm">
-          <span class="text-ink-500">API key</span>
-          <input v-model="form.bazarr_api_key" type="password" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" placeholder="Leave blank to keep existing" />
-          <span v-if="store.settings?.bazarr_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
-            Saved: {{ store.settings.bazarr_api_key_masked }}
-          </span>
-        </label>
-        <label class="flex items-center gap-2 text-sm">
-          <input v-model="form.clear_bazarr_api_key" type="checkbox" />
-          Clear saved Bazarr API key
-        </label>
-        <div class="flex flex-wrap items-center gap-3">
-          <button class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600" type="button" @click="testBazarr">
-            Test Connection
-          </button>
-          <span v-if="bazarrTest" class="min-w-0 break-words text-sm text-ink-600 dark:text-ink-300">{{ bazarrTest }}</span>
-        </div>
-      </fieldset>
-
-      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Automatic Subtitle Fallback</legend>
         <label class="flex items-start gap-2 text-sm">
           <input v-model="form.automatic_fallback_enabled" type="checkbox" class="mt-1" />
           <span>
             <span class="font-medium">Enable automatic fallback</span>
             <span class="mt-1 block text-xs text-ink-500">
-              Off by default. When off, Request / Extract / Translate stay click-only. When on, new missing items are processed automatically after the grace period and can incur OpenRouter costs.
+              Off by default. When off, Media stays click-only. When on, new missing items are processed automatically after the grace period and can incur AI costs.
             </span>
           </span>
         </label>
@@ -322,38 +228,6 @@ function clearUsageStats() {
       </fieldset>
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <legend class="px-1 font-display text-lg font-semibold">Translation</legend>
-        <label class="block text-sm">
-          <span class="text-ink-500">Source language</span>
-          <select v-model="form.source_language_code" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600">
-            <option v-for="lang in sourceLanguageOptions" :key="`source-${lang.code}`" :value="lang.code">{{ lang.name }} ({{ lang.code }})</option>
-          </select>
-          <span class="mt-1 block text-xs text-ink-500">
-            Preferred language for source subtitles when requesting, extracting, and matching. Defaults to English.
-          </span>
-        </label>
-        <label class="block text-sm">
-          <span class="text-ink-500">Target language</span>
-          <select v-model="form.target_language_code" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600" @change="onTargetChange">
-            <option v-for="lang in LANGUAGES" :key="`target-${lang.code}`" :value="lang.code">{{ lang.name }} ({{ lang.code }})</option>
-          </select>
-        </label>
-        <label class="block text-sm">
-          <span class="text-ink-500">Batch size</span>
-          <input
-            v-model.number="form.batch_size"
-            type="number"
-            min="1"
-            max="200"
-            class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
-          />
-          <span class="mt-1 block text-xs text-ink-500">
-            Number of subtitle blocks sent per OpenRouter request during translation (1–200).
-          </span>
-        </label>
-      </fieldset>
-
-      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Job concurrency</legend>
         <p class="text-sm text-ink-500">
           How many jobs of each type can run at the same time. Defaults are 1 per type (one translate, one extract, and one request in parallel).
@@ -393,26 +267,6 @@ function clearUsageStats() {
         <span class="block text-xs text-ink-500">Each limit accepts 1–20. Changes apply on the next worker poll.</span>
       </fieldset>
 
-      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <legend class="px-1 font-display text-lg font-semibold">Media</legend>
-        <div class="text-sm">
-          <span class="text-ink-500">Container media roots</span>
-          <p class="mt-1 font-mono text-xs text-ink-700 dark:text-ink-300">
-            {{ (store.settings?.media_roots || []).join(', ') || '—' }}
-          </p>
-          <span class="mt-1 block text-xs text-ink-500">
-            Auto-discovered from Docker volume mounts under <code class="font-mono">/data</code> and <code class="font-mono">/media</code>. Not editable here.
-          </span>
-        </div>
-        <label class="block text-sm">
-          <span class="text-ink-500">Path mappings (one per line: Bazarr path => local path)</span>
-          <textarea v-model="form.path_mappings" rows="4" class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 font-mono text-xs dark:border-ink-600" placeholder="/movies => /data/movies" />
-          <span class="mt-1 block text-xs text-ink-500">
-            Bazarr and Subtitle AI must see compatible media paths. Map prefixes when they differ.
-          </span>
-        </label>
-      </fieldset>
-
       <button class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60" type="submit" :disabled="saving">
         {{ saving ? 'Saving…' : 'Save settings' }}
       </button>
@@ -421,8 +275,8 @@ function clearUsageStats() {
     <fieldset class="min-w-0 space-y-5 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
       <legend class="px-1 font-display text-lg font-semibold">Advanced</legend>
       <p class="text-sm text-ink-500">
-        Application diagnostics and irreversible data cleanup. OpenRouter exchange logging is configured under
-        <RouterLink class="font-semibold text-accent hover:underline" to="/settings/models/providers">Models → Providers</RouterLink>.
+        Irreversible data cleanup. Exchange logging is configured under
+        <RouterLink class="font-semibold text-accent hover:underline" to="/settings/ai-providers">AI providers</RouterLink>.
       </p>
 
       <div class="space-y-3">

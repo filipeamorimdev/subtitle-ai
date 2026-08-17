@@ -4,7 +4,7 @@ Subtitle AI v0.3-alpha1 routes translation jobs across **configured provider mod
 
 Canonical model identity is **`(provider_id, model_id)`**. In this milestone only **OpenRouter** is registered.
 
-Configure credentials under **Settings → Models → Providers**. Configure pools, strategy, budgets, and diagnostic exchange logging under **Settings → Models → Models & Routing**. General Settings contains application options (Bazarr, languages, automation, media paths, concurrency). `openrouter_model` remains a compatibility field (first enabled preference).
+Configure credentials under **Settings → AI providers**. Configure pools, strategy, budgets, and batch size under **Settings → Models**. General contains automation, concurrency, and cleanup. Providers contains Bazarr. Language contains source/target defaults. `openrouter_model` remains a compatibility field (first enabled preference).
 
 See also [ai-providers.md](ai-providers.md).
 
@@ -95,7 +95,7 @@ Model tests still count toward budget and usage analytics but never influence ad
 
 `ai_usage_records` is the historical AI cost source (dashboard, usage page, job stats). Rows store the pricing snapshot from the request. Job exchange logs remain for debug detail and are not used to reprice history from a live catalog.
 
-Full request/response bodies remain opt-in under **Settings → Models → Providers** (`openrouter_log_full_exchanges`, default off).
+Full request/response bodies remain opt-in under **Settings → AI providers** (`openrouter_log_full_exchanges`, default off).
 
 ## Privacy
 

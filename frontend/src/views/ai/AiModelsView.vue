@@ -12,6 +12,7 @@ const pickerOpen = ref(false)
 const pickerQuery = ref('')
 const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid'>('compatible')
 const testResult = ref<Record<number, string>>({})
+const batchSize = ref(25)
 
 const routing = reactive({
   routing_strategy: 'free_first',
@@ -78,6 +79,12 @@ async function load() {
   try {
     data.value = await api.getAiModels()
     Object.assign(routing, data.value.routing)
+    try {
+      const settings = await api.getSettings()
+      batchSize.value = settings.batch_size || 25
+    } catch {
+      /* keep default */
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -94,7 +101,10 @@ async function saveRouting() {
       clear_maximum_cost_per_job: routing.maximum_cost_per_job_usd == null,
       clear_monthly_budget_amount: routing.monthly_budget_amount_usd == null,
     })
-    message.value = 'Routing and cost controls saved.'
+    await api.updateSettings({
+      batch_size: Number(batchSize.value) || 25,
+    })
+    message.value = 'Routing, cost controls, and batch size saved.'
     await load()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
@@ -177,7 +187,7 @@ onMounted(load)
         class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
       >
         OpenRouter is not configured.
-        <RouterLink class="font-semibold underline" to="/settings/models/providers">Configure providers</RouterLink>
+        <RouterLink class="font-semibold underline" to="/settings/ai-providers">Configure AI providers</RouterLink>
         before translating.
       </section>
 
@@ -196,7 +206,7 @@ onMounted(load)
           <div class="flex flex-wrap gap-2">
             <RouterLink
               class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-              to="/settings/models/providers"
+              to="/settings/ai-providers"
             >
               Manage providers
             </RouterLink>
@@ -233,6 +243,19 @@ onMounted(load)
           <label class="flex items-center gap-2 text-sm">
             <input v-model="routing.allow_unknown_pricing" type="checkbox" />
             Allow unknown-priced models
+          </label>
+          <label class="text-sm">
+            <span class="text-ink-500">Batch size</span>
+            <input
+              v-model.number="batchSize"
+              type="number"
+              min="1"
+              max="200"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+            />
+            <span class="mt-1 block text-xs text-ink-500">
+              Subtitle blocks per translation request (1–200).
+            </span>
           </label>
         </div>
         <h3 class="mt-5 font-display font-semibold">Cost controls</h3>

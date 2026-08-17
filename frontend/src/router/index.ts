@@ -5,8 +5,9 @@ import JobDetailView from '../views/JobDetailView.vue'
 import JobStatsView from '../views/JobStatsView.vue'
 import MediaDetailView from '../views/MediaDetailView.vue'
 import MediaView from '../views/MediaView.vue'
-import SettingsAiView from '../views/SettingsAiView.vue'
+import SettingsLanguageView from '../views/SettingsLanguageView.vue'
 import SettingsLayout from '../views/SettingsLayout.vue'
+import SettingsProvidersView from '../views/SettingsProvidersView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import TaskRedirectView from '../views/TaskRedirectView.vue'
 import AiLayout from '../views/ai/AiLayout.vue'
@@ -42,20 +43,17 @@ const router = createRouter({
       redirect: '/settings/general',
       children: [
         { path: 'general', name: 'settings', component: SettingsView },
-        {
-          path: 'models',
-          component: SettingsAiView,
-          redirect: '/settings/models/providers',
-          children: [
-            { path: 'providers', name: 'settings-providers', component: AiProvidersView },
-            { path: 'routing', name: 'settings-models', component: AiModelsView },
-          ],
-        },
+        { path: 'providers', name: 'settings-providers', component: SettingsProvidersView },
+        { path: 'ai-providers', name: 'settings-ai-providers', component: AiProvidersView },
+        { path: 'models', name: 'settings-models', component: AiModelsView },
+        { path: 'language', name: 'settings-language', component: SettingsLanguageView },
         { path: 'glossary', name: 'settings-glossary', component: GlossariesView },
+        { path: 'models/providers', redirect: '/settings/ai-providers' },
+        { path: 'models/routing', redirect: '/settings/models' },
       ],
     },
-    { path: '/ai/providers', redirect: '/settings/models/providers' },
-    { path: '/ai/models', redirect: '/settings/models/routing' },
+    { path: '/ai/providers', redirect: '/settings/ai-providers' },
+    { path: '/ai/models', redirect: '/settings/models' },
     {
       path: '/ai',
       component: AiLayout,

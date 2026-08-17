@@ -478,14 +478,14 @@ onUnmounted(() => {
           <ul v-else class="divide-y divide-ink-100 dark:divide-ink-800">
             <li v-if="!bazarrOk" class="px-4 py-3 text-sm">
               Bazarr is not configured.
-              <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings">
+              <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/providers">
                 Open settings
               </RouterLink>
             </li>
             <li v-if="!openRouterOk" class="px-4 py-3 text-sm">
               OpenRouter is not configured.
-              <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/models">
-                Configure models
+              <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/ai-providers">
+                Configure AI providers
               </RouterLink>
             </li>
             <li v-for="task in failedTasks" :key="`fail-${task.id}`" class="px-4 py-3">

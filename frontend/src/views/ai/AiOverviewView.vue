@@ -167,7 +167,7 @@ onMounted(load)
           <p class="mt-2 text-sm text-ink-600 dark:text-ink-300">
             Configure a model and run a translation to start collecting AI statistics.
           </p>
-          <RouterLink class="mt-4 inline-block rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white" to="/settings/models/routing">
+          <RouterLink class="mt-4 inline-block rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white" to="/settings/models">
             Configure models
           </RouterLink>
         </div>

@@ -14,6 +14,11 @@ const clearApiKey = ref(false)
 const testMessage = ref<string | null>(null)
 const logExchanges = ref(false)
 
+const upcomingProviders = [
+  { id: 'anthropic', name: 'Anthropic' },
+  { id: 'openai', name: 'OpenAI' },
+]
+
 async function load() {
   loading.value = true
   error.value = null
@@ -77,10 +82,13 @@ onMounted(load)
     <p v-if="loading" class="text-ink-500">Loading providers…</p>
 
     <template v-else>
-      <p class="text-sm text-ink-600 dark:text-ink-300">
-        BYOAI providers use your own API keys. v0.3-alpha1 implements OpenRouter only.
-        ChatGPT or Claude subscriptions are not API access.
-      </p>
+      <div>
+        <h2 class="font-display text-lg font-semibold">AI providers</h2>
+        <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+          LLM accounts. v0.3-alpha1 implements OpenRouter only. Anthropic and OpenAI are reserved for later.
+          ChatGPT or Claude subscriptions are not API access.
+        </p>
+      </div>
 
       <section
         v-for="provider in providers"
@@ -100,7 +108,7 @@ onMounted(load)
           </div>
           <RouterLink
             class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-            to="/settings/models/routing"
+            to="/settings/models"
           >
             Models &amp; Routing
           </RouterLink>
@@ -156,6 +164,15 @@ onMounted(load)
             </button>
           </div>
         </template>
+      </section>
+
+      <section
+        v-for="upcoming in upcomingProviders.filter((item) => !providers.some((p) => p.provider_id === item.id))"
+        :key="upcoming.id"
+        class="rounded-xl border border-dashed border-ink-300 bg-white/50 p-5 dark:border-ink-700 dark:bg-ink-900/40"
+      >
+        <h2 class="font-display text-lg font-semibold">{{ upcoming.name }}</h2>
+        <p class="mt-1 text-sm text-ink-500">Not available yet.</p>
       </section>
     </template>
   </div>
