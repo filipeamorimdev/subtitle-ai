@@ -72,7 +72,6 @@ watch(page, load)
           <RouterLink class="text-accent hover:underline" to="/">← Dashboard</RouterLink>
         </p>
         <h1 class="mt-1 font-display text-2xl font-bold sm:text-3xl">Translations</h1>
-        <p class="mt-1 text-sm text-ink-500">Completed localizations, newest first.</p>
       </div>
     </div>
 

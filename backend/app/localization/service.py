@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import JobRow, LocalizationTaskRow, MediaItemRow
@@ -295,11 +295,15 @@ class LocalizationTaskService:
         )
 
     def attach_job(self, job: JobRow, task_id: int) -> JobRow:
-        if getattr(job, "task_id", None) != task_id:
-            job.task_id = task_id
-            self.db.add(job)
-            self.db.commit()
-            self.db.refresh(job)
+        if getattr(job, "task_id", None) == task_id:
+            return job
+        task = self.get(task_id)
+        if task is None or task.status not in ACTIVE_STATUSES:
+            return job
+        job.task_id = task_id
+        self.db.add(job)
+        self.db.commit()
+        self.db.refresh(job)
         return job
 
     def update_checkpoints(self, task_id: int | None, **states: str) -> None:
@@ -316,9 +320,32 @@ class LocalizationTaskService:
 
     def _cancel_open_jobs(self, task_id: int) -> list[int]:
         """Mark pending and processing jobs cancelled so they appear in history."""
+        task = self.get(task_id)
+        clauses = [JobRow.task_id == task_id]
+        if task is not None:
+            media = self.db.get(MediaItemRow, task.media_item_id)
+            unattached = JobRow.task_id.is_(None)
+            path_or_ids = []
+            if media is not None and media.path:
+                path_or_ids.append(JobRow.media_path == media.path)
+            if media is not None and media.bazarr_episode_id is not None:
+                path_or_ids.append(
+                    (JobRow.media_type == "episode")
+                    & (JobRow.bazarr_episode_id == media.bazarr_episode_id)
+                )
+            if media is not None and media.bazarr_movie_id is not None:
+                path_or_ids.append(
+                    (JobRow.media_type == "movie") & (JobRow.bazarr_movie_id == media.bazarr_movie_id)
+                )
+            if path_or_ids:
+                clauses.append(
+                    unattached
+                    & or_(*path_or_ids)
+                    & (JobRow.target_language == task.target_language_code)
+                )
         jobs = self.db.scalars(
             select(JobRow).where(
-                JobRow.task_id == task_id,
+                or_(*clauses),
                 JobRow.status.in_(["pending", "processing"]),
             )
         ).all()

@@ -298,6 +298,85 @@ async def test_cancel_marks_processing_jobs_cancelled(loc_env):
     assert cancelled_action.message == "Cancelled with localization task"
 
 
+def test_cancel_cancels_unattached_job_for_same_media_language(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+
+    job = JobRow(
+        task_id=None,
+        job_kind="translate",
+        media_type="movie",
+        media_path=media.path or "",
+        source_subtitle_path=media.path or "",
+        target_subtitle_path=(media.path or "") + ".pt-PT.srt",
+        target_language="pt-PT",
+        model="test",
+        status="pending",
+    )
+    db.add(job)
+    db.commit()
+
+    cancelled = svc.cancel(task.id)
+    assert cancelled.status == "cancelled"
+    db.refresh(job)
+    assert job.status == "cancelled"
+    assert job.reason_code == "cancelled"
+
+
+def test_claim_next_job_aborts_when_task_already_cancelled(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+
+    job = JobRow(
+        task_id=task.id,
+        job_kind="translate",
+        media_type="movie",
+        media_path=media.path or "",
+        source_subtitle_path=media.path or "",
+        target_subtitle_path=(media.path or "") + ".pt-PT.srt",
+        target_language="pt-PT",
+        model="test",
+        status="pending",
+    )
+    db.add(job)
+    db.commit()
+
+    task.status = "cancelled"
+    task.error_code = "cancelled"
+    db.add(task)
+    db.commit()
+
+    claimed = JobService(db).claim_next_job()
+    assert claimed is None
+    db.refresh(job)
+    assert job.status == "cancelled"
+    assert job.reason_code == "cancelled"
+
+
 @pytest.mark.asyncio
 async def test_planner_completes_when_target_exists(loc_env, monkeypatch):
     db, tmp_path, media_dir, source = loc_env

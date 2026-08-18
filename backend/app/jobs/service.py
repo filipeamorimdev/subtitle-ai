@@ -172,6 +172,11 @@ def _bind_task_id(db, row: JobRow, task_id: int | None) -> JobRow:
         return row
     if getattr(row, "task_id", None) == task_id:
         return row
+    from app.localization.state import ACTIVE_STATUSES
+
+    task = db.get(LocalizationTaskRow, task_id)
+    if task is None or task.status not in ACTIVE_STATUSES:
+        return row
     row.task_id = task_id
     db.add(row)
     db.commit()
@@ -1473,6 +1478,17 @@ class JobService:
             return None
         self.db.commit()
         self.db.refresh(row)
+        task_id = getattr(row, "task_id", None)
+        if task_id is not None:
+            task = self.db.get(LocalizationTaskRow, task_id)
+            if task is not None and task.status == "cancelled":
+                row.status = "cancelled"
+                row.completed_at = utcnow()
+                row.progress_detail = "Cancelled with localization task"
+                row.reason_code = "cancelled"
+                self.db.add(row)
+                self.db.commit()
+                return None
         return row
 
     @staticmethod

@@ -232,7 +232,7 @@ class FallbackPlanner:
                 return "none"
 
         if candidate.can_translate:
-            if latest_translate and latest_translate.status == "failed":
+            if latest_translate and latest_translate.status in {"failed", "cancelled", "skipped"}:
                 if not self._can_retry_failed(observed, candidate):
                     return "none"
             return "translate"

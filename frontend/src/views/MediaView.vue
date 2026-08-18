@@ -182,13 +182,14 @@ const rows = computed(() => {
 function rowKind(row: MediaRow): RowKind {
   if (row.tasks.some((task) => isActiveTaskStatus(task.status))) return 'in-progress'
   if (row.tasks.some((task) => task.status === 'failed')) return 'failed'
-  if (row.candidate && row.candidate.reason_code !== 'target_exists') return 'needs-work'
-  if (
-    row.tasks.some((task) => task.status === 'completed') ||
-    row.candidate?.reason_code === 'target_exists'
-  ) {
-    return 'completed'
+  if (row.candidate?.reason_code === 'target_exists') return 'completed'
+  // Cancelled/blocked requests are still missing subtitles. Without a Bazarr
+  // wanted candidate they used to fall through to `idle` and vanish from Needs work.
+  if (row.tasks.some((task) => task.status === 'cancelled' || task.status === 'blocked')) {
+    return 'needs-work'
   }
+  if (row.candidate && row.candidate.reason_code !== 'target_exists') return 'needs-work'
+  if (row.tasks.some((task) => task.status === 'completed')) return 'completed'
   return 'idle'
 }
 

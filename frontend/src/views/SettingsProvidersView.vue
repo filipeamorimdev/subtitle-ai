@@ -26,11 +26,6 @@ const testMessage = ref<string | null>(null)
 const logExchanges = ref(false)
 const temperature = ref(0)
 
-const upcomingProviders = [
-  { id: 'anthropic', name: 'Anthropic' },
-  { id: 'openai', name: 'OpenAI' },
-]
-
 async function loadAi(opts?: { silent?: boolean }) {
   if (!opts?.silent) {
     aiLoading.value = true
@@ -206,13 +201,7 @@ async function testOpenRouter(fresh = false) {
       </section>
 
       <section class="space-y-4">
-        <div>
-          <h3 class="font-display text-lg font-semibold">AI</h3>
-          <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-            v0.3-alpha1 implements OpenRouter only. Anthropic and OpenAI are reserved for later.
-            ChatGPT or Claude subscriptions are not API access.
-          </p>
-        </div>
+        <h3 class="font-display text-lg font-semibold">AI</h3>
 
         <p v-if="aiLoading" class="text-ink-500">Loading providers…</p>
 
@@ -299,15 +288,6 @@ async function testOpenRouter(fresh = false) {
                 </button>
               </div>
             </template>
-          </div>
-
-          <div
-            v-for="upcoming in upcomingProviders.filter((item) => !providers.some((p) => p.provider_id === item.id))"
-            :key="upcoming.id"
-            class="rounded-xl border border-dashed border-ink-300 bg-white/50 p-5 dark:border-ink-700 dark:bg-ink-900/40"
-          >
-            <h4 class="font-display text-lg font-semibold">{{ upcoming.name }}</h4>
-            <p class="mt-1 text-sm text-ink-500">Not available yet.</p>
           </div>
         </template>
       </section>
