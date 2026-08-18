@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 logger = get_logger("worker")
 
-JOB_KINDS = ("translate", "extract", "request")
+JOB_KINDS = ("translate", "extract", "request", "transcribe")
 TASK_REPLAN_INTERVAL_SECONDS = 30.0
 
 
@@ -144,9 +144,27 @@ class JobWorker:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.error("Job %s failed in worker: %s", job_id, exc)
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            JobService.fail_job_from_worker(job_id, exc)
         finally:
             session.close()
             self._tasks_by_job.pop(job_id, None)
+
+    def _recover_orphaned_jobs(self) -> None:
+        session = get_session_factory()()
+        try:
+            recovered = JobService.recover_orphaned_processing_jobs(
+                session, inflight_ids=set(self._tasks_by_job)
+            )
+            if recovered:
+                logger.warning("Recovered %s orphaned processing job(s)", recovered)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Orphan recovery failed: %s", exc)
+        finally:
+            session.close()
 
     async def _replan_active_tasks(self) -> None:
         """Resume localization tasks that have no in-flight job (e.g. extract finished)."""
@@ -156,6 +174,10 @@ class JobWorker:
         try:
             await TaskPlanner(session).plan_all_active()
         except Exception as exc:  # noqa: BLE001
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
             logger.warning("Active task replan failed: %s", exc)
         finally:
             session.close()
@@ -168,6 +190,8 @@ class JobWorker:
         if now - self._last_task_replan >= TASK_REPLAN_INTERVAL_SECONDS:
             self._last_task_replan = now
             await self._replan_active_tasks()
+            self._prune_inflight()
+        self._recover_orphaned_jobs()
         limits = self._concurrency_limits()
         for kind in JOB_KINDS:
             limit = limits.get(kind, 1)

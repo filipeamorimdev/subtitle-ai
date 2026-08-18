@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     JobActionOut,
+    JobOut,
     LanguageAvailabilityOut,
     LanguageCatalogOut,
     LocalizationTaskCreate,
@@ -19,6 +20,7 @@ from app.api.schemas import (
     MediaLocalizationOut,
     MediaRefOut,
     TaskAiSummaryOut,
+    TranscribeCreate,
 )
 from app.db import get_db, release_session_connection
 from app.db.models import LocalizationTaskRow, MediaItemRow
@@ -100,6 +102,18 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
         {"id": "sync", "label": "Bazarr sync", "state": "pending"},
         {"id": "verify", "label": "Verification", "state": "pending"},
     ]
+    if "transcribe" in kinds_active:
+        steps[0]["state"] = "active"
+        if steps[1]["state"] == "pending":
+            steps[1]["state"] = "skipped"
+    if "transcribe" in kinds_done:
+        steps[0]["state"] = "done"
+        if steps[1]["state"] == "pending":
+            steps[1]["state"] = "skipped"
+    if "transcribe" in kinds_failed:
+        steps[0]["state"] = "failed"
+        if steps[1]["state"] == "pending":
+            steps[1]["state"] = "skipped"
     if "translate" in kinds_done or "translate" in kinds_active:
         if steps[0]["state"] == "pending":
             steps[0]["state"] = "done"
@@ -123,7 +137,14 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
             if step["state"] == "pending":
                 step["state"] = "skipped" if step["id"] == "extract" else "done"
     if task.status == "waiting_for_source":
-        steps[0]["state"] = "active"
+        request_failed = any(
+            j.job_kind == "request" and j.reason_code == "not_found" for j in jobs
+        )
+        steps[0]["state"] = "failed" if request_failed else "active"
+        if steps[1]["state"] == "pending":
+            steps[1]["state"] = "skipped"
+    if task.status == "failed" and task.error_code in {"not_found", "source_unavailable"}:
+        steps[0]["state"] = "failed"
         if steps[1]["state"] == "pending":
             steps[1]["state"] = "skipped"
     return steps
@@ -348,7 +369,14 @@ async def get_media_localization(
         )
         seen_codes.add(task.target_language_code)
 
-    return MediaLocalizationOut(media_id=media_id, capability="subtitles", languages=languages)
+    gate = await JobService(db).transcribe_gate_for_media(row)
+    return MediaLocalizationOut(
+        media_id=media_id,
+        capability="subtitles",
+        languages=languages,
+        can_transcribe=gate.can_transcribe,
+        transcribe_reason=gate.reason,
+    )
 
 
 @router.get("/media/{media_id}/actions", response_model=list[JobActionOut])
@@ -357,6 +385,25 @@ def get_media_actions(media_id: int, db: Session = Depends(get_db)) -> list[JobA
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return JobService(db).list_job_actions_for_media(media)
+
+
+@router.post("/media/{media_id}/transcribe", response_model=JobOut)
+async def transcribe_media(
+    media_id: int,
+    payload: TranscribeCreate | None = None,
+    db: Session = Depends(get_db),
+) -> JobOut:
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    body = payload or TranscribeCreate()
+    try:
+        return await JobService(db).start_manual_transcribe(
+            media,
+            target_language=body.target_language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/media/{media_id}/localization-tasks", response_model=LocalizationTaskOut)

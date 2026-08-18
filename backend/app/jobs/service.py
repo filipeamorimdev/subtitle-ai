@@ -67,6 +67,13 @@ from app.subtitles.embedded import (
     pick_extractable_track,
     probe_subtitle_tracks,
 )
+from app.subtitles.transcribe import (
+    TranscribeError,
+    TranscribeGate,
+    assess_transcribe_gate,
+    format_timecode,
+    transcribe_media_to_srt,
+)
 from app.subtitles.filenames import (
     LANG_SUFFIX_RE,
     build_external_subtitle_path,
@@ -219,6 +226,25 @@ def _action_sort_datetime(value: datetime | None) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+# Job kinds that write OpenRouter logs and ai_usage_records.
+_AI_JOB_KINDS = {"translate"}
+
+
+def _job_kind(item: JobRow) -> str:
+    return getattr(item, "job_kind", None) or "translate"
+
+
+def _ai_job_id(item: JobRow) -> int | None:
+    return item.id if _job_kind(item) in _AI_JOB_KINDS else None
+
+
+def _latest_ai_job_id(jobs: list[JobRow]) -> int | None:
+    ai_jobs = [job for job in jobs if _ai_job_id(job) is not None]
+    if not ai_jobs:
+        return None
+    return max(ai_jobs, key=lambda job: job.id).id
+
+
 def _job_row_to_action(
     item: JobRow,
     *,
@@ -231,7 +257,7 @@ def _job_row_to_action(
             message = item.progress_detail
     return JobActionOut(
         id=item.id,
-        action=getattr(item, "job_kind", None) or "translate",
+        action=_job_kind(item),
         status=item.status,
         datetime=item.completed_at or item.started_at or item.created_at,
         duration_seconds=_action_duration_seconds(item, now=now),
@@ -241,6 +267,7 @@ def _job_row_to_action(
         kind="job",
         progress=item.progress,
         progress_detail=item.progress_detail,
+        related_job_id=_ai_job_id(item),
     )
 
 
@@ -316,6 +343,11 @@ class JobService:
         now = datetime.now(timezone.utc)
         actions = [_job_row_to_action(item, now=now) for item in related]
         job_task_ids = {item.task_id for item in related if item.task_id is not None}
+        jobs_by_task: dict[int, list[JobRow]] = {}
+        for item in related:
+            if item.task_id is None:
+                continue
+            jobs_by_task.setdefault(item.task_id, []).append(item)
         from app.localization.state import ACTIVE_STATUSES
 
         tasks = self.db.scalars(
@@ -338,6 +370,7 @@ class JobService:
                     current=task.status in ACTIVE_STATUSES,
                     target_language=task.target_language_code,
                     kind="task",
+                    related_job_id=_latest_ai_job_id(jobs_by_task.get(task.id, [])),
                 )
             )
         actions.sort(key=lambda row: (_action_sort_datetime(row.datetime), row.id), reverse=True)
@@ -1136,6 +1169,166 @@ class JobService:
         row = _bind_task_id(self.db, row, task_id)
         return job_to_out(row)
 
+    def _active_transcribe_for_media(self, media: MediaItemRow) -> JobRow | None:
+        clauses = [
+            JobRow.job_kind == "transcribe",
+            JobRow.status.in_(["pending", "processing"]),
+        ]
+        path_clauses = []
+        if media.path:
+            path_clauses.append(JobRow.media_path == media.path)
+        if media.media_type == "movie" and media.bazarr_movie_id is not None:
+            path_clauses.append(
+                (JobRow.media_type == "movie") & (JobRow.bazarr_movie_id == media.bazarr_movie_id)
+            )
+        elif media.bazarr_episode_id is not None:
+            path_clauses.append(
+                (JobRow.media_type == "episode") & (JobRow.bazarr_episode_id == media.bazarr_episode_id)
+            )
+        if not path_clauses:
+            return None
+        return self.db.scalar(
+            select(JobRow).where(*clauses, or_(*path_clauses)).order_by(JobRow.id.desc()).limit(1)
+        )
+
+    async def transcribe_gate_for_media(self, media: MediaItemRow) -> TranscribeGate:
+        public = self.settings.get_public()
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        path = apply_path_mapping(media.path, mappings) if media.path else None
+        active = self._active_transcribe_for_media(media)
+        return await assess_transcribe_gate(
+            path,
+            media_roots=public.media_roots,
+            source_languages=public.source_languages or ["en"],
+            has_active_transcribe=active is not None,
+        )
+
+    async def start_manual_transcribe(
+        self,
+        media: MediaItemRow,
+        *,
+        target_language: str | None = None,
+    ) -> JobOut:
+        from app.languages import LanguageNormalizationError, normalize_language
+        from app.localization.service import LocalizationTaskService
+
+        public = self.settings.get_public()
+        raw_language = (target_language or public.target_language.code or "pt-PT").strip()
+        try:
+            language = normalize_language(raw_language)
+        except LanguageNormalizationError as exc:
+            raise ValueError(str(exc)) from exc
+
+        gate = await self.transcribe_gate_for_media(media)
+        if not gate.can_transcribe:
+            raise ValueError(gate.reason or "Audio transcription is not available for this media.")
+
+        existing = self._active_transcribe_for_media(media)
+        if existing is not None:
+            return job_to_out(existing)
+
+        tasks = LocalizationTaskService(self.db)
+        task, _created = tasks.ensure_task(
+            media_item=media,
+            language=language,
+            capability="subtitles",
+            origin="manual",
+            requested_by="user",
+        )
+        if task.status == "verifying":
+            raise ValueError("This title is already being verified.")
+        active_job = self.db.scalar(
+            select(JobRow)
+            .where(
+                JobRow.task_id == task.id,
+                JobRow.status.in_(["pending", "processing"]),
+            )
+            .order_by(JobRow.created_at.desc())
+            .limit(1)
+        )
+        if active_job is not None:
+            if (active_job.job_kind or "") == "transcribe":
+                return job_to_out(active_job)
+            raise ValueError("A job is already running for this title.")
+
+        job = await self.create_transcribe_job(
+            media,
+            target_language=language.code,
+            trigger_type="manual",
+            task_id=task.id,
+        )
+        tasks.update_checkpoints(task.id, source="active")
+        if task.status in {"requested", "planning", "waiting_for_source", "processing"}:
+            tasks.transition(task, "processing", substate="transcribing_source", clear_error=True)
+        return job
+
+    async def create_transcribe_job(
+        self,
+        media: MediaItemRow,
+        *,
+        target_language: str,
+        trigger_type: str = "manual",
+        task_id: int | None = None,
+    ) -> JobOut:
+        public = self.settings.get_public()
+        trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        path = apply_path_mapping(media.path, mappings) if media.path else ""
+        if not path:
+            raise ValueError("Media file path is missing.")
+        if not is_under_roots(path, public.media_roots):
+            raise ValueError("Media path is outside configured media roots.")
+        media_file = Path(path)
+        if not media_file.exists():
+            raise ValueError("Media file is not readable on disk.")
+
+        existing = self._active_transcribe_for_media(media)
+        if existing is not None:
+            existing = _bind_task_id(self.db, existing, task_id)
+            return job_to_out(existing)
+
+        media_type = media.media_type if media.media_type in {"movie", "episode"} else "movie"
+        ckey = (
+            candidate_key(media_type, path, target_language)
+            if path
+            else None
+        )
+        provider = public.asr_provider
+        local_model = public.asr_local_model
+        if provider == "openai":
+            model = "openai:whisper-1"
+        elif provider == "local":
+            model = f"faster-whisper:{local_model}"
+        else:
+            model = f"faster-whisper:{local_model}+openai"
+        placeholder = str(build_external_subtitle_path(media_file, "und"))
+        dkey = hashlib.sha256(f"transcribe|{path}|{target_language}".encode()).hexdigest()
+        row = JobRow(
+            candidate_key=ckey,
+            job_kind="transcribe",
+            trigger_type=trigger,
+            media_type=media_type,
+            media_path=path,
+            media_title=media.title,
+            bazarr_movie_id=media.bazarr_movie_id,
+            bazarr_episode_id=media.bazarr_episode_id,
+            bazarr_series_id=media.bazarr_series_id,
+            source_subtitle_path=path,
+            target_subtitle_path=placeholder,
+            source_language=public.source_languages[0] if public.source_languages else "en",
+            target_language=target_language,
+            model=model,
+            status="pending",
+            progress=0,
+            progress_detail="Queued for audio transcription",
+            dedupe_key=dkey,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        row = _bind_task_id(self.db, row, task_id)
+        return job_to_out(row)
+
     async def create_request_subtitle_job(
         self,
         candidate_key: str,
@@ -1438,6 +1631,13 @@ class JobService:
             errors=errors,
         )
 
+    def _rollback_quietly(self) -> None:
+        """Clear a poisoned session after a failed flush (e.g. SQLite lock)."""
+        try:
+            self.db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _fresh_job(self, job_id: int) -> JobRow | None:
         """Reload job from DB so a cancel committed by another session is visible."""
         row = self.db.get(JobRow, job_id)
@@ -1510,6 +1710,62 @@ class JobService:
         db.commit()
         return int(result.rowcount or 0)
 
+    @staticmethod
+    def recover_orphaned_processing_jobs(db: Session, inflight_ids: set[int]) -> int:
+        """Requeue processing jobs that no worker task is running.
+
+        Concurrent SQLite writers can kill a job task without persisting
+        ``failed``. The in-memory slot then frees and the worker claims more
+        pending work, leaving zombies in ``processing``.
+        """
+        stmt = update(JobRow).where(JobRow.status == "processing")
+        if inflight_ids:
+            stmt = stmt.where(JobRow.id.notin_(list(inflight_ids)))
+        result = db.execute(
+            stmt.values(
+                status="pending",
+                started_at=None,
+                progress=0,
+                progress_detail="Recovered after worker lost the job",
+            )
+        )
+        db.commit()
+        return int(result.rowcount or 0)
+
+    @staticmethod
+    def fail_job_from_worker(job_id: int, exc: BaseException) -> None:
+        """Mark a job failed on a fresh session after the worker task dies.
+
+        The job's own session is often unusable here (pending rollback after
+        ``database is locked``), so this must not reuse it.
+        """
+        from app.db import get_session_factory
+
+        session = get_session_factory()()
+        try:
+            row = session.get(JobRow, job_id)
+            if row is None or row.status not in {"pending", "processing"}:
+                return
+            row.status = "failed"
+            row.error = _public_error(exc if isinstance(exc, Exception) else Exception(str(exc)))
+            row.reason_code = (
+                _reason_code(exc) if isinstance(exc, Exception) else "failed"
+            )
+            row.completed_at = utcnow()
+            if not row.progress_detail:
+                row.progress_detail = "Worker failed"
+            session.add(row)
+            session.commit()
+        except Exception as persist_exc:  # noqa: BLE001
+            session.rollback()
+            get_logger("jobs").error(
+                "Failed to persist worker failure job_id=%s error=%s",
+                job_id,
+                persist_exc,
+            )
+        finally:
+            session.close()
+
     def cancel_job(self, job_id: int) -> JobOut:
         row = self.db.get(JobRow, job_id)
         if not row:
@@ -1574,6 +1830,8 @@ class JobService:
         if result.ok:
             row.warning = None
             row.reason_code = None
+            if not getattr(row, "task_id", None):
+                await self._discard_extracted_source_after_verify(row)
         else:
             row.warning = result.message
             row.reason_code = result.reason_code
@@ -1592,6 +1850,8 @@ class JobService:
                 await self._process_extract_job(job_id)
             elif kind == "request":
                 await self._process_request_subtitle_job(job_id)
+            elif kind == "transcribe":
+                await self._process_transcribe_job(job_id)
             else:
                 await self._process_translate_job(job_id)
         finally:
@@ -1686,7 +1946,7 @@ class JobService:
                 return
 
             # Fallback: extract an embedded text or PGS track when Bazarr finds nothing.
-            extracted = await self._extract_fallback_for_request(row, code2)
+            extracted, created = await self._extract_fallback_for_request(row, code2)
             if extracted:
                 row = self.db.get(JobRow, job_id)
                 if not row or row.status == "cancelled":
@@ -1695,17 +1955,30 @@ class JobService:
                 row.target_subtitle_path = extracted
                 row.status = "completed"
                 row.progress = 100
-                row.progress_detail = f"Extracted embedded {label} subtitle"
                 row.completed_at = utcnow()
                 row.error = None
-                row.warning = (
-                    f"Bazarr found no external {label} subtitle within "
-                    f"{int(REQUEST_TIMEOUT_SECONDS)}s; used embedded extract fallback."
-                )
-                row.reason_code = None
+                if created:
+                    from app.localization.extracted_source import EXTRACTED_EMBEDDED_REASON
+
+                    row.progress_detail = f"Extracted embedded {label} subtitle"
+                    row.warning = (
+                        f"Bazarr found no external {label} subtitle within "
+                        f"{int(REQUEST_TIMEOUT_SECONDS)}s; used embedded extract fallback."
+                    )
+                    row.reason_code = EXTRACTED_EMBEDDED_REASON
+                    self._remember_extracted_source(getattr(row, "task_id", None), extracted)
+                else:
+                    row.progress_detail = f"Found {label} subtitle"
+                    row.warning = None
+                    row.reason_code = None
                 self.db.add(row)
                 self.db.commit()
-                log.info("Request job completed via extract fallback job_id=%s path=%s", job_id, extracted)
+                log.info(
+                    "Request job completed via extract fallback job_id=%s path=%s created=%s",
+                    job_id,
+                    extracted,
+                    created,
+                )
                 await self._maybe_chain_automatic_translate(job_id, extracted)
                 return
 
@@ -1722,9 +1995,11 @@ class JobService:
             row.completed_at = utcnow()
             self.db.add(row)
             self.db.commit()
+            self._set_task_checkpoints(getattr(row, "task_id", None), source="failed")
             log.info("Request job skipped without subtitle job_id=%s", job_id)
         except Exception as exc:  # noqa: BLE001
             log.error("Request job failed job_id=%s error=%s", job_id, exc)
+            self._rollback_quietly()
             current = self.db.get(JobRow, job_id)
             if current and current.status != "cancelled":
                 current.status = "failed"
@@ -1773,20 +2048,20 @@ class JobService:
             hi=hi,
         )
 
-    async def _extract_fallback_for_request(self, row: JobRow, code2: str) -> str | None:
+    async def _extract_fallback_for_request(self, row: JobRow, code2: str) -> tuple[str | None, bool]:
         media = Path(row.media_path)
         if not media.is_file():
-            return None
+            return None, False
         try:
             tracks = await probe_subtitle_tracks(media)
         except EmbeddedError:
-            return None
+            return None, False
         track = pick_extractable_track(tracks, [code2, row.source_language or code2])
         if track is None or track.stream_index is None:
-            return None
+            return None, False
         output = build_external_subtitle_path(media, code2)
         if output.exists() and output.stat().st_size > 0:
-            return str(output)
+            return str(output), False
         try:
             await extract_embedded_track(media, track.stream_index, output, language=code2)
         except EmbeddedError as exc:
@@ -1795,8 +2070,8 @@ class JobService:
                 row.id,
                 exc,
             )
-            return None
-        return str(output)
+            return None, False
+        return str(output), True
 
     async def _lookup_requested_subtitle(
         self,
@@ -1851,6 +2126,101 @@ class JobService:
                 return path
         return None
 
+    async def _process_transcribe_job(self, job_id: int) -> None:
+        row = self.db.get(JobRow, job_id)
+        if not row or row.status != "processing":
+            return
+        log = get_logger("jobs")
+        try:
+            row.progress = 8
+            row.progress_detail = "Extracting audio"
+            self.db.add(row)
+            self.db.commit()
+
+            public = self.settings.get_public()
+            openai_key = self.settings.get_openai_api_key()
+
+            async def on_progress(done: float, total: float) -> None:
+                current = self._fresh_job(job_id)
+                if current is None or current.status == "cancelled":
+                    return
+                ratio = 0.0 if total <= 0 else min(1.0, max(0.0, done / total))
+                current.progress = 15 + int(75 * ratio)
+                current.progress_detail = (
+                    f"Transcribing {format_timecode(done)} / {format_timecode(total)}"
+                    if total > 0
+                    else "Transcribing audio"
+                )
+                self.db.add(current)
+                self.db.commit()
+
+            def is_cancelled() -> bool:
+                current = self._fresh_job(job_id)
+                return current is None or current.status == "cancelled"
+
+            path, result = await transcribe_media_to_srt(
+                row.media_path,
+                provider=public.asr_provider,
+                local_model=public.asr_local_model,
+                openai_key=openai_key,
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+            )
+
+            current = self._fresh_job(job_id)
+            if not current or current.status == "cancelled":
+                return
+            current.source_language = result.language
+            current.target_subtitle_path = str(path)
+            current.model = result.engine
+            current.progress = 90
+            current.progress_detail = "Transcribed"
+            current.status = "completed"
+            current.completed_at = utcnow()
+
+            try:
+                await self._rescan(current)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Bazarr rescan failed after transcribe job_id=%s error=%s", job_id, exc)
+                current.warning = str(exc)
+                current.reason_code = "bazarr_rescan_failed"
+
+            current.progress = 100
+            current.progress_detail = "Done"
+            self.db.add(current)
+            self.db.commit()
+            self._set_task_checkpoints(
+                getattr(current, "task_id", None), source="done", extract="skipped"
+            )
+            log.info(
+                "Transcribe job completed job_id=%s path=%s engine=%s language=%s",
+                job_id,
+                current.target_subtitle_path,
+                result.engine,
+                result.language,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("Transcribe job failed job_id=%s error=%s", job_id, exc)
+            self._rollback_quietly()
+            current = self.db.get(JobRow, job_id)
+            if current and current.status == "cancelled":
+                return
+            if current and str(exc) == "Transcription cancelled.":
+                current.status = "cancelled"
+                current.reason_code = "cancelled"
+                current.completed_at = utcnow()
+                self.db.add(current)
+                self.db.commit()
+                return
+            if current:
+                current.status = "failed"
+                current.error = _public_error(exc)
+                current.reason_code = _reason_code(exc)
+                current.completed_at = utcnow()
+                self.db.add(current)
+                self.db.commit()
+                self._set_task_checkpoints(getattr(current, "task_id", None), source="failed")
+
     async def _process_extract_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
         if not row or row.status != "processing":
@@ -1897,10 +2267,14 @@ class JobService:
             self._set_task_checkpoints(
                 getattr(current, "task_id", None), source="done", extract="done"
             )
+            self._remember_extracted_source(
+                getattr(current, "task_id", None), current.target_subtitle_path
+            )
             log.info("Extract job completed job_id=%s path=%s", job_id, current.target_subtitle_path)
             await self._maybe_chain_automatic_translate(job_id, current.target_subtitle_path)
         except Exception as exc:  # noqa: BLE001
             log.error("Extract job failed job_id=%s error=%s", job_id, exc)
+            self._rollback_quietly()
             current = self.db.get(JobRow, job_id)
             if current and current.status != "cancelled":
                 current.status = "failed"
@@ -1912,7 +2286,19 @@ class JobService:
                 self._set_task_checkpoints(getattr(current, "task_id", None), extract="failed")
 
     async def _notify_task_planner(self, job_id: int) -> None:
-        row = self.db.get(JobRow, job_id)
+        try:
+            row = self.db.get(JobRow, job_id)
+        except Exception:
+            self._rollback_quietly()
+            try:
+                row = self.db.get(JobRow, job_id)
+            except Exception as exc:  # noqa: BLE001
+                get_logger("jobs").warning(
+                    "Task planner notify skipped job_id=%s error=%s",
+                    job_id,
+                    exc,
+                )
+                return
         if row is None or not getattr(row, "task_id", None):
             return
         from app.localization.planner import TaskPlanner
@@ -1971,6 +2357,46 @@ class JobService:
         task.metadata_json = merge_checkpoints(task.metadata_json, states)
         self.db.add(task)
         self.db.commit()
+
+    def _remember_extracted_source(self, task_id: int | None, path: str | None) -> None:
+        if not task_id or not path:
+            return
+        from app.localization.extracted_source import remember_extracted_source
+
+        task = self.db.get(LocalizationTaskRow, task_id)
+        if task is None:
+            return
+        task.metadata_json = remember_extracted_source(task.metadata_json, path)
+        self.db.add(task)
+        self.db.commit()
+
+    async def _discard_extracted_source_after_verify(self, row: JobRow) -> None:
+        """Legacy non-task path: drop the extracted sidecar after Bazarr verify."""
+        from app.localization.extracted_source import (
+            resolve_extracted_source_path,
+            unlink_extracted_source,
+        )
+
+        path = resolve_extracted_source_path(self.db, translate_job=row)
+        if path is None:
+            return
+        public = self.settings.get_public()
+        deleted = unlink_extracted_source(
+            path,
+            target_path=row.target_subtitle_path,
+            media_path=row.media_path,
+            media_roots=public.media_roots,
+        )
+        if not deleted:
+            return
+        try:
+            await self._rescan(row)
+        except Exception as exc:  # noqa: BLE001
+            get_logger("jobs").warning(
+                "Bazarr rescan after extracted-source cleanup failed job_id=%s error=%s",
+                row.id,
+                exc,
+            )
 
     async def _process_translate_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
@@ -2281,6 +2707,8 @@ class JobService:
                     current.reason_code = "bazarr_verify_failed"
                 else:
                     self._set_task_checkpoints(task_id, verify="done")
+                    if not task_id:
+                        await self._discard_extracted_source_after_verify(current)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Bazarr rescan failed job_id=%s error=%s", job_id, exc)
                 self._set_task_checkpoints(task_id, sync="failed", verify="failed")
@@ -2309,6 +2737,7 @@ class JobService:
             log.info("Job completed job_id=%s model=%s", job_id, winning_model)
         except Exception as exc:  # noqa: BLE001
             log.error("Job failed job_id=%s error=%s", job_id, exc)
+            self._rollback_quietly()
             current = self._fresh_job(job_id)
             reason = _reason_code(exc)
             if current and current.status != "cancelled":
@@ -2394,6 +2823,8 @@ def _public_error(exc: Exception) -> str:
         return str(exc)
     if isinstance(exc, EmbeddedError):
         return str(exc)
+    if isinstance(exc, TranscribeError):
+        return str(exc)
     message = str(exc)
     mapping = {
         "Target subtitle already exists": "Target subtitle already exists.",
@@ -2403,6 +2834,7 @@ def _public_error(exc: Exception) -> str:
         "ffmpeg": "Embedded subtitle extraction failed.",
         "tesseract": "PGS subtitle OCR failed.",
         "OCR": "PGS subtitle OCR failed.",
+        "database is locked": "The job was interrupted because the database was busy. Retry it.",
     }
     for key, value in mapping.items():
         if key.lower() in message.lower():
@@ -2434,6 +2866,11 @@ def _reason_code(exc: Exception) -> str:
         return "bazarr_error"
     if isinstance(exc, EmbeddedError):
         return "extract_failed"
-    if "cancel" in str(exc).lower():
+    if isinstance(exc, TranscribeError):
+        return "transcribe_failed"
+    message = str(exc)
+    if "database is locked" in message.lower() or "pendingrollback" in type(exc).__name__.lower():
+        return "database_locked"
+    if "cancel" in message.lower():
         return "cancelled"
     return "failed"

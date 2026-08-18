@@ -36,6 +36,8 @@ const actionError = ref<string | null>(null)
 const modalOpen = ref(false)
 const busy = ref(false)
 const retryingId = ref<number | null>(null)
+const canTranscribe = ref(false)
+const transcribeReason = ref<string | null>(null)
 let timer: number | undefined
 
 const mediaId = computed(() => Number(props.id))
@@ -206,6 +208,8 @@ async function load() {
     ])
     media.value = mediaRow
     localization.value = loc.languages
+    canTranscribe.value = Boolean(loc.can_transcribe)
+    transcribeReason.value = loc.transcribe_reason || null
     tasks.value = taskList
     actions.value = history
     error.value = null
@@ -260,6 +264,27 @@ async function cancelTask(taskId?: number) {
   }
 }
 
+async function transcribeAudio() {
+  if (!media.value || busy.value) return
+  const ok = window.confirm(
+    'Transcribe audio from this file? On CPU this can take as long as the video itself, and the first run downloads a Whisper model.',
+  )
+  if (!ok) return
+  busy.value = true
+  actionError.value = null
+  try {
+    await api.transcribeMedia(mediaId.value, {
+      target_language:
+        selectedTask.value?.target_language_code || store.settings?.target_language.code,
+    })
+    await load()
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function retryJob(jobId: number) {
   if (retryingId.value != null) return
   retryingId.value = jobId
@@ -283,6 +308,7 @@ watch(
 
 onMounted(() => {
   store.loadCandidatesCached().catch(() => undefined)
+  store.loadSettings().catch(() => undefined)
   load().catch(() => undefined)
   timer = window.setInterval(() => {
     if (anyActive.value) load().catch(() => undefined)
@@ -349,6 +375,17 @@ onUnmounted(() => {
             @click="retryBazarrSync"
           >
             Retry Bazarr sync
+          </button>
+          <button
+            v-if="canTranscribe"
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            :title="transcribeReason || 'Transcribe audio when no subtitle source is available'"
+            aria-label="Transcribe audio"
+            :disabled="busy || anyActive"
+            @click="transcribeAudio"
+          >
+            Transcribe audio
           </button>
           <button
             type="button"

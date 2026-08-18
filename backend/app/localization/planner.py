@@ -42,10 +42,12 @@ logger = get_logger("task_planner")
 
 MSG_WAITING_SOURCE = "Waiting for a subtitle source."
 MSG_RETRY_SOURCE = "No suitable subtitle source found yet. Subtitle AI will retry."
+MSG_SOURCE_NOT_FOUND = "No suitable subtitle source was found."
 MSG_UNSUPPORTED = "This localization capability is not available."
 MSG_MEDIA_MISSING = "This media is no longer available."
 MSG_NO_MEDIA_REF = "No usable media reference is available."
 MSG_EXTRACT_FAILED = "Source extraction failed."
+MSG_TRANSCRIBE_FAILED = "Audio transcription failed."
 MSG_TRANSLATE_FAILED = "Translation failed."
 
 
@@ -110,6 +112,7 @@ class TaskPlanner:
         if await self._target_satisfied(media, task.target_language_code):
             self._clear_verify_failure(task.id)
             latest_written = self._latest_job(task.id, "translate")
+            latest_transcribe = self._latest_job(task.id, "transcribe")
             wrote = (
                 latest_written is not None
                 and latest_written.status == "completed"
@@ -119,11 +122,39 @@ class TaskPlanner:
                 )
                 is not None
             )
+            transcribed_target = (
+                latest_transcribe is not None
+                and latest_transcribe.status == "completed"
+                and languages_compatible(
+                    latest_transcribe.source_language, task.target_language_code
+                )
+                and find_existing_sidecar(
+                    latest_transcribe.target_subtitle_path,
+                    latest_transcribe.source_language or task.target_language_code,
+                )
+                is not None
+            )
             if wrote:
                 self.tasks.update_checkpoints(
                     task.id,
                     translate="done",
                     validate="done",
+                    write="done",
+                    sync="done",
+                    verify="done",
+                )
+                await self._discard_extracted_source(
+                    task,
+                    media,
+                    target_path=latest_written.target_subtitle_path,
+                )
+            elif transcribed_target:
+                self.tasks.update_checkpoints(
+                    task.id,
+                    source="done",
+                    extract="skipped",
+                    translate="skipped",
+                    validate="skipped",
                     write="done",
                     sync="done",
                     verify="done",
@@ -167,9 +198,21 @@ class TaskPlanner:
                     error_message=MSG_EXTRACT_FAILED,
                 )
 
+        latest_transcribe = self._latest_job(task.id, "transcribe")
+        if latest_transcribe and latest_transcribe.status == "failed":
+            if task.status != "planning":
+                self.tasks.update_checkpoints(task.id, source="failed")
+                return self.tasks.transition(
+                    task,
+                    "failed",
+                    error_code=latest_transcribe.reason_code or "transcribe_failed",
+                    error_message=MSG_TRANSCRIBE_FAILED,
+                )
+
         # Resolve source / next action via current mechanisms
         snapshot = await self._resolve_source_snapshot(media, task.target_language_code)
         self._prefer_completed_extract(task.id, snapshot)
+        self._prefer_completed_transcribe(task, snapshot)
         trigger = "manual" if task.origin == "manual" else "automatic"
         jobs = JobService(self.db)
 
@@ -260,13 +303,11 @@ class TaskPlanner:
 
         if snapshot.get("can_request"):
             cooldown = JobService(self.db)._recent_not_found_cooldown(ckey) if ckey else None
-            if cooldown is not None:
-                return self.tasks.transition(
+            if cooldown is not None and task.status != "planning":
+                return self._after_source_not_found(
                     task,
-                    "waiting_for_source",
                     substate="source_cooldown",
-                    error_code="not_found",
-                    error_message=MSG_RETRY_SOURCE,
+                    waiting_message=MSG_RETRY_SOURCE,
                 )
             self.tasks.update_checkpoints(task.id, source="active")
             self.tasks.transition(task, "processing", substate="discovering_source", clear_error=True)
@@ -293,13 +334,7 @@ class TaskPlanner:
                 if row:
                     self.tasks.attach_job(row, task.id)
                 if job.status == "skipped" and job.reason_code == "not_found":
-                    return self.tasks.transition(
-                        task,
-                        "waiting_for_source",
-                        substate="awaiting_source",
-                        error_code="not_found",
-                        error_message=MSG_RETRY_SOURCE,
-                    )
+                    return self._after_source_not_found(task)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Source request failed task=%s error=%s", task.id, exc)
                 return self.tasks.transition(
@@ -314,13 +349,7 @@ class TaskPlanner:
         # Failed request with not_found
         latest_request = self._latest_job(task.id, "request")
         if latest_request and latest_request.reason_code == "not_found":
-            return self.tasks.transition(
-                task,
-                "waiting_for_source",
-                substate="awaiting_source",
-                error_code="not_found",
-                error_message=MSG_RETRY_SOURCE,
-            )
+            return self._after_source_not_found(task)
 
         if not media.path and media.bazarr_movie_id is None and media.bazarr_episode_id is None:
             return self.tasks.transition(
@@ -356,6 +385,31 @@ class TaskPlanner:
             await self.plan(int(row.task_id))
         except Exception as exc:  # noqa: BLE001
             logger.warning("on_job_finished job=%s error=%s", job_id, exc)
+
+    def _after_source_not_found(
+        self,
+        task: LocalizationTaskRow,
+        *,
+        error_code: str = "not_found",
+        substate: str = "awaiting_source",
+        waiting_message: str = MSG_RETRY_SOURCE,
+    ) -> LocalizationTaskRow:
+        """Fail a finished manual search; automatic tasks keep waiting for a later source."""
+        self.tasks.update_checkpoints(task.id, source="failed")
+        if task.origin == "manual" and task.status != "planning":
+            return self.tasks.transition(
+                task,
+                "failed",
+                error_code=error_code,
+                error_message=MSG_SOURCE_NOT_FOUND,
+            )
+        return self.tasks.transition(
+            task,
+            "waiting_for_source",
+            substate=substate,
+            error_code=error_code,
+            error_message=waiting_message,
+        )
 
     def _clear_verify_failure(self, task_id: int) -> None:
         """Drop stale verify-failed markers once the target is actually present."""
@@ -412,6 +466,12 @@ class TaskPlanner:
             self._clear_verify_failure(task.id)
             self.tasks.update_checkpoints(task.id, sync="done", verify="done")
             if await self._target_satisfied(media, task.target_language_code):
+                latest_written = self._latest_job(task.id, "translate")
+                await self._discard_extracted_source(
+                    task,
+                    media,
+                    target_path=latest_written.target_subtitle_path if latest_written else None,
+                )
                 return self.tasks.transition(task, "completed", substate=None, clear_error=True)
         self.tasks.update_checkpoints(task.id, verify="failed")
         return self.tasks.transition(
@@ -421,6 +481,40 @@ class TaskPlanner:
             error_code=result.reason_code or "bazarr_verify_failed",
             error_message=result.message or USER_VERIFY_FAILED,
         )
+
+    async def _discard_extracted_source(
+        self,
+        task: LocalizationTaskRow,
+        media: MediaItemRow,
+        *,
+        target_path: str | None,
+    ) -> None:
+        """Remove an extracted source sidecar after the target is verified in Bazarr."""
+        from app.localization.extracted_source import (
+            resolve_extracted_source_path,
+            unlink_extracted_source,
+        )
+
+        path = resolve_extracted_source_path(self.db, task_id=task.id)
+        if path is None:
+            return
+        public = self.settings.get_public()
+        deleted = unlink_extracted_source(
+            path,
+            target_path=target_path,
+            media_path=media.path,
+            media_roots=public.media_roots,
+        )
+        if not deleted:
+            return
+        try:
+            await BazarrVerificationService(self.db).rescan(media)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Bazarr rescan after extracted-source cleanup failed task=%s error=%s",
+                task.id,
+                exc,
+            )
 
     def _active_job_for_task(self, task_id: int) -> JobRow | None:
         return self.db.scalar(
@@ -447,6 +541,23 @@ class TaskPlanner:
             snapshot["can_extract"] = False
             return
         snapshot["can_extract"] = False
+
+    def _prefer_completed_transcribe(self, task: LocalizationTaskRow, snapshot: dict) -> None:
+        """Use a finished transcription as the translation source (or the target itself)."""
+        latest = self._latest_job(task.id, "transcribe")
+        if latest is None or latest.status != "completed":
+            return
+        output = Path(latest.target_subtitle_path)
+        if not (output.is_file() and output.stat().st_size > 0):
+            return
+        snapshot["can_extract"] = False
+        detected = latest.source_language or ""
+        if languages_compatible(detected, task.target_language_code):
+            snapshot["target_exists"] = True
+            return
+        snapshot["can_translate"] = True
+        snapshot["source_path"] = str(output)
+        snapshot["source_language"] = detected or snapshot.get("source_language")
 
     def _overlay_disk_source(self, result: dict, path: str, source_langs: list[str]) -> None:
         """Prefer a sidecar SRT on disk over a stale Bazarr wanted-list snapshot."""
@@ -477,6 +588,8 @@ class TaskPlanner:
             sub = "extracting_source"
         elif kind == "request":
             sub = "discovering_source"
+        elif kind == "transcribe":
+            sub = "transcribing_source"
         else:
             sub = kind
         if task.status in ACTIVE_STATUSES or task.status == "planning":

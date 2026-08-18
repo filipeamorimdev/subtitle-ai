@@ -43,6 +43,7 @@ app/languages/countries.py
 app/languages/iso.py
 app/localization/__init__.py
 app/localization/checkpoints.py
+app/localization/extracted_source.py
 app/localization/planner.py
 app/localization/service.py
 app/localization/state.py
@@ -58,8 +59,6 @@ app/services/ai_stats.py
 app/services/ai_usage.py
 app/services/candidates.py
 app/services/fallback.py
-app/services/glossary.py
-app/services/glossary_universes.py
 app/services/model_catalog.py
 app/services/model_preferences.py
 app/services/model_router.py
@@ -71,6 +70,7 @@ app/subtitles/markup.py
 app/subtitles/models.py
 app/subtitles/ocr.py
 app/subtitles/pgs.py
+app/subtitles/transcribe.py
 app/subtitles/parsers/__init__.py
 app/subtitles/parsers/srt.py
 app/subtitles/validation/__init__.py
@@ -99,7 +99,8 @@ tests/test_automatic_fallback.py
 tests/test_bazarr.py
 tests/test_clear_data.py
 tests/test_embedded.py
-tests/test_glossary.py
+tests/test_extracted_source.py
+tests/test_job_requests.py
 tests/test_job_usage.py
 tests/test_jobs_e2e.py
 tests/test_languages.py
@@ -119,5 +120,6 @@ tests/test_pgs.py
 tests/test_provider_migration.py
 tests/test_routing_scenarios.py
 tests/test_subtitles.py
+tests/test_transcribe.py
 tests/test_v01_upgrade.py
 tests/test_v03_localization_upgrade.py

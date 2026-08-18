@@ -10,7 +10,7 @@ v0.3 introduces a **media-centric** localization model on top of the existing jo
 ```text
 MediaItem
     └── LocalizationTask   (user-facing goal)
-            └── Job / execution   (translate | extract | request)
+            └── Job / execution   (translate | extract | request | transcribe)
 ```
 
 Users ask for an outcome (“The Matrix → Portuguese (Portugal) subtitles”).  
@@ -34,7 +34,8 @@ Historical jobs without `task_id` remain valid legacy execution history.
 4. Backend normalizes language and creates/reuses an active task
 5. Task planner checks whether the target already exists → may complete immediately
 6. Otherwise creates the next necessary job (request / extract / translate)
-7. Worker processes the job; planner continues until verified
+7. If no source exists and extract is impossible, the media page offers **Transcribe audio** (manual Whisper ASR). That job writes a source (or target) SRT; the planner then translates if needed and verifies as usual.
+8. Worker processes the job; planner continues until verified
 
 ## Automatic fallback
 

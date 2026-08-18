@@ -917,6 +917,178 @@ async def test_waiting_task_resumes_when_source_appears(loc_env, monkeypatch):
     assert jobs[0].job_kind == "translate"
 
 
+def _skipped_request_job(task, media, *, candidate_key="k") -> JobRow:
+    return JobRow(
+        task_id=task.id,
+        candidate_key=candidate_key,
+        job_kind="request",
+        media_type="movie",
+        media_path=media.path or "",
+        media_title=media.title,
+        source_subtitle_path=media.path or "",
+        target_subtitle_path=media.path or "",
+        model="bazarr-search",
+        status="skipped",
+        progress=100,
+        progress_detail="No EN subtitle found",
+        reason_code="not_found",
+        completed_at=datetime.now(timezone.utc),
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_task_fails_when_source_search_finds_nothing(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="discovering_source")
+    db.add(_skipped_request_job(task, media))
+    db.commit()
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def empty_snapshot(self, media_row, target_language):
+        return {
+            "candidate_key": "k",
+            "can_translate": False,
+            "can_extract": False,
+            "can_request": False,
+            "source_path": None,
+            "source_language": None,
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", empty_snapshot)
+
+    stopped = await TaskPlanner(db).plan(task.id)
+    assert stopped is not None
+    assert stopped.status == "failed"
+    assert stopped.error_code == "not_found"
+    assert stopped.error_message == "No suitable subtitle source was found."
+    cps = read_checkpoints(svc.get(task.id).metadata_json)
+    assert cps["source"] == "failed"
+
+    async def source_ready(self, media_row, target_language):
+        return {
+            "candidate_key": "k",
+            "can_translate": True,
+            "can_extract": False,
+            "can_request": False,
+            "source_path": str(source),
+            "source_language": "en",
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", source_ready)
+    retried = svc.prepare_retry(task.id)
+    resumed = await TaskPlanner(db).plan(retried.id)
+    assert resumed is not None
+    assert resumed.status == "processing"
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id, JobRow.job_kind == "translate")).all())
+    assert len(jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_task_waits_when_source_search_finds_nothing(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    language = normalize_language("pt-PT")
+    svc = LocalizationTaskService(db)
+    task, _ = svc.ensure_task(media_item=media, language=language, origin="automatic")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="discovering_source")
+    db.add(_skipped_request_job(task, media))
+    db.commit()
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def empty_snapshot(self, media_row, target_language):
+        return {
+            "candidate_key": "k",
+            "can_translate": False,
+            "can_extract": False,
+            "can_request": False,
+            "source_path": None,
+            "source_language": None,
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", empty_snapshot)
+
+    waiting = await TaskPlanner(db).plan(task.id)
+    assert waiting is not None
+    assert waiting.status == "waiting_for_source"
+    assert waiting.error_code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_manual_waiting_task_stops_after_source_not_found(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "waiting_for_source", substate="awaiting_source")
+    db.add(_skipped_request_job(task, media))
+    db.commit()
+
+    async def fake_present(self, media_row, target_language):
+        return False
+
+    async def empty_snapshot(self, media_row, target_language):
+        return {
+            "candidate_key": "k",
+            "can_translate": False,
+            "can_extract": False,
+            "can_request": False,
+            "source_path": None,
+            "source_language": None,
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", empty_snapshot)
+
+    stopped = await TaskPlanner(db).plan(task.id)
+    assert stopped is not None
+    assert stopped.status == "failed"
+    assert stopped.error_code == "not_found"
+
+
 @pytest.mark.asyncio
 async def test_retry_verification_does_not_retranslate(loc_env, monkeypatch):
     db, tmp_path, media_dir, source = loc_env
@@ -1147,6 +1319,7 @@ async def test_checkpoint_external_source_then_write_then_verify(loc_env, monkey
     cps = read_checkpoints(svc.get(task.id).metadata_json)
     assert cps["sync"] == "done"
     assert cps["verify"] == "done"
+    assert source.exists()
 
 
 @pytest.mark.asyncio
@@ -1234,6 +1407,282 @@ async def test_checkpoint_embedded_extract_then_translate(loc_env, monkeypatch):
     cps = read_checkpoints(svc.get(task.id).metadata_json)
     assert cps["extract"] == "done"
     assert cps["translate"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_extracted_source_removed_after_bazarr_verify(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+    target = media_dir / "The Matrix.pt.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="extract",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(media_dir / "The Matrix.mkv"),
+            target_subtitle_path=str(source),
+            source_language="en",
+            model="ffmpeg-extract",
+            status="completed",
+        )
+    )
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(source),
+            target_subtitle_path=str(target),
+            target_language="pt-PT",
+            model="mock-free",
+            status="completed",
+        )
+    )
+    db.commit()
+
+    present = {"ok": False}
+    rescans = {"n": 0}
+
+    async def present_after_write(self, media_row, target_language):
+        return present["ok"]
+
+    async def fake_rescan(self, media, target_language):
+        return VerificationResult(
+            ok=present["ok"],
+            present=present["ok"],
+            reason_code=None if present["ok"] else "bazarr_verify_failed",
+            message=None if present["ok"] else "Target subtitle is not yet visible in Bazarr.",
+        )
+
+    async def fake_cleanup_rescan(self, media):
+        rescans["n"] += 1
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", present_after_write)
+    monkeypatch.setattr(BazarrVerificationService, "rescan_and_verify", fake_rescan)
+    monkeypatch.setattr(BazarrVerificationService, "rescan", fake_cleanup_rescan)
+
+    after_write = await TaskPlanner(db).plan(task.id)
+    assert after_write is not None
+    assert after_write.status == "verifying"
+    assert source.exists()
+    assert target.exists()
+    assert rescans["n"] == 0
+
+    present["ok"] = True
+    done = await TaskPlanner(db).plan(task.id)
+    assert done is not None
+    assert done.status == "completed"
+    assert not source.exists()
+    assert target.exists()
+    assert rescans["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_extracted_source_removed_when_already_verified(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+    target = media_dir / "The Matrix.pt.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="extract",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(media_dir / "The Matrix.mkv"),
+            target_subtitle_path=str(source),
+            source_language="en",
+            model="ffmpeg-extract",
+            status="completed",
+        )
+    )
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(source),
+            target_subtitle_path=str(target),
+            target_language="pt-PT",
+            model="mock-free",
+            status="completed",
+        )
+    )
+    db.commit()
+
+    async def already_present(self, media_row, target_language):
+        return True
+
+    async def fake_cleanup_rescan(self, media):
+        return None
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", already_present)
+    monkeypatch.setattr(BazarrVerificationService, "rescan", fake_cleanup_rescan)
+
+    done = await TaskPlanner(db).plan(task.id)
+    assert done is not None
+    assert done.status == "completed"
+    assert not source.exists()
+    assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_request_extract_fallback_source_removed_after_verify(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+    target = media_dir / "The Matrix.pt.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="request",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(source),
+            target_subtitle_path=str(source),
+            source_language="en",
+            model="bazarr-search",
+            status="completed",
+            reason_code="extracted_embedded",
+        )
+    )
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(source),
+            target_subtitle_path=str(target),
+            target_language="pt-PT",
+            model="mock-free",
+            status="completed",
+        )
+    )
+    db.commit()
+
+    async def already_present(self, media_row, target_language):
+        return True
+
+    async def fake_cleanup_rescan(self, media):
+        return None
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", already_present)
+    monkeypatch.setattr(BazarrVerificationService, "rescan", fake_cleanup_rescan)
+
+    done = await TaskPlanner(db).plan(task.id)
+    assert done is not None
+    assert done.status == "completed"
+    assert not source.exists()
+    assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_extracted_source_kept_until_bazarr_verify(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "verifying", substate="bazarr_sync")
+    target = media_dir / "The Matrix.pt.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="extract",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(media_dir / "The Matrix.mkv"),
+            target_subtitle_path=str(source),
+            source_language="en",
+            model="ffmpeg-extract",
+            status="completed",
+        )
+    )
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=str(media_dir / "The Matrix.mkv"),
+            source_subtitle_path=str(source),
+            target_subtitle_path=str(target),
+            target_language="pt-PT",
+            model="mock-free",
+            status="completed",
+            reason_code="bazarr_verify_failed",
+        )
+    )
+    db.commit()
+
+    async def still_missing(self, media_row, target_language):
+        return False
+
+    async def fake_rescan(self, media, target_language):
+        return VerificationResult(
+            ok=False,
+            present=False,
+            reason_code="bazarr_verify_failed",
+            message="Target subtitle is not yet visible in Bazarr.",
+        )
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", still_missing)
+    monkeypatch.setattr(BazarrVerificationService, "rescan_and_verify", fake_rescan)
+
+    still = await TaskPlanner(db).plan(task.id)
+    assert still is not None
+    assert still.status == "verifying"
+    assert source.exists()
+    assert target.exists()
 
 
 @pytest.mark.asyncio
@@ -1996,6 +2445,21 @@ def test_list_job_actions_for_media_includes_legacy_and_task_jobs(loc_env):
     )
     db.add(
         JobRow(
+            task_id=task.id,
+            job_kind="extract",
+            media_type="movie",
+            media_path=media.path or "",
+            media_title=media.title,
+            bazarr_movie_id=42,
+            source_subtitle_path="",
+            target_subtitle_path="/media/Matrix/The Matrix.en.srt",
+            target_language="en",
+            model="",
+            status="completed",
+        )
+    )
+    db.add(
+        JobRow(
             job_kind="request",
             media_type="movie",
             media_path=media.path or "",
@@ -2014,11 +2478,21 @@ def test_list_job_actions_for_media_includes_legacy_and_task_jobs(loc_env):
     kinds = {item.action for item in actions}
     langs = {item.target_language for item in actions}
     assert "translate" in kinds
+    assert "extract" in kinds
     assert "request" in kinds
     assert "localize" in kinds
     assert "pt-PT" in langs
     assert "en" in langs
     assert any(item.kind == "task" and item.current for item in actions)
+
+    translate = next(item for item in actions if item.action == "translate")
+    extract = next(item for item in actions if item.action == "extract")
+    request = next(item for item in actions if item.action == "request")
+    localize = next(item for item in actions if item.action == "localize")
+    assert translate.related_job_id == translate.id
+    assert extract.related_job_id is None
+    assert request.related_job_id is None
+    assert localize.related_job_id == translate.id
 
 
 def test_list_job_actions_for_media_includes_cancelled_task_without_cancelled_job(loc_env):
@@ -2060,7 +2534,10 @@ def test_list_job_actions_for_media_includes_cancelled_task_without_cancelled_jo
 
     actions = JobService(db).list_job_actions_for_media(media)
     assert any(item.kind == "job" and item.status == "completed" for item in actions)
-    assert any(item.kind == "task" and item.id == task.id and item.status == "cancelled" for item in actions)
+    localize = next(item for item in actions if item.kind == "task" and item.id == task.id)
+    assert localize.status == "cancelled"
+    translate = next(item for item in actions if item.action == "translate")
+    assert localize.related_job_id == translate.id
 
 
 def test_list_job_actions_for_media_includes_tasks_without_jobs(loc_env):
@@ -2083,3 +2560,4 @@ def test_list_job_actions_for_media_includes_tasks_without_jobs(loc_env):
     assert row.action == "localize"
     assert row.target_language == "de"
     assert row.id == task.id
+    assert row.related_job_id is None

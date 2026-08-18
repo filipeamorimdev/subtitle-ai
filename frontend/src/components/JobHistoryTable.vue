@@ -4,7 +4,7 @@ import { RouterLink, useRoute } from 'vue-router'
 import type { JobAction } from '../types'
 import { formatDateTime, formatDuration } from '../utils/datetime'
 import { withReturnTo } from '../utils/mediaNav'
-import { canRetryJob, jobStatusBadgeClass } from '../utils/status'
+import { canRetryJob, jobHasAiArtifacts, jobStatusBadgeClass } from '../utils/status'
 
 const route = useRoute()
 
@@ -69,6 +69,16 @@ function isJobItem(item: JobAction) {
   return item.kind !== 'task'
 }
 
+function aiJobId(item: JobAction): number | null {
+  if (item.related_job_id != null) return item.related_job_id
+  if (!isJobItem(item) || item.action === 'localize') return null
+  return jobHasAiArtifacts(item.action) ? item.id : null
+}
+
+function hasAiButtons(item: JobAction) {
+  return aiJobId(item) != null
+}
+
 function shouldLink(item: JobAction) {
   if (!isJobItem(item)) return false
   return props.linkCurrent || !item.current
@@ -83,11 +93,13 @@ function jobHref(item: JobAction) {
 }
 
 function logsHref(item: JobAction) {
-  return withReturnTo(`/jobs/${item.id}`, route.fullPath, { log: '1' })
+  const id = aiJobId(item)
+  return withReturnTo(`/jobs/${id ?? item.id}`, route.fullPath, { log: '1' })
 }
 
 function statsHref(item: JobAction) {
-  return withReturnTo(`/jobs/${item.id}/stats`, route.fullPath)
+  const id = aiJobId(item)
+  return withReturnTo(`/jobs/${id ?? item.id}/stats`, route.fullPath)
 }
 </script>
 
@@ -130,7 +142,7 @@ function statsHref(item: JobAction) {
           </span>
           <div class="flex shrink-0 items-center">
             <RouterLink
-              v-if="isJobItem(item)"
+              v-if="hasAiButtons(item)"
               :class="iconBtnClass"
               :to="logsHref(item)"
               title="View logs"
@@ -154,7 +166,7 @@ function statsHref(item: JobAction) {
               </svg>
             </RouterLink>
             <RouterLink
-              v-if="isJobItem(item)"
+              v-if="hasAiButtons(item)"
               :class="iconBtnClass"
               :to="statsHref(item)"
               title="Usage stats"
@@ -299,7 +311,7 @@ function statsHref(item: JobAction) {
             <td class="whitespace-nowrap py-3 pl-2 align-top">
               <div class="flex items-center justify-end">
                 <RouterLink
-                  v-if="isJobItem(item)"
+                  v-if="hasAiButtons(item)"
                   :class="iconBtnClass"
                   :to="logsHref(item)"
                   title="View logs"
@@ -323,7 +335,7 @@ function statsHref(item: JobAction) {
                   </svg>
                 </RouterLink>
                 <RouterLink
-                  v-if="isJobItem(item)"
+                  v-if="hasAiButtons(item)"
                   :class="iconBtnClass"
                   :to="statsHref(item)"
                   title="Usage stats"

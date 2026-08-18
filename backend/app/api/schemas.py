@@ -34,6 +34,11 @@ class SettingsUpdate(BaseModel):
     max_concurrent_translate: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_extract: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_request: int | None = Field(default=None, ge=1, le=20)
+    max_concurrent_transcribe: int | None = Field(default=None, ge=1, le=20)
+    asr_provider: Literal["local", "openai", "local_then_openai"] | None = None
+    asr_local_model: Literal["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"] | None = None
+    openai_api_key: str | None = None
+    clear_openai_api_key: bool = False
     automatic_fallback_enabled: bool | None = None
     automatic_scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
     bazarr_grace_period_minutes: int | None = Field(default=None, ge=0, le=1440)
@@ -68,6 +73,11 @@ class SettingsOut(BaseModel):
     max_concurrent_translate: int
     max_concurrent_extract: int
     max_concurrent_request: int
+    max_concurrent_transcribe: int = 1
+    asr_provider: str = "local_then_openai"
+    asr_local_model: str = "small"
+    openai_api_key_masked: str | None = None
+    openai_api_key_configured: bool = False
     automatic_fallback_enabled: bool = False
     automatic_scan_interval_minutes: int = 5
     bazarr_grace_period_minutes: int = 10
@@ -98,7 +108,7 @@ class ClearDataResult(BaseModel):
 
 
 class ClearJobsRequest(BaseModel):
-    job_kind: Literal["translate", "extract", "request"] | None = None
+    job_kind: Literal["translate", "extract", "request", "transcribe"] | None = None
     status: Literal["failed", "skipped", "cancelled"] | None = None
 
 
@@ -153,11 +163,13 @@ class CandidateOut(BaseModel):
     embedded_subtitles: list[EmbeddedSubtitleOut] = Field(default_factory=list)
     has_embedded: bool = False
     can_extract: bool = False
+    can_transcribe: bool = False
     extract_stream_index: int | None = None
     extract_language: str | None = None
     active_extract_job_id: int | None = None
     active_request_job_id: int | None = None
     active_translate_job_id: int | None = None
+    active_transcribe_job_id: int | None = None
     latest_job_id: int | None = None
 
 
@@ -176,6 +188,10 @@ class JobCreate(BaseModel):
 
 class ExtractCreate(BaseModel):
     candidate_key: str
+
+
+class TranscribeCreate(BaseModel):
+    target_language: str | None = None
 
 
 class RequestSubtitleCreate(BaseModel):
@@ -268,6 +284,7 @@ class JobActionOut(BaseModel):
     kind: Literal["job", "task"] = "job"
     progress: float | None = None
     progress_detail: str | None = None
+    related_job_id: int | None = None
 
 
 class JobLogOut(BaseModel):
@@ -498,6 +515,8 @@ class MediaLocalizationOut(BaseModel):
     media_id: int
     capability: str = "subtitles"
     languages: list[LanguageAvailabilityOut] = Field(default_factory=list)
+    can_transcribe: bool = False
+    transcribe_reason: str | None = None
 
 
 class LocalizationTaskCreate(BaseModel):

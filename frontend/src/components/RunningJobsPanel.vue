@@ -6,7 +6,7 @@ import type { Job, JobLog, LocalizationTask } from '../types'
 import { formatElapsed } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
 import { withReturnTo } from '../utils/mediaNav'
-import { jobStatusClass, taskStatusLabel } from '../utils/status'
+import { jobHasAiArtifacts, jobStatusClass, taskStatusLabel } from '../utils/status'
 
 const props = defineProps<{
   tasks: LocalizationTask[]
@@ -59,7 +59,13 @@ function progressSummary(row: RunningRow) {
   const start =
     row.job?.started_at || row.task.started_at || row.job?.created_at || row.task.created_at
   const elapsed = formatElapsed(start, now.value)
-  const pct = Math.round(Math.min(100, Math.max(0, row.job?.progress ?? 0)))
+  const live =
+    row.job?.status === 'pending' || row.job?.status === 'processing'
+      ? row.job?.progress
+      : row.task.status === 'verifying'
+        ? 100
+        : 0
+  const pct = Math.round(Math.min(100, Math.max(0, live ?? 0)))
   return `${elapsed} - ${pct}%`
 }
 
@@ -179,53 +185,55 @@ function statsHref(jobId: number) {
               <p v-if="rows.length > 1" class="mr-2 tabular-nums text-ink-600 dark:text-ink-300">
                 {{ progressSummary({ task, job }) }}
               </p>
-              <button
-                type="button"
-                :class="[iconBtnClass, logOpen.has(job.id) ? 'text-accent' : '']"
-                :disabled="logBusyId === job.id"
-                :title="logOpen.has(job.id) ? 'Hide log' : 'View logs'"
-                :aria-label="logOpen.has(job.id) ? 'Hide log' : 'View logs'"
-                @click="toggleLog(job.id)"
-              >
-                <svg
-                  class="h-4 w-4"
-                  :class="logBusyId === job.id ? 'animate-pulse' : ''"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
+              <template v-if="jobHasAiArtifacts(job.job_kind)">
+                <button
+                  type="button"
+                  :class="[iconBtnClass, logOpen.has(job.id) ? 'text-accent' : '']"
+                  :disabled="logBusyId === job.id"
+                  :title="logOpen.has(job.id) ? 'Hide log' : 'View logs'"
+                  :aria-label="logOpen.has(job.id) ? 'Hide log' : 'View logs'"
+                  @click="toggleLog(job.id)"
                 >
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <path d="M14 2v6h6" />
-                  <path d="M16 13H8" />
-                  <path d="M16 17H8" />
-                  <path d="M10 9H8" />
-                </svg>
-              </button>
-              <RouterLink
-                :class="iconBtnClass"
-                :to="statsHref(job.id)"
-                title="Usage stats"
-                aria-label="Usage stats"
-              >
-                <svg
-                  class="h-4 w-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
+                  <svg
+                    class="h-4 w-4"
+                    :class="logBusyId === job.id ? 'animate-pulse' : ''"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <path d="M14 2v6h6" />
+                    <path d="M16 13H8" />
+                    <path d="M16 17H8" />
+                    <path d="M10 9H8" />
+                  </svg>
+                </button>
+                <RouterLink
+                  :class="iconBtnClass"
+                  :to="statsHref(job.id)"
+                  title="Usage stats"
+                  aria-label="Usage stats"
                 >
-                  <path d="M18 20V10" />
-                  <path d="M12 20V4" />
-                  <path d="M6 20v-6" />
-                </svg>
-              </RouterLink>
+                  <svg
+                    class="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M18 20V10" />
+                    <path d="M12 20V4" />
+                    <path d="M6 20v-6" />
+                  </svg>
+                </RouterLink>
+              </template>
             </div>
           </div>
           <p class="mt-1 text-ink-600 dark:text-ink-300">

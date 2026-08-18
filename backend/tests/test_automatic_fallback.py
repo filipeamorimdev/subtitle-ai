@@ -597,3 +597,74 @@ async def test_exchange_log_redacts_by_default(tmp_path, monkeypatch):
         messages=[{"role": "user", "content": "Hello subtitle"}],
     )
     assert "Hello subtitle" in log_path2.read_text(encoding="utf-8")
+
+
+def _processing_job(auto_env, *, title: str, detail: str = "mid-flight") -> int:
+    db = auto_env["SessionLocal"]()
+    row = JobRow(
+        candidate_key=title,
+        job_kind="translate",
+        trigger_type="manual",
+        media_type="movie",
+        media_path=str(auto_env["media"] / "Example.mkv"),
+        media_title=title,
+        source_subtitle_path=str(auto_env["source"]),
+        target_subtitle_path=str(auto_env["media"] / f"{title}.pt-PT.srt"),
+        source_language="en",
+        target_language="pt-PT",
+        model="openai/gpt-4o-mini",
+        status="processing",
+        progress=40,
+        progress_detail=detail,
+    )
+    db.add(row)
+    db.commit()
+    job_id = row.id
+    db.close()
+    return job_id
+
+
+def test_recover_orphaned_processing_jobs_skips_inflight(auto_env):
+    alive_id = _processing_job(auto_env, title="Alive")
+    zombie_id = _processing_job(auto_env, title="Zombie")
+    db = auto_env["SessionLocal"]()
+    recovered = JobService.recover_orphaned_processing_jobs(db, inflight_ids={alive_id})
+    assert recovered == 1
+    alive = db.get(JobRow, alive_id)
+    zombie = db.get(JobRow, zombie_id)
+    assert alive is not None and alive.status == "processing"
+    assert zombie is not None and zombie.status == "pending"
+    assert zombie.progress_detail == "Recovered after worker lost the job"
+    db.close()
+
+
+def test_fail_job_from_worker_marks_processing_failed(auto_env):
+    job_id = _processing_job(auto_env, title="Locked")
+    JobService.fail_job_from_worker(job_id, Exception("database is locked"))
+    db = auto_env["SessionLocal"]()
+    row = db.get(JobRow, job_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.reason_code == "database_locked"
+    assert row.error and "busy" in row.error.lower()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_process_persists_failure_after_crash(auto_env, monkeypatch):
+    from app.jobs.worker import JobWorker
+
+    job_id = _processing_job(auto_env, title="Crash")
+
+    async def boom(self, _job_id):  # noqa: ANN001
+        raise Exception("database is locked")
+
+    monkeypatch.setattr(JobService, "process_job", boom)
+    worker = JobWorker()
+    await worker._process(job_id)
+    db = auto_env["SessionLocal"]()
+    row = db.get(JobRow, job_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.reason_code == "database_locked"
+    db.close()

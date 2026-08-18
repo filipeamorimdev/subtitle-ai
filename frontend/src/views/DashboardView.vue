@@ -64,6 +64,13 @@ function latestJob(task: LocalizationTask) {
 }
 
 function taskProgressPct(task: LocalizationTask) {
+  if (task.status === 'waiting_for_source') return 0
+  const jobs = task.executions || []
+  const active = [...jobs]
+    .reverse()
+    .find((item) => item.status === 'pending' || item.status === 'processing')
+  if (active) return Math.round(Math.min(100, Math.max(0, active.progress ?? 0)))
+  if (task.status === 'verifying') return 100
   const job = latestJob(task)
   return Math.round(Math.min(100, Math.max(0, job?.progress ?? 0)))
 }

@@ -158,6 +158,12 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 - Models, routing, cost/budget controls live under **Settings → Models** (`openrouter_model` is kept as a compatibility field)
 - Use per-model **Test** on the AI page
 
+### Speech-to-text
+
+- Manual **Transcribe audio** on a media page when Bazarr has no source subtitle and embedded extract is not possible
+- Local `faster-whisper` (default model `small`, cached under `/config/whisper-models`) with optional OpenAI Whisper API fallback
+- First run downloads the model (~500MB for `small`); CPU transcription is slow and there is no GPU in the default image
+
 ### Translation
 
 - Source language (default English / `en`)

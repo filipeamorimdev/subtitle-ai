@@ -51,11 +51,29 @@ function formatTokens(n: number | null | undefined): string {
   return String(n)
 }
 
+function formatUsd(n: number | null | undefined, digits = 4): string {
+  if (n == null) return '—'
+  if (n >= 1) return `$${n.toFixed(2)}`
+  if (n >= 0.01) return `$${n.toFixed(3)}`
+  return `$${n.toFixed(digits)}`
+}
+
 function requestTitle(row: JobUsageExchange): string {
   return `#${row.index} ${actionLabel(row.action)} · ${row.model}`
 }
 
 const formattedLog = computed(() => formatJobLog(jobLog.value))
+
+const requestsCost = computed(() => {
+  const costs = requests.value
+    .map((row) => row.cost_usd)
+    .filter((n): n is number => n != null)
+  if (!costs.length) return null
+  return {
+    total: costs.reduce((sum, n) => sum + n, 0),
+    estimated: requests.value.some((row) => row.cost_usd != null && row.cost_estimated),
+  }
+})
 
 function notifyFinished(current: Job) {
   if (typeof Notification === 'undefined') return
@@ -317,6 +335,7 @@ async function viewRequestLog(row: JobUsageExchange) {
           {{ logVisible ? 'Hide log' : logBusy ? 'Loading log…' : 'View log' }}
         </button>
         <RouterLink
+          v-if="isTranslateJob"
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
           :to="statsHref"
         >
@@ -392,6 +411,10 @@ async function viewRequestLog(row: JobUsageExchange) {
               </span>
             </RouterLink>
           </p>
+          <p v-if="requestsCost">
+            {{ formatUsd(requestsCost.total) }}
+            <span v-if="requestsCost.estimated">est.</span>
+          </p>
         </div>
       </div>
 
@@ -410,6 +433,7 @@ async function viewRequestLog(row: JobUsageExchange) {
               <th class="py-2 pr-4 font-medium">Action</th>
               <th class="py-2 pr-4 font-medium">Model</th>
               <th class="py-2 pr-4 font-medium">Tokens</th>
+              <th class="py-2 pr-4 font-medium">Cost</th>
               <th class="py-2 pr-4 font-medium">Status</th>
               <th class="py-2 font-medium">Log</th>
             </tr>
@@ -438,6 +462,10 @@ async function viewRequestLog(row: JobUsageExchange) {
                 <span class="text-ink-500">
                   ({{ formatTokens(row.input_tokens) }}/{{ formatTokens(row.output_tokens) }})
                 </span>
+              </td>
+              <td class="py-3 pr-4 align-top whitespace-nowrap">
+                {{ formatUsd(row.cost_usd) }}
+                <span v-if="row.cost_estimated" class="text-xs text-ink-500">est.</span>
               </td>
               <td class="py-3 pr-4 align-top">
                 <span v-if="row.ok" class="text-ink-600 dark:text-ink-300">

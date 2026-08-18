@@ -233,6 +233,17 @@ class CandidateService:
             ).all()
             if row.candidate_key
         }
+        active_transcribe = {
+            row.candidate_key: row.id
+            for row in self.db.scalars(
+                select(JobRow).where(
+                    JobRow.job_kind == "transcribe",
+                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.candidate_key.is_not(None),
+                )
+            ).all()
+            if row.candidate_key
+        }
         # Most recent job id per candidate (any kind / status)
         latest_job_ids: dict[str, int] = {}
         for row in self.db.scalars(
@@ -383,6 +394,12 @@ class CandidateService:
                     embedded_subtitles=[_track_to_out(t) for t in embedded_tracks],
                     has_embedded=bool(embedded_tracks),
                     can_extract=can_extract,
+                    can_transcribe=(
+                        not can_translate
+                        and not can_extract
+                        and Path(local_media).is_file()
+                        and key not in active_transcribe
+                    ),
                     extract_stream_index=extract_track.stream_index if extract_track else None,
                     extract_language=(
                         extract_track.language
@@ -393,6 +410,7 @@ class CandidateService:
                     active_extract_job_id=active_extract.get(key),
                     active_request_job_id=active_request.get(key),
                     active_translate_job_id=active_translate.get(key),
+                    active_transcribe_job_id=active_transcribe.get(key),
                     latest_job_id=latest_job_ids.get(key),
                 )
             )

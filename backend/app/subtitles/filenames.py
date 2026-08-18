@@ -5,6 +5,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.core.logging import get_logger
+from app.integrations.bazarr.paths import is_under_roots
+
+logger = get_logger("subtitles.filenames")
+
 LANGUAGE_ALIASES: dict[str, str] = {
     "en": "en",
     "eng": "en",
@@ -330,3 +335,42 @@ def find_source_srt_beside_media(
     candidates.sort(key=lambda item: (item[0], item[1].name))
     _, path, lang = candidates[0]
     return path, lang
+
+
+def _same_sidecar_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
+
+
+def unlink_extracted_source(
+    source_path: str | Path,
+    *,
+    target_path: str | Path | None = None,
+    media_path: str | Path | None = None,
+    media_roots: list[str] | None = None,
+) -> bool:
+    """Delete an extracted source sidecar. Returns True if the file was removed.
+
+    Never deletes the translated target, the media file, or paths outside media roots.
+    """
+    source = Path(source_path)
+    if source.suffix.lower() != ".srt":
+        return False
+    if media_path is not None and _same_sidecar_path(source, Path(media_path)):
+        return False
+    if target_path is not None and _same_sidecar_path(source, Path(target_path)):
+        return False
+    if media_roots is not None and not is_under_roots(source, media_roots):
+        logger.warning("Refusing to delete extracted source outside media roots: %s", source)
+        return False
+    if not source.is_file():
+        return False
+    try:
+        source.unlink()
+    except OSError as exc:
+        logger.warning("Could not delete extracted source %s: %s", source, exc)
+        return False
+    logger.info("Deleted extracted source sidecar %s", source)
+    return True

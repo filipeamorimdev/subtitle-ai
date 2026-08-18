@@ -23,6 +23,11 @@ export interface Settings {
   max_concurrent_translate: number
   max_concurrent_extract: number
   max_concurrent_request: number
+  max_concurrent_transcribe: number
+  asr_provider: 'local' | 'openai' | 'local_then_openai' | string
+  asr_local_model: string
+  openai_api_key_masked: string | null
+  openai_api_key_configured: boolean
   automatic_fallback_enabled: boolean
   automatic_scan_interval_minutes: number
   bazarr_grace_period_minutes: number
@@ -55,6 +60,11 @@ export interface SettingsUpdate {
   max_concurrent_translate?: number
   max_concurrent_extract?: number
   max_concurrent_request?: number
+  max_concurrent_transcribe?: number
+  asr_provider?: 'local' | 'openai' | 'local_then_openai' | string
+  asr_local_model?: string
+  openai_api_key?: string | null
+  clear_openai_api_key?: boolean
   automatic_fallback_enabled?: boolean
   automatic_scan_interval_minutes?: number
   bazarr_grace_period_minutes?: number
@@ -105,11 +115,13 @@ export interface Candidate {
   embedded_subtitles: EmbeddedSubtitle[]
   has_embedded: boolean
   can_extract: boolean
+  can_transcribe?: boolean
   extract_stream_index: number | null
   extract_language: string | null
   active_extract_job_id: number | null
   active_request_job_id: number | null
   active_translate_job_id: number | null
+  active_transcribe_job_id?: number | null
   latest_job_id: number | null
 }
 
@@ -117,7 +129,7 @@ export interface Job {
   id: number
   candidate_key: string | null
   task_id?: number | null
-  job_kind: 'translate' | 'extract' | string
+  job_kind: 'translate' | 'extract' | 'request' | 'transcribe' | string
   trigger_type?: 'manual' | 'automatic' | string
   media_type: string
   media_path: string
@@ -203,6 +215,8 @@ export interface MediaLocalization {
   media_id: number
   capability: string
   languages: LanguageAvailability[]
+  can_transcribe?: boolean
+  transcribe_reason?: string | null
 }
 
 export interface TaskAiSummary {
@@ -256,6 +270,7 @@ export interface JobAction {
   kind?: 'job' | 'task'
   progress?: number | null
   progress_detail?: string | null
+  related_job_id?: number | null
 }
 
 export interface JobLog {

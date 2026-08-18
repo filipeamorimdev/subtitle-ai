@@ -66,6 +66,10 @@ class BazarrVerificationService:
             )
         return VerificationResult(ok=True, present=True)
 
+    async def rescan(self, media: MediaItemRow) -> None:
+        """Ask Bazarr to rescan this media. Raises BazarrError on failure."""
+        await self._rescan(media)
+
     async def rescan_and_verify(
         self,
         media: MediaItemRow,

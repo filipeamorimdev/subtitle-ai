@@ -10,6 +10,12 @@ from app.core.config import get_app_config
 from app.core.secrets import decrypt_secret, encrypt_secret, load_or_create_fernet, mask_secret
 from app.db.models import SettingsRow
 from app.services.ai_cost import micro_to_usd, usd_to_micro
+from app.subtitles.transcribe import (
+    DEFAULT_ASR_LOCAL_MODEL,
+    DEFAULT_ASR_PROVIDER,
+    normalize_asr_local_model,
+    normalize_asr_provider,
+)
 
 
 def _bool(value: object, default: bool) -> bool:
@@ -73,6 +79,9 @@ class SettingsService:
                 max_concurrent_translate=1,
                 max_concurrent_extract=1,
                 max_concurrent_request=1,
+                max_concurrent_transcribe=1,
+                asr_provider=DEFAULT_ASR_PROVIDER,
+                asr_local_model=DEFAULT_ASR_LOCAL_MODEL,
                 automatic_fallback_enabled=False,
                 automatic_scan_interval_minutes=5,
                 bazarr_grace_period_minutes=10,
@@ -109,6 +118,7 @@ class SettingsService:
         config = get_app_config()
         bazarr_key = decrypt_secret(self.fernet, row.bazarr_api_key_encrypted)
         openrouter_key = decrypt_secret(self.fernet, row.openrouter_api_key_encrypted)
+        openai_key = decrypt_secret(self.fernet, getattr(row, "openai_api_key_encrypted", None))
         return SettingsOut(
             bazarr_url=row.bazarr_url,
             bazarr_api_key_masked=mask_secret(bazarr_key),
@@ -127,6 +137,13 @@ class SettingsService:
             max_concurrent_translate=row.max_concurrent_translate,
             max_concurrent_extract=row.max_concurrent_extract,
             max_concurrent_request=row.max_concurrent_request,
+            max_concurrent_transcribe=_int(
+                getattr(row, "max_concurrent_transcribe", 1), 1, minimum=1, maximum=20
+            ),
+            asr_provider=normalize_asr_provider(getattr(row, "asr_provider", None)),
+            asr_local_model=normalize_asr_local_model(getattr(row, "asr_local_model", None)),
+            openai_api_key_masked=mask_secret(openai_key),
+            openai_api_key_configured=bool(openai_key),
             automatic_fallback_enabled=_bool(
                 getattr(row, "automatic_fallback_enabled", False), False
             ),
@@ -179,6 +196,7 @@ class SettingsService:
             "translate": max(1, int(row.max_concurrent_translate or 1)),
             "extract": max(1, int(row.max_concurrent_extract or 1)),
             "request": max(1, int(row.max_concurrent_request or 1)),
+            "transcribe": max(1, int(getattr(row, "max_concurrent_transcribe", None) or 1)),
         }
 
     def is_automatic_fallback_enabled(self) -> bool:
@@ -216,6 +234,16 @@ class SettingsService:
             row.max_concurrent_extract = payload.max_concurrent_extract
         if payload.max_concurrent_request is not None:
             row.max_concurrent_request = payload.max_concurrent_request
+        if payload.max_concurrent_transcribe is not None:
+            row.max_concurrent_transcribe = payload.max_concurrent_transcribe
+        if payload.asr_provider is not None:
+            row.asr_provider = normalize_asr_provider(payload.asr_provider)
+        if payload.asr_local_model is not None:
+            row.asr_local_model = normalize_asr_local_model(payload.asr_local_model)
+        if payload.clear_openai_api_key:
+            row.openai_api_key_encrypted = None
+        elif payload.openai_api_key:
+            row.openai_api_key_encrypted = encrypt_secret(self.fernet, payload.openai_api_key.strip())
         if payload.automatic_fallback_enabled is not None:
             row.automatic_fallback_enabled = payload.automatic_fallback_enabled
         if payload.automatic_scan_interval_minutes is not None:
@@ -307,3 +335,7 @@ class SettingsService:
         if key is None:
             key = decrypt_secret(self.fernet, row.openrouter_api_key_encrypted)
         return key, row.openrouter_model
+
+    def get_openai_api_key(self) -> str | None:
+        row = self.get_or_create_row()
+        return decrypt_secret(self.fernet, getattr(row, "openai_api_key_encrypted", None))

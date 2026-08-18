@@ -26,6 +26,7 @@ export function taskStatusLabel(status: string, substate?: string | null) {
   if (status === 'processing') {
     if (substate === 'extracting_source') return 'Extracting'
     if (substate === 'discovering_source') return 'Finding source'
+    if (substate === 'transcribing_source') return 'Transcribing'
     return 'Translating'
   }
   return TASK_STATUS_LABELS[status] || status.replaceAll('_', ' ')
@@ -84,6 +85,13 @@ export function canCancelTask(status: string) {
 
 export function canRetryJob(status: string) {
   return status === 'failed' || status === 'skipped' || status === 'cancelled'
+}
+
+/** Job kinds that write OpenRouter logs and AI usage records. */
+const AI_JOB_KINDS = new Set(['translate'])
+
+export function jobHasAiArtifacts(jobKind?: string | null) {
+  return AI_JOB_KINDS.has((jobKind || 'translate').toLowerCase())
 }
 
 export function jobStatusClass(status: string) {

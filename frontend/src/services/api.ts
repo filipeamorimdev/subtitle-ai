@@ -60,7 +60,7 @@ export const api = {
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
   clearJobs: (opts?: {
-    job_kind?: 'translate' | 'extract' | 'request'
+    job_kind?: 'translate' | 'extract' | 'request' | 'transcribe'
     status?: 'failed' | 'skipped' | 'cancelled'
   }) =>
     request<ClearDataResult>('/api/settings/clear/jobs', {
@@ -172,6 +172,11 @@ export const api = {
   getMedia: (id: number) => request<MediaItem>(`/api/media/${id}`),
   getMediaLocalization: (id: number) =>
     request<MediaLocalization>(`/api/media/${id}/localization`),
+  transcribeMedia: (id: number, payload?: { target_language?: string }) =>
+    request<Job>(`/api/media/${id}/transcribe`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    }),
   getMediaActions: (id: number) => request<JobAction[]>(`/api/media/${id}/actions`),
   createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {
     const response = await fetch(`/api/media/${mediaId}/localization-tasks`, {

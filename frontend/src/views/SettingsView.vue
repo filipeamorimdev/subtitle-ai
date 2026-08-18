@@ -19,6 +19,7 @@ const form = reactive({
   max_concurrent_translate: 1,
   max_concurrent_extract: 1,
   max_concurrent_request: 1,
+  max_concurrent_transcribe: 1,
   automatic_fallback_enabled: false,
   automatic_scan_interval_minutes: 5,
   bazarr_grace_period_minutes: 10,
@@ -41,6 +42,7 @@ onMounted(async () => {
   form.max_concurrent_translate = s.max_concurrent_translate
   form.max_concurrent_extract = s.max_concurrent_extract
   form.max_concurrent_request = s.max_concurrent_request
+  form.max_concurrent_transcribe = s.max_concurrent_transcribe ?? 1
   form.automatic_fallback_enabled = s.automatic_fallback_enabled ?? false
   form.automatic_scan_interval_minutes = s.automatic_scan_interval_minutes ?? 5
   form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
@@ -58,6 +60,7 @@ async function save() {
       max_concurrent_translate: Number(form.max_concurrent_translate) || 1,
       max_concurrent_extract: Number(form.max_concurrent_extract) || 1,
       max_concurrent_request: Number(form.max_concurrent_request) || 1,
+      max_concurrent_transcribe: Number(form.max_concurrent_transcribe) || 1,
       automatic_fallback_enabled: form.automatic_fallback_enabled,
       automatic_scan_interval_minutes: Number(form.automatic_scan_interval_minutes) || 5,
       bazarr_grace_period_minutes: Number(form.bazarr_grace_period_minutes) || 0,
@@ -109,7 +112,7 @@ async function runClear(action: () => Promise<{ message: string }>, confirmText:
 }
 
 function clearJobs(opts?: {
-  job_kind?: 'translate' | 'extract' | 'request'
+  job_kind?: 'translate' | 'extract' | 'request' | 'transcribe'
   status?: 'failed' | 'skipped' | 'cancelled'
 }) {
   let label = 'ALL jobs'
@@ -219,7 +222,7 @@ function clearUsageStats() {
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Job concurrency</legend>
-        <div class="grid gap-4 sm:grid-cols-3">
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <label class="block text-sm">
             <span class="text-ink-500">Translate</span>
             <input
@@ -244,6 +247,16 @@ function clearUsageStats() {
             <span class="text-ink-500">Request</span>
             <input
               v-model.number="form.max_concurrent_request"
+              type="number"
+              min="1"
+              max="20"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+            />
+          </label>
+          <label class="block text-sm">
+            <span class="text-ink-500">Transcribe</span>
+            <input
+              v-model.number="form.max_concurrent_transcribe"
               type="number"
               min="1"
               max="20"
@@ -288,6 +301,14 @@ function clearUsageStats() {
             @click="clearJobs({ job_kind: 'request' })"
           >
             Clear request
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs({ job_kind: 'transcribe' })"
+          >
+            Clear transcribe
           </button>
           <button
             type="button"
