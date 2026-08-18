@@ -223,6 +223,51 @@ async def test_cancel_and_retry(loc_env):
 
 
 @pytest.mark.asyncio
+async def test_cancel_marks_processing_jobs_cancelled(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+
+    job = JobRow(
+        task_id=task.id,
+        job_kind="translate",
+        media_type="movie",
+        media_path=media.path or "",
+        source_subtitle_path=media.path or "",
+        target_subtitle_path=(media.path or "") + ".pt-PT.srt",
+        model="test",
+        status="processing",
+        progress_detail="Translating batch 2/8",
+    )
+    db.add(job)
+    db.commit()
+
+    cancelled = svc.cancel(task.id)
+    assert cancelled.status == "cancelled"
+    db.refresh(job)
+    assert job.status == "cancelled"
+    assert job.reason_code == "cancelled"
+    assert job.progress_detail == "Cancelled with localization task"
+
+    actions = JobService(db).list_job_actions_for_media(media)
+    job_actions = [item for item in actions if item.kind == "job"]
+    assert any(item.id == job.id and item.status == "cancelled" for item in job_actions)
+    cancelled_action = next(item for item in job_actions if item.id == job.id)
+    assert cancelled_action.message == "Cancelled with localization task"
+
+
+@pytest.mark.asyncio
 async def test_planner_completes_when_target_exists(loc_env, monkeypatch):
     db, tmp_path, media_dir, source = loc_env
     media_path = media_dir / "The Matrix.mkv"
@@ -1841,6 +1886,48 @@ def test_list_job_actions_for_media_includes_legacy_and_task_jobs(loc_env):
     assert "pt-PT" in langs
     assert "en" in langs
     assert any(item.kind == "task" and item.current for item in actions)
+
+
+def test_list_job_actions_for_media_includes_cancelled_task_without_cancelled_job(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+    svc.transition(task, "verifying", substate="bazarr_verify")
+
+    db.add(
+        JobRow(
+            task_id=task.id,
+            job_kind="translate",
+            media_type="movie",
+            media_path=media.path or "",
+            media_title=media.title,
+            bazarr_movie_id=42,
+            source_subtitle_path="/media/Matrix/The Matrix.en.srt",
+            target_subtitle_path="/media/Matrix/The Matrix.pt-PT.srt",
+            target_language="pt-PT",
+            model="test",
+            status="completed",
+        )
+    )
+    db.commit()
+
+    cancelled = svc.cancel(task.id)
+    assert cancelled.status == "cancelled"
+
+    actions = JobService(db).list_job_actions_for_media(media)
+    assert any(item.kind == "job" and item.status == "completed" for item in actions)
+    assert any(item.kind == "task" and item.id == task.id and item.status == "cancelled" for item in actions)
 
 
 def test_list_job_actions_for_media_includes_tasks_without_jobs(loc_env):

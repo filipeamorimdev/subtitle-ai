@@ -22,6 +22,7 @@ from app.db import get_db, release_session_connection
 from app.db.models import LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrError
 from app.jobs.service import JobService, job_to_out
+from app.jobs.worker import worker
 from app.languages import LanguageNormalizationError, list_featured_languages, list_languages, normalize_language
 from app.localization.planner import TaskPlanner
 from app.localization.service import (
@@ -460,4 +461,7 @@ def cancel_localization_task(task_id: int, db: Session = Depends(get_db)) -> Loc
         task = LocalizationTaskService(db).cancel(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for job in LocalizationTaskService(db).jobs_for_task(task.id):
+        if job.status == "cancelled":
+            worker.cancel_job(job.id)
     return _task_out(db, task, include_detail=True)

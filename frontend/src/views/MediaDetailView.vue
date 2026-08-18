@@ -16,6 +16,7 @@ import type {
 } from '../types'
 import {
   canCancelTask,
+  canRetryBazarrSync,
   canRetryTask,
   isActiveTaskStatus,
   languageChipClass,
@@ -67,7 +68,11 @@ const historyActions = computed(() => {
     })
 })
 
-const runningTasks = computed(() => tasks.value.filter((task) => isActiveTaskStatus(task.status)))
+const verifyFailedTasks = computed(() => tasks.value.filter((task) => canRetryBazarrSync(task)))
+
+const runningTasks = computed(() =>
+  tasks.value.filter((task) => isActiveTaskStatus(task.status) && !canRetryBazarrSync(task)),
+)
 
 const matchedCandidate = computed<Candidate | null>(() => {
   if (!media.value) return null
@@ -118,7 +123,9 @@ const mediaMeta = computed(() => {
   return parts.join(' · ')
 })
 
-const anyActive = computed(() => tasks.value.some((task) => isActiveTaskStatus(task.status)))
+const anyActive = computed(() =>
+  tasks.value.some((task) => isActiveTaskStatus(task.status) && !canRetryBazarrSync(task)),
+)
 
 const showDiagnostics = computed(() => {
   const candidate = matchedCandidate.value
@@ -131,7 +138,17 @@ const showDiagnostics = computed(() => {
   )
 })
 
+function languageTask(lang: LanguageAvailability) {
+  return tasks.value.find((task) => task.id === lang.task_id) || null
+}
+
+function languageVerificationFailed(lang: LanguageAvailability) {
+  const task = languageTask(lang)
+  return Boolean(task && canRetryBazarrSync(task))
+}
+
 function languageLabel(lang: LanguageAvailability) {
+  if (languageVerificationFailed(lang)) return 'Verification failed'
   const status = lang.task_status
   if (status) return taskStatusLabel(status, lang.task_substate)
   if (lang.available) return 'Available'
@@ -166,6 +183,23 @@ async function retryTask() {
   actionError.value = null
   try {
     await api.retryLocalizationTask(selectedTask.value.id)
+    await load()
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function retryBazarrSync() {
+  const targets = verifyFailedTasks.value
+  if (!targets.length || busy.value) return
+  busy.value = true
+  actionError.value = null
+  try {
+    for (const task of targets) {
+      await api.retryLocalizationTask(task.id)
+    }
     await load()
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
@@ -256,7 +290,12 @@ onUnmounted(() => {
             Retry
           </button>
           <button
-            v-if="selectedTask && canCancelTask(selectedTask.status) && !runningTasks.length"
+            v-if="
+              selectedTask &&
+              canCancelTask(selectedTask.status) &&
+              !runningTasks.length &&
+              !canRetryBazarrSync(selectedTask)
+            "
             type="button"
             class="rounded-md border border-red-300 px-3 py-1.5 text-sm font-semibold text-red-700 dark:border-red-800 dark:text-red-300"
             title="Cancel"
@@ -265,6 +304,17 @@ onUnmounted(() => {
             @click="cancelTask()"
           >
             Cancel
+          </button>
+          <button
+            v-if="verifyFailedTasks.length"
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            title="Retry Bazarr sync"
+            aria-label="Retry Bazarr sync"
+            :disabled="busy"
+            @click="retryBazarrSync"
+          >
+            Retry Bazarr sync
           </button>
           <button
             type="button"
@@ -290,7 +340,11 @@ onUnmounted(() => {
           v-for="lang in visibleLanguages"
           :key="lang.language_code"
           class="rounded-full border px-3 py-1 text-xs font-semibold"
-          :class="languageChipClass(lang.task_status, lang.available)"
+          :class="
+            languageChipClass(lang.task_status, lang.available, {
+              verificationFailed: languageVerificationFailed(lang),
+            })
+          "
         >
           {{ lang.language_name || lang.language_code }}
           <span class="ml-1 font-normal opacity-80">{{ languageLabel(lang) }}</span>

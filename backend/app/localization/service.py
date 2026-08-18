@@ -318,31 +318,43 @@ class LocalizationTaskService:
         self.db.add(task)
         self.db.commit()
 
+    def _cancel_open_jobs(self, task_id: int) -> list[int]:
+        """Mark pending and processing jobs cancelled so they appear in history."""
+        jobs = self.db.scalars(
+            select(JobRow).where(
+                JobRow.task_id == task_id,
+                JobRow.status.in_(["pending", "processing"]),
+            )
+        ).all()
+        now = utcnow()
+        cancelled_ids: list[int] = []
+        for job in jobs:
+            job.status = "cancelled"
+            job.completed_at = now
+            job.progress_detail = "Cancelled with localization task"
+            job.reason_code = "cancelled"
+            self.db.add(job)
+            cancelled_ids.append(job.id)
+        return cancelled_ids
+
     def cancel(self, task_id: int) -> LocalizationTaskRow:
         task = self.get(task_id)
         if task is None:
             raise ValueError("Task not found")
-        if task.status in {"completed", "cancelled"}:
+        if task.status == "completed":
+            return task
+        if task.status == "cancelled":
+            if self._cancel_open_jobs(task_id):
+                self.db.commit()
+                self.db.refresh(task)
             return task
         try:
             assert_transition(task.status, "cancelled")
         except InvalidTaskTransition as exc:
             raise ValueError(str(exc)) from exc
 
-        # Cancel pending jobs; leave processing to finish safely.
-        pending = self.db.scalars(
-            select(JobRow).where(
-                JobRow.task_id == task_id,
-                JobRow.status == "pending",
-            )
-        ).all()
         now = utcnow()
-        for job in pending:
-            job.status = "cancelled"
-            job.completed_at = now
-            job.progress_detail = "Cancelled with localization task"
-            job.reason_code = "cancelled"
-            self.db.add(job)
+        self._cancel_open_jobs(task_id)
 
         task.status = "cancelled"
         task.substate = None

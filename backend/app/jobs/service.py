@@ -223,7 +223,7 @@ def _job_row_to_action(
 ) -> JobActionOut:
     message = item.error
     if not message and item.progress_detail:
-        if item.status in {"pending", "processing", "skipped"}:
+        if item.status in {"pending", "processing", "skipped", "cancelled"}:
             message = item.progress_detail
     return JobActionOut(
         id=item.id,
@@ -312,6 +312,11 @@ class JobService:
         now = datetime.now(timezone.utc)
         actions = [_job_row_to_action(item, now=now) for item in related]
         job_task_ids = {item.task_id for item in related if item.task_id is not None}
+        cancelled_job_task_ids = {
+            item.task_id
+            for item in related
+            if item.task_id is not None and item.status == "cancelled"
+        }
         from app.localization.state import ACTIVE_STATUSES
 
         tasks = self.db.scalars(
@@ -320,8 +325,12 @@ class JobService:
             .order_by(LocalizationTaskRow.created_at.desc(), LocalizationTaskRow.id.desc())
         ).all()
         for task in tasks:
-            if task.id in job_task_ids and task.status not in ACTIVE_STATUSES:
-                continue
+            has_jobs = task.id in job_task_ids
+            if has_jobs and task.status not in ACTIVE_STATUSES:
+                # Keep cancelled tasks visible when no execution was marked cancelled
+                # (e.g. cancelled during verify after translate already completed).
+                if not (task.status == "cancelled" and task.id not in cancelled_job_task_ids):
+                    continue
             actions.append(
                 JobActionOut(
                     id=task.id,
@@ -1491,6 +1500,7 @@ class JobService:
             raise ValueError("Only pending or processing jobs can be cancelled")
         row.status = "cancelled"
         row.completed_at = utcnow()
+        row.progress_detail = "Cancelled by user"
         row.reason_code = "cancelled"
         self.db.add(row)
         self.db.commit()

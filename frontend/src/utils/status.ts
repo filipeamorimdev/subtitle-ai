@@ -40,7 +40,42 @@ export function taskStatusIcon(status: string) {
 }
 
 export function canRetryTask(status: string) {
-  return ['failed', 'blocked', 'cancelled', 'verifying', 'waiting_for_source'].includes(status)
+  return ['failed', 'blocked', 'cancelled', 'waiting_for_source'].includes(status)
+}
+
+const BAZARR_VERIFY_FAIL_CODES = new Set(['bazarr_verify_failed', 'bazarr_rescan_failed'])
+
+export function isBazarrVerifyFailCode(code?: string | null) {
+  return Boolean(code && BAZARR_VERIFY_FAIL_CODES.has(code))
+}
+
+type BazarrSyncRetryTask = {
+  status: string
+  error_code?: string | null
+  progress_steps?: { id: string; state: string }[]
+  executions?: {
+    id: number
+    job_kind?: string
+    status: string
+    reason_code?: string | null
+  }[]
+}
+
+function latestTranslateJob(executions: BazarrSyncRetryTask['executions']) {
+  return [...(executions || [])]
+    .filter((job) => (job.job_kind || 'translate') === 'translate')
+    .sort((a, b) => b.id - a.id)[0]
+}
+
+export function canRetryBazarrSync(task: BazarrSyncRetryTask) {
+  if (task.status !== 'verifying') return false
+  if (isBazarrVerifyFailCode(task.error_code)) return true
+  if ((task.progress_steps || []).some((step) => step.id === 'verify' && step.state === 'failed')) {
+    return true
+  }
+  const latest = latestTranslateJob(task.executions)
+  if (!latest || latest.status !== 'completed') return false
+  return isBazarrVerifyFailCode(latest.reason_code)
 }
 
 export function canCancelTask(status: string) {
@@ -63,7 +98,14 @@ export function jobStatusClass(status: string) {
   return 'text-ink-700 dark:text-ink-200'
 }
 
-export function languageChipClass(status: string | null, available: boolean) {
+export function languageChipClass(
+  status: string | null,
+  available: boolean,
+  opts?: { verificationFailed?: boolean },
+) {
+  if (opts?.verificationFailed) {
+    return 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200'
+  }
   if (status === 'failed') {
     return 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200'
   }
