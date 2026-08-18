@@ -5,7 +5,7 @@ import { api } from '../services/api'
 import type { Job, JobLog, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
-import { mediaHrefForJob, mediaHrefForTaskId } from '../utils/mediaNav'
+import { mediaHrefForJob, mediaHrefForTaskId, safeReturnTo, withReturnTo } from '../utils/mediaNav'
 
 const props = defineProps<{ id: string }>()
 const route = useRoute()
@@ -25,6 +25,10 @@ const mediaHref = ref<string | null>(null)
 const retryingId = ref<number | null>(null)
 let timer: number | undefined
 let lastStatus: string | null = null
+
+const returnTo = computed(() => safeReturnTo(route.query.from))
+const backHref = computed(() => returnTo.value || mediaHref.value || '/media')
+const statsHref = computed(() => withReturnTo(`/jobs/${props.id}/stats`, returnTo.value))
 
 const isTranslateJob = computed(() => (job.value?.job_kind || 'translate') === 'translate')
 
@@ -167,7 +171,7 @@ async function retryAction(jobId: number) {
   error.value = null
   try {
     const next = await api.retryJob(jobId)
-    await router.push(`/jobs/${next.id}`)
+    await router.push(withReturnTo(`/jobs/${next.id}`, returnTo.value))
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -259,7 +263,7 @@ async function viewRequestLog(row: JobUsageExchange) {
 <template>
   <section v-if="job" class="space-y-6">
     <div class="flex flex-wrap items-center gap-2 text-sm">
-      <RouterLink class="text-accent hover:underline" :to="mediaHref || '/media'">
+      <RouterLink class="text-accent hover:underline" :to="backHref">
         ← Media
       </RouterLink>
       <span class="text-ink-400">/</span>
@@ -272,7 +276,7 @@ async function viewRequestLog(row: JobUsageExchange) {
           {{ job.media_title || 'Job' }} #{{ job.id }}
         </h1>
         <p class="mt-1 capitalize text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          {{ job.job_kind || 'translate' }} · {{ job.trigger_type === 'automatic' ? 'automatic' : 'manual' }} · {{ job.status }} · {{ job.progress }}%
+          {{ job.status }} · {{ job.progress_detail || `${job.progress}%` }}
         </p>
       </div>
       <div class="flex w-full flex-wrap gap-2 sm:w-auto">
@@ -314,7 +318,7 @@ async function viewRequestLog(row: JobUsageExchange) {
         </button>
         <RouterLink
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-          :to="`/jobs/${job.id}/stats`"
+          :to="statsHref"
         >
           Usage stats
         </RouterLink>
@@ -349,49 +353,7 @@ async function viewRequestLog(row: JobUsageExchange) {
       >{{ formattedLog }}</pre>
     </div>
 
-    <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2">
-      <div>
-        <dt class="text-ink-500">Media</dt>
-        <dd class="mt-1 break-all">{{ job.media_path }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Kind</dt>
-        <dd class="mt-1 capitalize">
-          {{ job.job_kind || 'translate' }}
-          <span class="text-ink-500">({{ job.trigger_type === 'automatic' ? 'automatic' : 'manual' }})</span>
-        </dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Type</dt>
-        <dd class="mt-1 capitalize">{{ job.media_type }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Source subtitle</dt>
-        <dd class="mt-1 break-all">{{ job.source_subtitle_path }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Target subtitle</dt>
-        <dd class="mt-1 break-all">{{ job.target_subtitle_path }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Model</dt>
-        <dd class="mt-1">{{ job.model }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Progress</dt>
-        <dd class="mt-1">{{ job.progress_detail || `${job.progress}%` }}</dd>
-      </div>
-      <div>
-        <dt class="text-ink-500">Tokens</dt>
-        <dd class="mt-1">
-          <RouterLink class="text-accent hover:underline" :to="`/jobs/${job.id}/stats`">
-            {{ job.total_tokens ?? '—' }}
-            <span v-if="job.input_tokens != null" class="text-ink-500">
-              (in {{ job.input_tokens }} / out {{ job.output_tokens }})
-            </span>
-          </RouterLink>
-        </dd>
-      </div>
+    <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-3">
       <div>
         <dt class="text-ink-500">Created</dt>
         <dd class="mt-1">{{ formatDateTime(job.created_at) }}</dd>
@@ -404,15 +366,11 @@ async function viewRequestLog(row: JobUsageExchange) {
         <dt class="text-ink-500">Completed</dt>
         <dd class="mt-1">{{ formatDateTime(job.completed_at) }}</dd>
       </div>
-      <div>
-        <dt class="text-ink-500">Reason</dt>
-        <dd class="mt-1">{{ job.reason_code || '—' }}</dd>
-      </div>
-      <div class="sm:col-span-2" v-if="job.error">
+      <div class="sm:col-span-3" v-if="job.error">
         <dt class="text-ink-500">Error</dt>
         <dd class="mt-1 text-red-700 dark:text-red-300">{{ job.error }}</dd>
       </div>
-      <div class="sm:col-span-2" v-if="job.warning">
+      <div class="sm:col-span-3" v-if="job.warning">
         <dt class="text-ink-500">Warning</dt>
         <dd class="mt-1 text-amber-700 dark:text-amber-300">{{ job.warning }}</dd>
       </div>
@@ -424,7 +382,17 @@ async function viewRequestLog(row: JobUsageExchange) {
           <h2 class="font-display text-lg font-bold">Requests</h2>
           <p class="mt-1 text-sm text-ink-500">API calls made for this job</p>
         </div>
-        <p class="text-sm text-ink-500">{{ requests.length }} total</p>
+        <div class="text-right text-sm text-ink-500">
+          <p>{{ requests.length }} total</p>
+          <p v-if="job.total_tokens != null">
+            <RouterLink class="text-accent hover:underline" :to="statsHref">
+              {{ job.total_tokens }} tokens
+              <span v-if="job.input_tokens != null">
+                (in {{ job.input_tokens }} / out {{ job.output_tokens }})
+              </span>
+            </RouterLink>
+          </p>
+        </div>
       </div>
 
       <p v-if="requestsError" class="mt-4 text-sm text-red-700 dark:text-red-300">

@@ -5,6 +5,23 @@ export function mediaHref(mediaId: number) {
   return `/media/${mediaId}`
 }
 
+export function safeReturnTo(value: unknown): string | null {
+  const raw = Array.isArray(value) ? value[0] : value
+  if (typeof raw !== 'string') return null
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('://')) return null
+  return raw
+}
+
+export function withReturnTo(
+  path: string,
+  from: string | null | undefined,
+  extraQuery: Record<string, string> = {},
+) {
+  const query = { ...extraQuery }
+  if (from) query.from = from
+  return Object.keys(query).length ? { path, query } : path
+}
+
 export function localizationTaskTitle(
   task: Pick<LocalizationTask, 'media_title' | 'media_item_id' | 'media_year'>,
 ) {

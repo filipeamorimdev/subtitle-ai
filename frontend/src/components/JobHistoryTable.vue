@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import type { JobAction } from '../types'
 import { formatDateTime, formatDuration } from '../utils/datetime'
+import { withReturnTo } from '../utils/mediaNav'
 import { canRetryJob, jobStatusBadgeClass } from '../utils/status'
+
+const route = useRoute()
 
 const props = withDefaults(
   defineProps<{
@@ -75,12 +78,16 @@ function actionKey(item: JobAction) {
   return `${item.kind || 'job'}-${item.id}`
 }
 
+function jobHref(item: JobAction) {
+  return withReturnTo(`/jobs/${item.id}`, route.fullPath)
+}
+
 function logsHref(item: JobAction) {
-  return `/jobs/${item.id}?log=1`
+  return withReturnTo(`/jobs/${item.id}`, route.fullPath, { log: '1' })
 }
 
 function statsHref(item: JobAction) {
-  return `/jobs/${item.id}/stats`
+  return withReturnTo(`/jobs/${item.id}/stats`, route.fullPath)
 }
 </script>
 
@@ -106,7 +113,7 @@ function statsHref(item: JobAction) {
           <RouterLink
             v-if="shouldLink(item)"
             class="min-w-0 flex-1 capitalize font-medium text-accent hover:underline"
-            :to="`/jobs/${item.id}`"
+            :to="jobHref(item)"
           >
             {{ item.action }}
             <span v-if="item.target_language" class="font-normal text-ink-500">
@@ -254,7 +261,7 @@ function statsHref(item: JobAction) {
               <RouterLink
                 v-if="shouldLink(item)"
                 class="capitalize text-accent hover:underline"
-                :to="`/jobs/${item.id}`"
+                :to="jobHref(item)"
               >
                 {{ item.action }}
                 <span v-if="item.target_language" class="font-normal text-ink-500">

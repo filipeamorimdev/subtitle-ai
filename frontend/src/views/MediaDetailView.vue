@@ -8,6 +8,7 @@ import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import type {
   Candidate,
+  Job,
   JobAction,
   LanguageAvailability,
   LocalizationTask,
@@ -127,16 +128,52 @@ const anyActive = computed(() =>
   tasks.value.some((task) => isActiveTaskStatus(task.status) && !canRetryBazarrSync(task)),
 )
 
-const showDiagnostics = computed(() => {
-  const candidate = matchedCandidate.value
-  if (!candidate) return false
-  return Boolean(
-    candidate.has_embedded ||
-      candidate.source_subtitle_path ||
-      candidate.target_subtitle_path ||
-      candidate.reason,
-  )
+const detailJob = computed<Job | null>(() => {
+  const jobs: Job[] = []
+  for (const task of tasks.value) {
+    jobs.push(...(task.executions || []))
+  }
+  if (!jobs.length) return null
+  const newest = (items: Job[]) => [...items].sort((a, b) => b.id - a.id)[0]
+  const translate = jobs.filter((job) => (job.job_kind || 'translate') === 'translate')
+  return newest(translate.length ? translate : jobs)
 })
+
+const detailKind = computed(() => {
+  if (detailJob.value) {
+    const kind = detailJob.value.job_kind || 'translate'
+    const trigger = detailJob.value.trigger_type === 'automatic' ? 'automatic' : 'manual'
+    return `${kind} (${trigger})`
+  }
+  if (selectedTask.value) {
+    return `${selectedTask.value.capability} (${selectedTask.value.origin})`
+  }
+  return null
+})
+
+const sourceSubtitlePath = computed(
+  () =>
+    detailJob.value?.source_subtitle_path ||
+    matchedCandidate.value?.source_subtitle_path ||
+    null,
+)
+
+const targetSubtitlePath = computed(
+  () =>
+    detailJob.value?.target_subtitle_path ||
+    matchedCandidate.value?.target_subtitle_path ||
+    null,
+)
+
+const detailModel = computed(
+  () => detailJob.value?.model || selectedTask.value?.ai?.model_id || null,
+)
+
+const detailReason = computed(
+  () => matchedCandidate.value?.reason || detailJob.value?.reason_code || null,
+)
+
+const showEmbeddedTracks = computed(() => Boolean(matchedCandidate.value?.has_embedded))
 
 function languageTask(lang: LanguageAvailability) {
   return tasks.value.find((task) => task.id === lang.task_id) || null
@@ -273,9 +310,6 @@ onUnmounted(() => {
             {{ media.title }}
           </h1>
           <p class="mt-1 text-sm capitalize text-ink-500">{{ mediaMeta }}</p>
-          <p v-if="media.path" class="mt-1 truncate text-xs text-ink-500" :title="media.path">
-            {{ media.path }}
-          </p>
         </div>
         <div class="flex flex-wrap gap-2">
           <button
@@ -354,33 +388,40 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <RunningJobsPanel
-        v-if="runningTasks.length"
-        :tasks="runningTasks"
-        :busy="busy"
-        @cancel="cancelTask"
-      />
-
-      <details
-        v-if="showDiagnostics"
-        class="rounded-xl border border-ink-200 bg-white/60 dark:border-ink-800 dark:bg-ink-900/40"
-      >
-        <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-ink-600 dark:text-ink-300">
-          Source and tracks
-        </summary>
-        <div class="space-y-3 border-t border-ink-200 px-4 py-3 text-sm dark:border-ink-800">
-          <p v-if="matchedCandidate?.reason" class="text-ink-600 dark:text-ink-300">
-            {{ matchedCandidate.reason }}
-          </p>
-          <p v-if="matchedCandidate?.source_subtitle_path" class="break-all text-xs text-ink-500">
-            Source: {{ matchedCandidate.source_subtitle_path }}
-          </p>
-          <p v-if="matchedCandidate?.target_subtitle_path" class="break-all text-xs text-ink-500">
-            Target: {{ matchedCandidate.target_subtitle_path }}
-          </p>
-          <div v-if="matchedCandidate?.has_embedded" class="flex flex-wrap gap-1.5">
+      <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2">
+        <div>
+          <dt class="text-ink-500">Media</dt>
+          <dd class="mt-1 break-all">{{ media.path || '—' }}</dd>
+        </div>
+        <div>
+          <dt class="text-ink-500">Kind</dt>
+          <dd class="mt-1 capitalize">{{ detailKind || '—' }}</dd>
+        </div>
+        <div>
+          <dt class="text-ink-500">Type</dt>
+          <dd class="mt-1 capitalize">{{ media.media_type }}</dd>
+        </div>
+        <div>
+          <dt class="text-ink-500">Source subtitle</dt>
+          <dd class="mt-1 break-all">{{ sourceSubtitlePath || '—' }}</dd>
+        </div>
+        <div>
+          <dt class="text-ink-500">Target subtitle</dt>
+          <dd class="mt-1 break-all">{{ targetSubtitlePath || '—' }}</dd>
+        </div>
+        <div>
+          <dt class="text-ink-500">Model</dt>
+          <dd class="mt-1">{{ detailModel || '—' }}</dd>
+        </div>
+        <div v-if="detailReason" class="sm:col-span-2">
+          <dt class="text-ink-500">Reason</dt>
+          <dd class="mt-1">{{ detailReason }}</dd>
+        </div>
+        <div v-if="showEmbeddedTracks" class="sm:col-span-2">
+          <dt class="text-ink-500">Embedded tracks</dt>
+          <dd class="mt-2 flex flex-wrap gap-1.5">
             <span
-              v-for="(track, idx) in matchedCandidate.embedded_subtitles"
+              v-for="(track, idx) in matchedCandidate?.embedded_subtitles"
               :key="`${track.label}-${idx}`"
               class="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
               :class="
@@ -393,9 +434,16 @@ onUnmounted(() => {
             >
               Embedded {{ track.label }}
             </span>
-          </div>
+          </dd>
         </div>
-      </details>
+      </dl>
+
+      <RunningJobsPanel
+        v-if="runningTasks.length"
+        :tasks="runningTasks"
+        :busy="busy"
+        @cancel="cancelTask"
+      />
 
       <div class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <div class="flex flex-wrap items-start justify-between gap-3">

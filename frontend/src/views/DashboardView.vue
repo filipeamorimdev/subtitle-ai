@@ -11,7 +11,7 @@ import type {
   Health,
   LocalizationTask,
 } from '../types'
-import { formatDateTime } from '../utils/datetime'
+import { formatDateTime, formatElapsedClock } from '../utils/datetime'
 import { localizationTaskTitle, mediaHref } from '../utils/mediaNav'
 import { isActiveTaskStatus, taskStatusIcon, taskStatusLabel } from '../utils/status'
 
@@ -20,12 +20,15 @@ const health = ref<Health | null>(null)
 const automation = ref<AutomationStatus | null>(null)
 const aiOverview = ref<AiOverview | null>(null)
 const tasks = ref<LocalizationTask[]>([])
+const currentTasksDetailed = ref<LocalizationTask[]>([])
 const recentTranslations = ref<LocalizationTask[]>([])
 const pipelineLoading = ref(false)
 const pipelineError = ref<string | null>(null)
 const pipelineLoaded = ref(false)
 const modalOpen = ref(false)
+const now = ref(Date.now())
 let timer: number | undefined
+let tick: number | undefined
 
 const LIST_LIMIT = 5
 
@@ -43,9 +46,33 @@ const candidateHealth = computed(() => {
   }
 })
 
-const currentLocalization = computed(() =>
-  tasks.value.filter((t) => isActiveTaskStatus(t.status)).slice(0, LIST_LIMIT),
-)
+const currentLocalization = computed(() => {
+  const byId = new Map(currentTasksDetailed.value.map((task) => [task.id, task]))
+  return tasks.value
+    .filter((task) => isActiveTaskStatus(task.status))
+    .slice(0, LIST_LIMIT)
+    .map((task) => byId.get(task.id) || task)
+})
+
+function latestJob(task: LocalizationTask) {
+  const jobs = task.executions || []
+  return (
+    [...jobs].reverse().find((item) => item.status === 'pending' || item.status === 'processing') ||
+    jobs[jobs.length - 1] ||
+    null
+  )
+}
+
+function taskProgressPct(task: LocalizationTask) {
+  const job = latestJob(task)
+  return Math.round(Math.min(100, Math.max(0, job?.progress ?? 0)))
+}
+
+function taskElapsed(task: LocalizationTask) {
+  const job = latestJob(task)
+  const start = job?.started_at || task.started_at || job?.created_at || task.created_at
+  return formatElapsedClock(start, now.value)
+}
 
 const failedTasks = computed(() =>
   tasks.value.filter((t) => t.status === 'failed').slice(0, LIST_LIMIT),
@@ -146,6 +173,7 @@ async function refreshDashboard() {
   await Promise.all([
     loadPipeline(true),
     loadTasks(),
+    loadCurrentLocalization(),
     loadRecentTranslations(),
     loadHealth(),
     loadAutomation(),
@@ -156,6 +184,18 @@ async function refreshDashboard() {
 async function loadTasks() {
   try {
     tasks.value = await api.getLocalizationTasks({ limit: 100 })
+  } catch {
+    /* keep previous */
+  }
+}
+
+async function loadCurrentLocalization() {
+  try {
+    currentTasksDetailed.value = await api.getLocalizationTasks({
+      active_only: true,
+      include_detail: true,
+      limit: LIST_LIMIT,
+    })
   } catch {
     /* keep previous */
   }
@@ -205,16 +245,22 @@ onMounted(async () => {
     loadAiSummary(),
     loadPipeline(false),
     loadTasks(),
+    loadCurrentLocalization(),
     loadRecentTranslations(),
   ])
+  tick = window.setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
   timer = window.setInterval(() => {
     loadTasks().catch(() => undefined)
+    loadCurrentLocalization().catch(() => undefined)
     loadRecentTranslations().catch(() => undefined)
   }, 4000)
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  if (tick) window.clearInterval(tick)
 })
 </script>
 
@@ -373,9 +419,19 @@ onUnmounted(() => {
           </p>
           <ul v-else class="divide-y divide-sky-100 dark:divide-ink-800">
             <li v-for="task in currentLocalization" :key="`cur-${task.id}`" class="px-4 py-3">
-              <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(task.media_item_id)">
-                {{ localizationTaskTitle(task) }}
-              </RouterLink>
+              <div class="flex items-start justify-between gap-3">
+                <RouterLink
+                  class="min-w-0 truncate font-medium text-accent hover:underline"
+                  :to="mediaHref(task.media_item_id)"
+                >
+                  {{ localizationTaskTitle(task) }}
+                </RouterLink>
+                <p class="shrink-0 text-xs tabular-nums text-ink-500">
+                  <span class="font-medium text-ink-700 dark:text-ink-200">{{ taskProgressPct(task) }}%</span>
+                  <span class="mx-1.5 text-ink-300 dark:text-ink-600">·</span>
+                  <span>{{ taskElapsed(task) }}</span>
+                </p>
+              </div>
               <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
                 <span>{{ task.target_language_name }}</span>
                 <span>{{ taskStatusIcon(task.status) }} {{ taskStatusLabel(task.status, task.substate) }}</span>
@@ -518,7 +574,16 @@ onUnmounted(() => {
         </template>
       </section>
 
-    <RequestSubtitlesModal :open="modalOpen" @close="modalOpen = false" @created="loadTasks" />
+    <RequestSubtitlesModal
+      :open="modalOpen"
+      @close="modalOpen = false"
+      @created="
+        () => {
+          loadTasks()
+          loadCurrentLocalization()
+        }
+      "
+    />
   </section>
 </template>
 

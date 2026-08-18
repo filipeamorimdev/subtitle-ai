@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { api } from '../services/api'
 import type { JobLog, JobUsage, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
+import { safeReturnTo, withReturnTo } from '../utils/mediaNav'
 
 const props = defineProps<{ id: string }>()
+const route = useRoute()
 
 const usage = ref<JobUsage | null>(null)
 const error = ref<string | null>(null)
@@ -122,6 +124,13 @@ const kpiCards = computed(() => {
   ]
 })
 
+const returnTo = computed(() => safeReturnTo(route.query.from))
+const backHref = computed(() => returnTo.value || `/jobs/${props.id}`)
+const backLabel = computed(() =>
+  returnTo.value?.startsWith('/media') ? '← Media' : `← Job #${props.id}`,
+)
+const jobDetailsHref = computed(() => withReturnTo(`/jobs/${props.id}`, returnTo.value))
+
 async function load() {
   loading.value = true
   error.value = null
@@ -206,7 +215,7 @@ async function viewRequest(row: JobUsageExchange) {
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div class="min-w-0">
         <p class="text-sm text-ink-500">
-          <RouterLink class="text-accent hover:underline" :to="`/jobs/${id}`">← Job #{{ id }}</RouterLink>
+          <RouterLink class="text-accent hover:underline" :to="backHref">{{ backLabel }}</RouterLink>
         </p>
         <h1 class="mt-1 break-words font-display text-2xl font-bold sm:text-3xl">
           {{ usage?.media_title || 'Job' }} usage
@@ -217,7 +226,7 @@ async function viewRequest(row: JobUsageExchange) {
       </div>
       <RouterLink
         class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-        :to="`/jobs/${id}`"
+        :to="jobDetailsHref"
       >
         Job details
       </RouterLink>

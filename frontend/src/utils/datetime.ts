@@ -49,3 +49,14 @@ export function formatElapsed(start: string | null | undefined, nowMs: number = 
   if (minutes > 0) return `${minutes} min`
   return `${secs}s`
 }
+
+/** Format elapsed time since start as `HH:MM:SS`. */
+export function formatElapsedClock(start: string | null | undefined, nowMs: number = Date.now()): string {
+  const date = parseDateTime(start)
+  const seconds = date ? Math.max(0, Math.floor((nowMs - date.getTime()) / 1000)) : 0
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = seconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(hours)}:${pad(minutes)}:${pad(secs)}`
+}

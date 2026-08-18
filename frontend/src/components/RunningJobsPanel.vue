@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { api } from '../services/api'
 import type { Job, JobLog, LocalizationTask } from '../types'
 import { formatElapsed } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
+import { withReturnTo } from '../utils/mediaNav'
 import { jobStatusClass, taskStatusLabel } from '../utils/status'
 
 const props = defineProps<{
@@ -15,6 +16,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   cancel: [taskId: number]
 }>()
+
+const route = useRoute()
 
 interface RunningRow {
   task: LocalizationTask
@@ -111,6 +114,14 @@ watch(
     )
   },
 )
+
+function jobHref(jobId: number) {
+  return withReturnTo(`/jobs/${jobId}`, route.fullPath)
+}
+
+function statsHref(jobId: number) {
+  return withReturnTo(`/jobs/${jobId}/stats`, route.fullPath)
+}
 </script>
 
 <template>
@@ -159,9 +170,10 @@ watch(
 
         <div v-if="job" class="mt-3 text-sm">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <RouterLink class="capitalize text-accent hover:underline" :to="`/jobs/${job.id}`">
+            <RouterLink class="capitalize text-accent hover:underline" :to="jobHref(job.id)">
               {{ job.job_kind }} #{{ job.id }}
               <span :class="jobStatusClass(job.status)"> · {{ job.status }}</span>
+              <span v-if="job.model" class="normal-case text-ink-500"> · {{ job.model }}</span>
             </RouterLink>
             <div class="flex shrink-0 items-center">
               <p v-if="rows.length > 1" class="mr-2 tabular-nums text-ink-600 dark:text-ink-300">
@@ -195,7 +207,7 @@ watch(
               </button>
               <RouterLink
                 :class="iconBtnClass"
-                :to="`/jobs/${job.id}/stats`"
+                :to="statsHref(job.id)"
                 title="Usage stats"
                 aria-label="Usage stats"
               >
