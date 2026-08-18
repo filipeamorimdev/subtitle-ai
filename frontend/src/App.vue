@@ -12,7 +12,6 @@ onMounted(() => {
 
 const links = [
   { to: '/media', label: 'Media' },
-  { to: '/translations', label: 'Translations' },
 ]
 
 function linkActive(to: string) {
