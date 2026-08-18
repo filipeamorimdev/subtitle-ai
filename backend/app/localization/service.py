@@ -250,9 +250,16 @@ class LocalizationTaskService:
         language_code: str,
         capability: str = "subtitles",
     ) -> LocalizationTaskRow | None:
-        """Active task wins; otherwise the latest historical task for this language."""
-        from app.subtitles.filenames import language_chip_matches_task
+        """Active task wins; otherwise the latest historical task for this language.
 
+        Overlay is exact (normalized) match only. A generic ``pt`` task must not
+        stamp Cancelled onto Portuguese (Portugal) and Portuguese (Brazil).
+        """
+        from app.subtitles.filenames import normalize_language_code
+
+        want = (normalize_language_code(language_code) or language_code or "").lower()
+        if not want:
+            return None
         active = self.find_active(media_item_id, language_code, capability)
         if active is not None:
             return active
@@ -266,13 +273,15 @@ class LocalizationTaskService:
                 .order_by(LocalizationTaskRow.created_at.desc(), LocalizationTaskRow.id.desc())
             ).all()
         )
+
+        def _code(row: LocalizationTaskRow) -> str:
+            return (normalize_language_code(row.target_language_code) or row.target_language_code or "").lower()
+
         for row in rows:
-            if row.status in ACTIVE_STATUSES and language_chip_matches_task(
-                row.target_language_code, language_code
-            ):
+            if row.status in ACTIVE_STATUSES and _code(row) == want:
                 return row
         for row in rows:
-            if language_chip_matches_task(row.target_language_code, language_code):
+            if _code(row) == want:
                 return row
         return None
 

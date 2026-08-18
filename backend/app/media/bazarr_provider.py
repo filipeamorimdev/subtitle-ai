@@ -10,7 +10,13 @@ from typing import Any
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.languages import get_language
 from app.media import LanguageAvailability, LocalizationState, MediaRef
-from app.subtitles.filenames import languages_compatible, normalize_language_code
+from app.subtitles.filenames import (
+    detect_language_from_filename,
+    language_chip_available,
+    languages_compatible,
+    normalize_language_code,
+    suppress_generic_language_chip,
+)
 
 BAZARR_PROVIDER_ID = "bazarr"
 _SEARCH_CACHE_TTL_SECONDS = 45.0
@@ -276,9 +282,17 @@ class BazarrMediaProvider:
         missing_codes: set[str] = set()
         if raw:
             for sub in BazarrClient.parse_subtitles(raw):
+                # Only count languages that have an actual subtitle file. Bazarr
+                # sometimes lists configured/wanted languages with a display name
+                # and no path (parse_subtitles then falls back to the name).
+                if not _looks_like_subtitle_path(sub.path):
+                    continue
                 code = normalize_language_code(sub.language_code) or sub.language_code
                 if code:
                     present_codes.add(code)
+                file_lang = detect_language_from_filename(sub.path)
+                if file_lang:
+                    present_codes.add(file_lang)
             for miss in BazarrClient.parse_missing_languages(raw):
                 code = normalize_language_code(miss) or miss
                 if code:
@@ -287,12 +301,16 @@ class BazarrMediaProvider:
         # Include featured catalog languages for display; full catalog is the dropdown.
         from app.languages import list_featured_languages
 
+        featured = list_featured_languages()
+        featured_codes = [lang.code for lang in featured]
         seen: set[str] = set()
-        for lang in list_featured_languages():
+        for lang in featured:
             if lang.code in seen:
                 continue
             seen.add(lang.code)
-            available = any(languages_compatible(lang.code, c) for c in present_codes)
+            available = language_chip_available(lang.code, present_codes)
+            if available and suppress_generic_language_chip(lang.code, present_codes, featured_codes):
+                available = False
             languages.append(
                 LanguageAvailability(
                     language_code=lang.code,
@@ -329,6 +347,13 @@ class BazarrMediaProvider:
         state = LocalizationState(capability="subtitles", languages=languages)
         _LOCALIZATION_CACHE[cache_key] = (now, state)
         return replace(state, languages=list(state.languages))
+
+
+def _looks_like_subtitle_path(path: str | None) -> bool:
+    if not path:
+        return False
+    lowered = path.replace("\\", "/").lower()
+    return "/" in lowered or lowered.endswith(".srt")
 
 
 def clear_search_cache() -> None:

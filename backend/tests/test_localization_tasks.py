@@ -296,6 +296,9 @@ async def test_cancel_marks_processing_jobs_cancelled(loc_env):
     assert any(item.id == job.id and item.status == "cancelled" for item in job_actions)
     cancelled_action = next(item for item in job_actions if item.id == job.id)
     assert cancelled_action.message == "Cancelled with localization task"
+    assert any(
+        item.kind == "task" and item.id == task.id and item.status == "cancelled" for item in actions
+    )
 
 
 def test_cancel_cancels_unattached_job_for_same_media_language(loc_env):
@@ -1342,6 +1345,26 @@ def test_latest_task_does_not_overlay_regional_onto_generic_chip(loc_env):
 
     assert svc.latest_task_for_language(media.id, "pt-PT").id == task.id
     assert svc.latest_task_for_language(media.id, "pt") is None
+    assert svc.latest_task_for_language(media.id, "pt-BR") is None
+
+
+def test_latest_task_generic_portuguese_does_not_overlay_regional_chips(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt")
+    cancelled = svc.cancel(task.id)
+    assert cancelled.status == "cancelled"
+
+    assert svc.latest_task_for_language(media.id, "pt").id == task.id
+    assert svc.latest_task_for_language(media.id, "pt-PT") is None
     assert svc.latest_task_for_language(media.id, "pt-BR") is None
 
 

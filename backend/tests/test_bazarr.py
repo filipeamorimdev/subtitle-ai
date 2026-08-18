@@ -663,3 +663,70 @@ def test_sqlite_engine_uses_null_pool(tmp_path, monkeypatch):
         db_module._engine = None
         db_module._SessionLocal = None
         get_app_config.cache_clear()
+
+
+class _FakeBazarrClient:
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    async def get_movie(self, movie_id):  # noqa: ARG002
+        return self.payload
+
+    async def get_episode(self, episode_id):  # noqa: ARG002
+        return None
+
+
+@pytest.mark.asyncio
+async def test_localization_state_ignores_portuguese_without_file():
+    from app.media import MediaRef
+    from app.media.bazarr_provider import BazarrMediaProvider, clear_search_cache
+
+    clear_search_cache()
+    provider = BazarrMediaProvider(
+        _FakeBazarrClient(
+            {
+                "subtitles": [
+                    {"code2": "pt", "name": "Portuguese"},
+                    {"code2": "en", "path": "/media/movie.en.srt", "name": "English"},
+                ]
+            }
+        )
+    )
+    ref = MediaRef(
+        provider_id="bazarr",
+        external_id="movie:1",
+        media_type="movie",
+        title="Movie",
+        bazarr_movie_id=1,
+    )
+    state = await provider.get_localization_state(ref)
+    by_code = {lang.language_code: lang for lang in state.languages}
+    assert by_code["en"].available is True
+    assert by_code["pt"].available is False
+    assert by_code["pt-PT"].available is False
+    assert by_code["pt-BR"].available is False
+
+
+@pytest.mark.asyncio
+async def test_localization_state_pt_sidecar_does_not_light_up_brazil():
+    from app.media import MediaRef
+    from app.media.bazarr_provider import BazarrMediaProvider, clear_search_cache
+
+    clear_search_cache()
+    provider = BazarrMediaProvider(
+        _FakeBazarrClient(
+            {"subtitles": [{"code2": "pt", "path": "/media/movie.pt.srt", "name": "Portuguese"}]}
+        )
+    )
+    ref = MediaRef(
+        provider_id="bazarr",
+        external_id="movie:2",
+        media_type="movie",
+        title="Movie",
+        bazarr_movie_id=2,
+    )
+    state = await provider.get_localization_state(ref)
+    by_code = {lang.language_code: lang for lang in state.languages}
+    assert by_code["pt"].available is False
+    assert by_code["pt-PT"].available is True
+    assert by_code["pt-BR"].available is False

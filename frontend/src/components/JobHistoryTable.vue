@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { JobAction } from '../types'
 import { formatDateTime, formatDuration } from '../utils/datetime'
-import { canRetryJob, jobStatusClass } from '../utils/status'
+import { canRetryJob, jobStatusBadgeClass } from '../utils/status'
 
 const props = withDefaults(
   defineProps<{
@@ -197,7 +197,9 @@ function statsHref(item: JobAction) {
         <dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
           <div>
             <dt class="text-ink-500">Status</dt>
-            <dd class="capitalize" :class="jobStatusClass(item.status)">{{ item.status }}</dd>
+            <dd>
+              <span :class="jobStatusBadgeClass(item.status)">{{ item.status }}</span>
+            </dd>
           </div>
           <div>
             <dt class="text-ink-500">Duration</dt>
@@ -274,8 +276,8 @@ function statsHref(item: JobAction) {
             <td class="py-3 pr-4 align-top whitespace-nowrap text-ink-600 dark:text-ink-300">
               {{ formatDuration(item.duration_seconds) }}
             </td>
-            <td class="py-3 pr-4 align-top capitalize" :class="jobStatusClass(item.status)">
-              {{ item.status }}
+            <td class="py-3 pr-4 align-top">
+              <span :class="jobStatusBadgeClass(item.status)">{{ item.status }}</span>
             </td>
             <td
               class="py-3 align-top break-words"

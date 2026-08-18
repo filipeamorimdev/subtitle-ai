@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.subtitles.filenames import build_target_subtitle_path, detect_language_from_filename
+from app.subtitles.filenames import (
+    build_target_subtitle_path,
+    detect_language_from_filename,
+    language_chip_available,
+    suppress_generic_language_chip,
+)
 from app.subtitles.markup import protect_markup, restore_markup
 from app.subtitles.models import SubtitleBlock, SubtitleDocument
 from app.subtitles.parsers.srt import SrtParseError, parse_srt
@@ -146,6 +151,27 @@ def test_filenames():
         )
     ) == "/media/x/movie.pt.srt"
     assert str(build_target_subtitle_path("movie.en.srt", "pt-BR")) == "movie.pt-BR.srt"
+
+
+def test_language_chip_available_does_not_cross_portuguese_locales():
+    present_pt = {"pt"}
+    assert language_chip_available("pt", present_pt) is True
+    assert language_chip_available("pt-PT", present_pt) is True
+    assert language_chip_available("pt-BR", present_pt) is False
+    present_br = {"pt-BR"}
+    assert language_chip_available("pt", present_br) is False
+    assert language_chip_available("pt-PT", present_br) is False
+    assert language_chip_available("pt-BR", present_br) is True
+    assert language_chip_available("pt-PT", set()) is False
+
+
+def test_suppress_generic_portuguese_chip_when_portugal_represents_sidecar():
+    present = {"pt"}
+    featured = ["en", "pt", "pt-PT", "pt-BR"]
+    assert suppress_generic_language_chip("pt", present, featured) is True
+    assert suppress_generic_language_chip("pt-PT", present, featured) is False
+    assert suppress_generic_language_chip("pt-BR", present, featured) is False
+    assert suppress_generic_language_chip("en", {"en", "pt"}, featured) is False
 
 
 def test_ensure_canonical_sidecar_collapses_pt_pt_duplicate(tmp_path):

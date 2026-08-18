@@ -316,11 +316,6 @@ class JobService:
         now = datetime.now(timezone.utc)
         actions = [_job_row_to_action(item, now=now) for item in related]
         job_task_ids = {item.task_id for item in related if item.task_id is not None}
-        cancelled_job_task_ids = {
-            item.task_id
-            for item in related
-            if item.task_id is not None and item.status == "cancelled"
-        }
         from app.localization.state import ACTIVE_STATUSES
 
         tasks = self.db.scalars(
@@ -330,11 +325,8 @@ class JobService:
         ).all()
         for task in tasks:
             has_jobs = task.id in job_task_ids
-            if has_jobs and task.status not in ACTIVE_STATUSES:
-                # Keep cancelled tasks visible when no execution was marked cancelled
-                # (e.g. cancelled during verify after translate already completed).
-                if not (task.status == "cancelled" and task.id not in cancelled_job_task_ids):
-                    continue
+            if has_jobs and task.status not in ACTIVE_STATUSES and task.status != "cancelled":
+                continue
             actions.append(
                 JobActionOut(
                     id=task.id,
@@ -1446,6 +1438,17 @@ class JobService:
             errors=errors,
         )
 
+    def _fresh_job(self, job_id: int) -> JobRow | None:
+        """Reload job from DB so a cancel committed by another session is visible."""
+        row = self.db.get(JobRow, job_id)
+        if row is None:
+            return None
+        try:
+            self.db.refresh(row)
+        except Exception:
+            return self.db.get(JobRow, job_id)
+        return row
+
     def claim_next_job(self, job_kind: str | None = None) -> JobRow | None:
         query = (
             select(JobRow)
@@ -2055,14 +2058,15 @@ class JobService:
                 if task_row is not None:
                     target_language_name = task_row.target_language_name
 
-            current = self.db.get(JobRow, job_id)
-            if current:
-                current.progress = 5
-                current.progress_detail = "Starting translation"
-                current.model = resolved_model
-                current.provider_id = resolved_provider
-                self.db.add(current)
-                self.db.commit()
+            current = self._fresh_job(job_id)
+            if not current or current.status == "cancelled":
+                return
+            current.progress = 5
+            current.progress_detail = "Starting translation"
+            current.model = resolved_model
+            current.provider_id = resolved_provider
+            self.db.add(current)
+            self.db.commit()
             self._set_task_checkpoints(task_id, translate="active")
 
             checkpoint = TranslationCheckpoint()
@@ -2075,6 +2079,9 @@ class JobService:
             registry = get_provider_registry()
 
             for index, candidate in enumerate(routing.candidates):
+                current = self._fresh_job(job_id)
+                if not current or current.status == "cancelled":
+                    return
                 reservation = None
                 try:
                     reservation = budget.reserve(
@@ -2117,17 +2124,19 @@ class JobService:
                     recording, temperature=float(public.openrouter_temperature)
                 )
 
-                current = self.db.get(JobRow, job_id)
-                if current:
-                    current.model = candidate.model_id
-                    current.provider_id = candidate.provider_id
-                    current.progress_detail = f"Using {candidate.provider_id}/{candidate.model_id}"
-                    self.db.add(current)
-                    self.db.commit()
+                current = self._fresh_job(job_id)
+                if not current or current.status == "cancelled":
+                    budget.release(reservation)
+                    return
+                current.model = candidate.model_id
+                current.provider_id = candidate.provider_id
+                current.progress_detail = f"Using {candidate.provider_id}/{candidate.model_id}"
+                self.db.add(current)
+                self.db.commit()
 
                 try:
                     async def on_progress(done: int, total: int) -> None:
-                        current = self.db.get(JobRow, job_id)
+                        current = self._fresh_job(job_id)
                         if not current or current.status == "cancelled":
                             raise RuntimeError("Job cancelled")
                         current.progress = round(5 + (done / total) * 95, 2)
@@ -2205,7 +2214,7 @@ class JobService:
 
             assert outcome is not None
 
-            current = self.db.get(JobRow, job_id)
+            current = self._fresh_job(job_id)
             if not current or current.status == "cancelled":
                 usage_service.set_translation_outcomes(job_id, "cancelled")
                 exchange_log.record({"event": "job_end", "status": "cancelled"})
@@ -2300,7 +2309,7 @@ class JobService:
             log.info("Job completed job_id=%s model=%s", job_id, winning_model)
         except Exception as exc:  # noqa: BLE001
             log.error("Job failed job_id=%s error=%s", job_id, exc)
-            current = self.db.get(JobRow, job_id)
+            current = self._fresh_job(job_id)
             reason = _reason_code(exc)
             if current and current.status != "cancelled":
                 current.status = "failed"

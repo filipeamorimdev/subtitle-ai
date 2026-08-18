@@ -210,6 +210,54 @@ def languages_compatible(a: str | None, b: str | None) -> bool:
     return False
 
 
+def language_chip_available(chip_code: str | None, present_codes: set[str] | list[str]) -> bool:
+    """Whether this language chip has an actual subtitle file.
+
+    Sibling locales are not interchangeable: a ``pt`` sidecar (written for
+    Portuguese Portugal) must not light up Brazilian Portuguese.
+    A regional chip may match its canonical sidecar (``pt-PT`` ↔ ``pt``).
+    """
+    nc = normalize_language_code(chip_code)
+    if not nc:
+        return False
+    present_n = {
+        (normalize_language_code(code) or code).lower()
+        for code in present_codes
+        if code
+    }
+    present_n.discard("")
+    cl = nc.lower()
+    if cl in present_n:
+        return True
+    tag = sidecar_language_tag(nc).lower()
+    return "-" in cl and tag in present_n
+
+
+def suppress_generic_language_chip(
+    chip_code: str | None,
+    present_codes: set[str] | list[str],
+    regional_codes: list[str],
+) -> bool:
+    """Hide generic ``pt`` when ``pt-PT`` already represents the same sidecar."""
+    nc = normalize_language_code(chip_code)
+    if not nc or "-" in nc:
+        return False
+    if not language_chip_available(nc, present_codes):
+        return False
+    tag = sidecar_language_tag(nc).lower()
+    prefix = nc.lower() + "-"
+    for other in regional_codes:
+        on = normalize_language_code(other)
+        if not on or on == nc or not on.lower().startswith(prefix):
+            continue
+        if (
+            language_chip_available(on, present_codes)
+            and sidecar_language_tag(on).lower() == tag
+        ):
+            return True
+    return False
+
+
 def language_chip_matches_task(task_code: str | None, chip_code: str | None) -> bool:
     """Attach a localization task to a language chip.
 
