@@ -16,8 +16,8 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 4. Open **Dashboard** for current activity, or **Media** to see titles that need work, are in progress, or already have history.
 5. Click a title to open the media file page (languages, localize, history). Use **Request subtitles** / **Localize** to create a localization task; the planner chooses request, extract, or translate.
 6. Use **Localize selected** or **Localize all missing** on the Media list when you want to queue several titles at once.
-7. The worker runs jobs in the background: glossary prep → routed translation via the AI provider layer (OpenRouter in v0.3-alpha1, with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
-8. Track progress on the media file page and the **AI dashboard** (from Dashboard). Review suggested terms under **Settings → Glossary**.
+7. The worker runs jobs in the background: routed translation via the AI provider layer (OpenRouter in v0.3-alpha1, with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
+8. Track progress on the media file page and the **AI dashboard** (from Dashboard).
 
 When automatic fallback is **off**, nothing is scheduled — only clicks create jobs.
 
@@ -25,23 +25,23 @@ When automatic fallback is **off**, nothing is scheduled — only clicks create 
 
 | Page | Purpose |
 | --- | --- |
-| **Dashboard** | Command center: status, missing titles, AI snapshot, glossary counters; opens the AI dashboard |
+| **Dashboard** | Command center: status, missing titles, AI snapshot; opens the AI dashboard |
 | **Media** | Library / work queue: wanted titles plus anything with a localization task |
 | **Media detail** | One file: languages, localize, source/tracks, request/extract/translate history |
 | **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
 | **Usage stats** | Per-job token/cost breakdown (from `ai_usage_records` snapshots) |
 | **AI dashboard** | Observability: Overview and Usage (opened from Dashboard) |
-| **Settings** | General, Providers (Bazarr and AI), Models, Language, Glossary |
+| **Settings** | General, Providers (Bazarr and AI), Models, Language |
 
 See [docs/localization-tasks.md](docs/localization-tasks.md) for the media-centric task architecture.
 
 Semantic split:
 
-- **Dashboard** → what is happening? (includes AI and glossary snapshots)
+- **Dashboard** → what is happening? (includes AI snapshot)
 - **AI dashboard** → detailed AI cost/quality/routing (from Dashboard)
-- **Settings** → how is Subtitle AI configured? (General, Providers, Models, Language, Glossary)
+- **Settings** → how is Subtitle AI configured? (General, Providers, Models, Language)
 
-OpenRouter keys live under **Settings → Providers**. Model pools, routing, and budgets live under **Settings → Models**. Glossary edit/review lives under **Settings → Glossary**.
+OpenRouter keys live under **Settings → Providers**. Model pools, routing, and budgets live under **Settings → Models**.
 
 ## Architecture
 
@@ -53,7 +53,6 @@ Vue UI  →  FastAPI
              · request  → Bazarr search (+ optional ffmpeg/PGS-OCR extract fallback)
              · extract  → ffmpeg text dump or Tesseract PGS OCR → sidecar SRT → Bazarr rescan
              · translate → ModelRouter → ProviderRegistry → TranslationService → validate → atomic write → rescan → verify
-        →  GlossaryService (scopes, terms, suggested review)
         →  AI usage / budget / catalog cache
 SQLite under /config
 ffmpeg / ffprobe / tesseract in the Docker image
@@ -61,7 +60,7 @@ ffmpeg / ffprobe / tesseract in the Docker image
 
 v0.3-alpha1 adds a provider-agnostic AI layer (`(provider_id, model_id)` identity). Only OpenRouter is implemented; see [docs/ai-providers.md](docs/ai-providers.md).
 
-The application owns subtitle structure (IDs, timing, markup). The model only translates dialogue text. Glossaries keep character names and recurring terms consistent across a series or universe.
+The application owns subtitle structure (IDs, timing, markup). The model only translates dialogue text.
 
 ## Automatic Subtitle Fallback
 

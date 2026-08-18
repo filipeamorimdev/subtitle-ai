@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../services/api'
 import type { Job, JobLog, LocalizationTask } from '../types'
-import { formatDateTime, formatElapsed } from '../utils/datetime'
+import { formatElapsed } from '../utils/datetime'
+import { formatJobLog } from '../utils/formatJobLog'
 import { jobStatusClass, taskStatusLabel } from '../utils/status'
 
 const props = defineProps<{
@@ -65,22 +66,6 @@ function stepClass(state: string) {
   if (state === 'failed') return 'text-red-700 dark:text-red-300'
   if (state === 'skipped') return 'text-ink-400 line-through'
   return 'text-ink-400'
-}
-
-function formatLog(jobLog: JobLog | null) {
-  if (!jobLog?.exists) return ''
-  if (jobLog.entries?.length) {
-    return jobLog.entries
-      .map((entry) => {
-        const normalized = { ...entry }
-        if (typeof normalized.ts === 'string') {
-          normalized.ts = formatDateTime(normalized.ts)
-        }
-        return JSON.stringify(normalized, null, 2)
-      })
-      .join('\n\n')
-  }
-  return jobLog.content || ''
 }
 
 async function toggleLog(jobId: number) {
@@ -256,9 +241,9 @@ watch(
             No log file yet. Translation logs appear once the AI provider is called.
           </p>
           <pre
-            v-else-if="logOpen.has(job.id) && formatLog(logByJob[job.id] || null)"
+            v-else-if="logOpen.has(job.id) && formatJobLog(logByJob[job.id] || null)"
             class="mt-2 max-h-64 overflow-auto rounded-lg bg-ink-950 p-3 text-xs leading-relaxed text-ink-100"
-          >{{ formatLog(logByJob[job.id] || null) }}</pre>
+          >{{ formatJobLog(logByJob[job.id] || null) }}</pre>
         </div>
         <p v-else class="mt-3 text-sm text-ink-500">
           No execution has been queued yet. Subtitle AI will create the next job shortly.

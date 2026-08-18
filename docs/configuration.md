@@ -28,13 +28,13 @@ By default only metadata is stored (model, attempt, status, token usage, errors)
 
 ## Settings UI sections
 
-The Settings sidebar has **General**, **Providers**, **Models**, **Language**, and **Glossary**.
+The Settings sidebar has **General**, **Providers**, **Models**, and **Language**.
 
 ### General
 
 - Automatic fallback: enable, scan interval, Bazarr grace period, retries, run scan now
 - Job concurrency (translate / extract / request)
-- Advanced cleanup (jobs, glossaries, usage stats)
+- Advanced cleanup (jobs, usage stats)
 
 When automatic fallback is disabled, Media stays click-only. When enabled, newly missing wanted items are processed automatically after the grace period and **can incur AI costs**.
 
@@ -51,8 +51,7 @@ Media:
 
 AI:
 
-- OpenRouter API key, connection test, catalog refresh, diagnostic exchange logging
-- Anthropic / OpenAI placeholders (not implemented)
+- OpenRouter API key, connection test, diagnostic exchange logging
 
 ### Models
 
@@ -63,10 +62,6 @@ AI:
 
 - Source language preference
 - Target language (wanted matching and new localize requests)
-
-### Glossary
-
-- Term memory and suggested-term review
 
 ## AI dashboard and model settings
 
@@ -81,7 +76,7 @@ AI **control** lives under Settings:
 
 | Page | Purpose |
 | --- | --- |
-| Providers | Bazarr connection; AI API keys (masked), connection test, catalog refresh, OpenRouter diagnostics |
+| Providers | Bazarr connection; AI API keys (masked), connection test, OpenRouter diagnostics |
 | Models | Catalog, free/paid pools, priority, routing strategy, fallback, cost caps, monthly budget, batch size |
 
 `GET /api/settings/openrouter/models` and `GET /api/ai/models` use a 6-hour catalog cache. Missing prices are **unknown**, never treated as free.

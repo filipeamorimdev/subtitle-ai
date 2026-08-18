@@ -83,7 +83,7 @@ def test_conservative_includes_overhead_and_multiplier():
         output_price_per_million=2.0,
     )
     assert cons.subtitle_tokens == 100
-    assert cons.input_tokens == 100 + 2000 + 1500
+    assert cons.input_tokens == 100 + 2000
     assert cons.output_tokens == 115
     assert cons.estimated_cost_micro_usd is not None
     assert cons.conservative_cost_micro_usd is not None

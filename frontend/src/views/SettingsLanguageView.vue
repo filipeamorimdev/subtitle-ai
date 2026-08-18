@@ -118,7 +118,7 @@ async function save() {
             @update:modelValue="onTargetChange"
           />
           <span class="mt-1 block text-xs text-ink-500">
-            Used for Bazarr wanted matching and new localize requests.
+            Used for Bazarr wanted matching, default to requests and new automatic localize requests.
           </span>
         </div>
       </fieldset>

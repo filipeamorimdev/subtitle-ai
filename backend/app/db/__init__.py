@@ -125,6 +125,15 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # Lightweight SQLite column ensure for existing deployments without alembic upgrade.
     with engine.begin() as conn:
+        existing_tables = {
+            row[0]
+            for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
+        }
+        if "glossary_terms" in existing_tables:
+            conn.execute(text("DROP TABLE glossary_terms"))
+        if "glossary_scopes" in existing_tables:
+            conn.execute(text("DROP TABLE glossary_scopes"))
+
         job_rows = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
         job_columns = {row[1] for row in job_rows}
         if "job_kind" not in job_columns:

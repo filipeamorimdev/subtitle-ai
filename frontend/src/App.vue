@@ -8,10 +8,12 @@ const route = useRoute()
 
 onMounted(() => {
   store.loadSettings().catch(() => undefined)
-  store.loadJobs().catch(() => undefined)
 })
 
-const links = [{ to: '/media', label: 'Media' }]
+const links = [
+  { to: '/media', label: 'Media' },
+  { to: '/translations', label: 'Translations' },
+]
 
 function linkActive(to: string) {
   const path = route.path

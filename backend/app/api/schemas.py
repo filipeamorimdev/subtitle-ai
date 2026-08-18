@@ -102,10 +102,6 @@ class ClearJobsRequest(BaseModel):
     status: Literal["failed", "skipped", "cancelled"] | None = None
 
 
-class ClearGlossariesRequest(BaseModel):
-    kind: Literal["universe", "series", "movie"] | None = None
-
-
 class OpenRouterModelOut(BaseModel):
     id: str
     name: str
@@ -380,103 +376,6 @@ class HealthOut(BaseModel):
     database: str = "healthy"
     bazarr: str = "unknown"
     openrouter: str = "unknown"
-
-
-class GlossaryScopeOut(BaseModel):
-    id: int
-    kind: str
-    key: str
-    display_name: str
-    target_language: str
-    parent_scope_id: int | None
-    bazarr_series_id: int | None
-    bazarr_movie_id: int | None
-    term_count: int = 0
-    suggested_count: int = 0
-    created_at: DateTimeOut = None
-    updated_at: DateTimeOut = None
-
-
-class GlossaryScopeCreate(BaseModel):
-    kind: Literal["universe", "series", "movie"]
-    key: str
-    display_name: str
-    target_language: str
-    parent_scope_id: int | None = None
-    bazarr_series_id: int | None = None
-    bazarr_movie_id: int | None = None
-
-
-class GlossaryScopeUpdate(BaseModel):
-    display_name: str | None = None
-    parent_scope_id: int | None = None
-    clear_parent: bool = False
-
-
-class GlossaryTermOut(BaseModel):
-    id: int
-    scope_id: int
-    source: str
-    target: str
-    term_type: str
-    policy: str
-    status: str
-    locked: bool
-    source_origin: str
-    notes: str | None = None
-    scope_kind: str | None = None
-    scope_name: str | None = None
-    created_at: DateTimeOut = None
-    updated_at: DateTimeOut = None
-
-
-class GlossaryTermCreate(BaseModel):
-    source: str
-    target: str
-    term_type: str = "other"
-    policy: str = "keep"
-    status: str = "active"
-    locked: bool = False
-    notes: str | None = None
-
-
-class GlossaryTermUpdate(BaseModel):
-    source: str | None = None
-    target: str | None = None
-    term_type: str | None = None
-    policy: str | None = None
-    status: str | None = None
-    locked: bool | None = None
-    notes: str | None = None
-
-
-class GlossaryTermReview(BaseModel):
-    approve: bool
-    lock: bool = False
-
-
-class GlossaryUniverseOut(BaseModel):
-    key: str
-    display_name: str
-
-
-class GlossaryPendingScopeOut(BaseModel):
-    id: int
-    display_name: str
-    kind: str
-    suggested_count: int
-
-
-class GlossarySummaryOut(BaseModel):
-    scopes: int = 0
-    universes: int = 0
-    series: int = 0
-    movies: int = 0
-    active_terms: int = 0
-    locked_terms: int = 0
-    awaiting_review: int = 0
-    rejected: int = 0
-    pending_scopes: list[GlossaryPendingScopeOut] = Field(default_factory=list)
 
 
 class AiRoutingOut(BaseModel):

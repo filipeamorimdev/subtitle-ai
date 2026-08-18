@@ -9,9 +9,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_app_config
 from app.db import Base
-from app.db.models import GlossaryScopeRow, GlossaryTermRow, JobRow, TranslationCacheRow
+from app.db.models import JobRow, TranslationCacheRow
 from app.jobs.service import JobService
-from app.services.glossary import GlossaryService
 from app.translation.openrouter.exchange_log import job_openrouter_log_path
 
 
@@ -145,44 +144,3 @@ def test_clear_usage_stats(tmp_path: Path, monkeypatch):
     assert refreshed.total_tokens is None
 
     get_app_config.cache_clear()
-
-
-def test_clear_glossaries_by_kind_and_all():
-    db = _session()
-    service = GlossaryService(db)
-    universe = service.create_scope(
-        kind="universe",
-        key="marvel",
-        display_name="Marvel",
-        target_language="pt-PT",
-    )
-    series = service.create_scope(
-        kind="series",
-        key="wandavision",
-        display_name="WandaVision",
-        target_language="pt-PT",
-        parent_scope_id=universe.id,
-    )
-    movie = service.create_scope(
-        kind="movie",
-        key="endgame",
-        display_name="Endgame",
-        target_language="pt-PT",
-        parent_scope_id=universe.id,
-    )
-    service.create_term(universe.id, source="Tony", target="Tony", term_type="character")
-    service.create_term(series.id, source="Wanda", target="Wanda", term_type="character")
-    service.create_term(movie.id, source="Thanos", target="Thanos", term_type="character")
-
-    deleted_movies = service.clear_scopes(kind="movie")
-    assert deleted_movies == 1
-    assert db.get(GlossaryScopeRow, movie.id) is None
-    assert db.get(GlossaryScopeRow, universe.id) is not None
-    assert db.scalar(
-        select(GlossaryTermRow.id).where(GlossaryTermRow.scope_id == movie.id)
-    ) is None
-
-    deleted_all = service.clear_scopes()
-    assert deleted_all == 2
-    assert db.scalar(select(GlossaryScopeRow.id)) is None
-    assert db.scalar(select(GlossaryTermRow.id)) is None

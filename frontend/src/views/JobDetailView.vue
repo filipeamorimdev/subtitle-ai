@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api } from '../services/api'
 import type { Job, JobLog, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
+import { formatJobLog } from '../utils/formatJobLog'
 import { mediaHrefForJob, mediaHrefForTaskId } from '../utils/mediaNav'
 
 const props = defineProps<{ id: string }>()
@@ -50,21 +51,7 @@ function requestTitle(row: JobUsageExchange): string {
   return `#${row.index} ${actionLabel(row.action)} · ${row.model}`
 }
 
-const formattedLog = computed(() => {
-  if (!jobLog.value?.exists) return ''
-  if (jobLog.value.entries?.length) {
-    return jobLog.value.entries
-      .map((entry) => {
-        const normalized = { ...entry }
-        if (typeof normalized.ts === 'string') {
-          normalized.ts = formatDateTime(normalized.ts)
-        }
-        return JSON.stringify(normalized, null, 2)
-      })
-      .join('\n\n')
-  }
-  return jobLog.value.content || ''
-})
+const formattedLog = computed(() => formatJobLog(jobLog.value))
 
 function notifyFinished(current: Job) {
   if (typeof Notification === 'undefined') return

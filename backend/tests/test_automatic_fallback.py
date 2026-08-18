@@ -139,13 +139,7 @@ def auto_env(tmp_path, monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
 
     async def fake_chat(self, *, model, messages, temperature=0, max_tokens=None):
-        system = next((m["content"] for m in messages if m["role"] == "system"), "")
-        if "Classify media into a franchise universe" in system:
-            content = '{"universe":"none"}'
-        elif "extract audiovisual glossary terms" in system:
-            content = '{"terms":[]}'
-        else:
-            content = "[001]\nOlá\n\n[002]\nMundo\n"
+        content = "[001]\nOlá\n\n[002]\nMundo\n"
         return ChatResult(
             content=content,
             model=model,

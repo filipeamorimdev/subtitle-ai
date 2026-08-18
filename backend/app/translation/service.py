@@ -123,7 +123,6 @@ class TranslationService:
         target_language_name: str,
         batch_size: int = DEFAULT_BATCH_SIZE,
         progress_callback=None,
-        glossary_terms=None,
         checkpoint: TranslationCheckpoint | None = None,
         provider_id: str | None = None,
     ) -> TranslationOutcome:
@@ -133,7 +132,6 @@ class TranslationService:
         system_prompt = build_system_prompt(
             target_language_code,
             target_language_name,
-            glossary_terms=glossary_terms,
         )
         state = checkpoint or TranslationCheckpoint()
         usage = state.usage

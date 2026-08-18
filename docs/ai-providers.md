@@ -22,7 +22,7 @@ OpenRouterProvider  ← only concrete provider in alpha1
 OpenRouter API
 ```
 
-Translation, glossary, routing, ranking, and the AI dashboard depend on generic types (`AIModel`, `AIResponse`, `AIProvider`). HTTP details, auth headers, `:batch` support, and OpenRouter JSON stay inside the adapter.
+Translation, routing, ranking, and the AI dashboard depend on generic types (`AIModel`, `AIResponse`, `AIProvider`). HTTP details, auth headers, `:batch` support, and OpenRouter JSON stay inside the adapter.
 
 ## Model identity
 

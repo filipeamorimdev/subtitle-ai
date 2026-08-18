@@ -90,13 +90,7 @@ def routing_env(tmp_path, monkeypatch):
         fail_for = getattr(fake_chat, "fail_for", set())
         if model in fail_for:
             raise OpenRouterError("OpenRouter rate limited.", status_code=429, retryable=True)
-        system = next((m["content"] for m in messages if m["role"] == "system"), "")
-        if "Classify media into a franchise universe" in system:
-            content = '{"universe":"none"}'
-        elif "extract audiovisual glossary terms" in system:
-            content = '{"terms":[]}'
-        else:
-            content = "[001]\nOlá\n\n[002]\nMundo\n"
+        content = "[001]\nOlá\n\n[002]\nMundo\n"
         return ChatResult(content=content, model=model, input_tokens=3, output_tokens=2, total_tokens=5)
 
     fake_chat.fail_for = set()

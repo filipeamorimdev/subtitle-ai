@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -374,7 +376,6 @@ async def create_media_localization_task(
             target_language=payload.target_language,
             capability=capability,
             requested_by="user",
-            reuse_active=False,
         )
     except UnsupportedCapabilityError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -405,6 +406,7 @@ def list_localization_tasks(
     include_detail: bool = False,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    sort: Literal["created_at", "completed_at"] = "created_at",
     db: Session = Depends(get_db),
 ) -> list[LocalizationTaskOut]:
     svc = LocalizationTaskService(db)
@@ -427,6 +429,7 @@ def list_localization_tasks(
         limit=limit,
         offset=offset,
         active_only=active_only,
+        sort=sort,
     )
     response.headers["X-Total-Count"] = str(total)
     return [_task_out(db, row, include_detail=include_detail) for row in rows]

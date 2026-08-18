@@ -101,11 +101,6 @@ async function runClear(action: () => Promise<{ message: string }>, confirmText:
   try {
     const result = await action()
     message.value = result.message
-    try {
-      await store.loadJobs()
-    } catch {
-      /* ignore refresh errors after clear */
-    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -124,14 +119,6 @@ function clearJobs(opts?: {
   return runClear(
     () => api.clearJobs(opts),
     `Delete ${label} from history? This cannot be undone.`,
-  )
-}
-
-function clearGlossaries(kind?: 'universe' | 'series' | 'movie') {
-  const label = kind ? `${kind} glossaries` : 'ALL glossaries'
-  return runClear(
-    () => api.clearGlossaries(kind),
-    `Delete ${label}? Terms in those scopes will be removed. This cannot be undone.`,
   )
 }
 
@@ -167,7 +154,9 @@ function clearUsageStats() {
           <span>
             <span class="font-medium">Enable automatic fallback</span>
             <span class="mt-1 block text-xs text-ink-500">
-              Off by default. When off, Media stays click-only. When on, new missing items are processed automatically after the grace period and can incur AI costs.
+              Off by default. When off, translations are done on-demand only.<br>
+              When on, new missing items are processed automatically after the grace period and can incur AI costs in case there's the option for paid models active. Check
+              <RouterLink class="font-semibold text-accent hover:underline" to="/settings/models">models settings</RouterLink>.
             </span>
           </span>
         </label>
@@ -331,44 +320,6 @@ function clearUsageStats() {
             @click="clearJobs()"
           >
             Clear all jobs
-          </button>
-        </div>
-      </div>
-
-      <div class="space-y-3">
-        <h2 class="text-sm font-semibold text-ink-700 dark:text-ink-200">Glossaries</h2>
-        <div class="flex flex-wrap gap-2">
-          <button
-            type="button"
-            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
-            :disabled="clearing"
-            @click="clearGlossaries('universe')"
-          >
-            Clear universes
-          </button>
-          <button
-            type="button"
-            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
-            :disabled="clearing"
-            @click="clearGlossaries('series')"
-          >
-            Clear series
-          </button>
-          <button
-            type="button"
-            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
-            :disabled="clearing"
-            @click="clearGlossaries('movie')"
-          >
-            Clear movies
-          </button>
-          <button
-            type="button"
-            class="rounded-md bg-red-600/90 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            :disabled="clearing"
-            @click="clearGlossaries()"
-          >
-            Clear all glossaries
           </button>
         </div>
       </div>

@@ -3,15 +3,6 @@
 from __future__ import annotations
 
 import re
-from typing import Protocol
-
-
-class GlossaryTermLike(Protocol):
-    source: str
-    target: str
-    term_type: str
-    policy: str
-
 
 SYSTEM_PROMPT = """You are a professional audiovisual subtitle translator.
 
@@ -25,7 +16,6 @@ Preserve:
 - tone
 - profanity level
 - names and proper nouns unless translation is clearly appropriate
-- glossary terms exactly as specified
 - placeholder tags like <TAG0>, <TAG1> exactly as given
 
 Do not:
@@ -45,23 +35,6 @@ Return only the requested block mapping.
 """
 
 
-def format_glossary_block(terms: list[GlossaryTermLike]) -> str:
-    if not terms:
-        return ""
-    lines = [
-        "",
-        "GLOSSARY (must follow consistently):",
-        "When a glossary source term appears, use the target form below.",
-        "Do not invent alternate spellings for glossary terms.",
-        "Respect morphology around terms (possessives, plurals) while keeping the glossary form.",
-    ]
-    for term in terms:
-        lines.append(
-            f'- "{term.source}" → "{term.target}" ({term.term_type}, {term.policy})'
-        )
-    lines.append("")
-    return "\n".join(lines)
-
 MISSING_BLOCKS_PROMPT_EXTRA = """
 Some block IDs were missing or empty in a previous response. Translate ONLY the blocks provided below.
 
@@ -79,21 +52,17 @@ BLOCK_RE = re.compile(r"^\[(\d{3,})\]\s*$")
 def build_system_prompt(
     target_language_code: str,
     target_language_name: str,
-    *,
-    glossary_terms: list[GlossaryTermLike] | None = None,
 ) -> str:
     locale_note = ""
     if target_language_code.lower() in {"pt-pt", "pt"} and "brazil" not in target_language_name.lower():
         locale_note = (
             "\nUse European Portuguese (PT-PT), not Brazilian Portuguese (PT-BR).\n"
         )
-    glossary_note = format_glossary_block(glossary_terms or [])
     return (
         SYSTEM_PROMPT
         + f"\nTarget language code: {target_language_code}\n"
         + f"Target language name: {target_language_name}\n"
         + locale_note
-        + glossary_note
     )
 
 

@@ -167,6 +167,37 @@ def test_completed_does_not_block_new_request(loc_env):
     assert task2.id != task.id
 
 
+def test_list_tasks_sorts_completed_newest_first(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    now = datetime.now(timezone.utc)
+    oldest, _ = svc.create_manual_task(media_item=media, target_language="en")
+    svc.transition(oldest, "completed")
+    oldest.completed_at = now - timedelta(days=2)
+    db.commit()
+    middle, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(middle, "completed")
+    middle.completed_at = now - timedelta(hours=3)
+    db.commit()
+    newest, _ = svc.create_manual_task(media_item=media, target_language="ja-JP")
+    svc.transition(newest, "completed")
+    newest.completed_at = now
+    db.commit()
+
+    rows = svc.list_tasks(status="completed", sort="completed_at", limit=10)
+    assert [row.id for row in rows] == [newest.id, middle.id, oldest.id]
+    page = svc.list_tasks(status="completed", sort="completed_at", limit=1, offset=1)
+    assert [row.id for row in page] == [middle.id]
+
+
 def test_unsupported_capability(loc_env):
     db, *_ = loc_env
     media = MediaItemService(db).upsert_from_candidate_fields(
@@ -1330,8 +1361,8 @@ async def test_written_translate_without_verify_reason_still_rescans(loc_env, mo
             target_subtitle_path=str(target),
             model="test",
             status="completed",
-            reason_code="glossary_review",
-            warning="glossary_suggested:2 new term(s) awaiting review",
+            reason_code="markup_warning",
+            warning="markup tags restored with fallback",
         )
     )
     db.commit()
@@ -1359,7 +1390,7 @@ async def test_written_translate_without_verify_reason_still_rescans(loc_env, mo
     assert planned.error_code == "bazarr_verify_failed"
     assert calls["n"] == 1
     job = db.scalars(select(JobRow).where(JobRow.task_id == task.id)).one()
-    assert job.reason_code == "glossary_review"
+    assert job.reason_code == "markup_warning"
 
 
 def test_worker_does_not_cancel_completed_inflight_jobs(loc_env):
@@ -1374,7 +1405,7 @@ def test_worker_does_not_cancel_completed_inflight_jobs(loc_env):
         target_subtitle_path=str(media_dir / "The Matrix.pt-PT.srt"),
         model="test",
         status="completed",
-        reason_code="glossary_review",
+        reason_code="markup_warning",
     )
     db.add(row)
     db.commit()

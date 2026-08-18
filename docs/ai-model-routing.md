@@ -52,7 +52,7 @@ Per-job and monthly budget gates use a **conservative** estimate, not a bare sub
 
 ```text
 subtitle_tokens   = max(1, char_count // 4)
-input_tokens      = subtitle_tokens + 2000 (system/batch) + 1500 (glossary)
+input_tokens      = subtitle_tokens + 2000 (system/batch)
 output_tokens     = subtitle_tokens + 15% repair allowance
 estimated_cost    = price(input_tokens, output_tokens)
 conservative_cost = estimated_cost × 1.25
@@ -77,7 +77,7 @@ Ranking uses only production translation operations:
 
 `translation`, `translation_retry`, `translation_repair`
 
-Excluded: `model_test`, `glossary_universe`, `glossary_extract`, and any other non-translation op.
+Excluded: `model_test` and any other non-translation op.
 
 Score philosophy:
 

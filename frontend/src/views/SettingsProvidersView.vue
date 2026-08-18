@@ -7,8 +7,8 @@ import { useAppStore } from '../stores/app'
 import type { AiProviderInfo } from '../types'
 
 const store = useAppStore()
-const bazarrMessage = ref<string | null>(null)
-const bazarrError = ref<string | null>(null)
+const message = ref<string | null>(null)
+const error = ref<string | null>(null)
 const saving = ref(false)
 const bazarrTest = ref<string | null>(null)
 
@@ -19,12 +19,9 @@ const form = reactive({
 })
 
 const providers = ref<AiProviderInfo[]>([])
-const aiError = ref<string | null>(null)
-const aiMessage = ref<string | null>(null)
 const aiLoading = ref(true)
-const aiSaving = ref(false)
 const apiKey = ref('')
-const clearApiKey = ref(false)
+const clearingApiKey = ref(false)
 const testMessage = ref<string | null>(null)
 const logExchanges = ref(false)
 const temperature = ref(0)
@@ -34,9 +31,11 @@ const upcomingProviders = [
   { id: 'openai', name: 'OpenAI' },
 ]
 
-async function loadAi() {
-  aiLoading.value = true
-  aiError.value = null
+async function loadAi(opts?: { silent?: boolean }) {
+  if (!opts?.silent) {
+    aiLoading.value = true
+    error.value = null
+  }
   try {
     const [list, route] = await Promise.all([api.getAiProviders(), api.getAiRouting()])
     providers.value = list.providers
@@ -44,7 +43,7 @@ async function loadAi() {
     temperature.value =
       typeof route.openrouter_temperature === 'number' ? route.openrouter_temperature : 0
   } catch (err) {
-    aiError.value = err instanceof Error ? err.message : String(err)
+    error.value = err instanceof Error ? err.message : String(err)
   } finally {
     aiLoading.value = false
   }
@@ -57,22 +56,50 @@ onMounted(async () => {
   await loadAi()
 })
 
-async function saveBazarr() {
+async function save() {
   saving.value = true
-  bazarrMessage.value = null
-  bazarrError.value = null
+  message.value = null
+  error.value = null
   try {
-    await api.updateSettings({
-      bazarr_url: form.bazarr_url,
-      bazarr_api_key: form.bazarr_api_key || undefined,
-      clear_bazarr_api_key: form.clear_bazarr_api_key,
-    })
-    form.bazarr_api_key = ''
-    form.clear_bazarr_api_key = false
-    await store.loadSettings()
-    bazarrMessage.value = 'Bazarr settings saved.'
-  } catch (err) {
-    bazarrError.value = err instanceof Error ? err.message : String(err)
+    const results = await Promise.allSettled([
+      api.updateSettings({
+        bazarr_url: form.bazarr_url,
+        bazarr_api_key: form.bazarr_api_key || undefined,
+        clear_bazarr_api_key: form.clear_bazarr_api_key,
+      }),
+      api.updateAiProvider('openrouter', {
+        api_key: apiKey.value || undefined,
+        openrouter_log_full_exchanges: logExchanges.value,
+        openrouter_temperature: Number.isFinite(Number(temperature.value))
+          ? Math.min(2, Math.max(0, Number(temperature.value)))
+          : 0,
+      }),
+    ])
+    const failures = results
+      .map((result, index) => {
+        if (result.status === 'fulfilled') return null
+        const label = index === 0 ? 'Bazarr' : 'OpenRouter'
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason)
+        return `${label}: ${reason}`
+      })
+      .filter((item): item is string => Boolean(item))
+
+    if (results[0].status === 'fulfilled') {
+      form.bazarr_api_key = ''
+      form.clear_bazarr_api_key = false
+      await store.loadSettings()
+    }
+    if (results[1].status === 'fulfilled') {
+      apiKey.value = ''
+      await loadAi({ silent: true })
+    }
+
+    if (failures.length) {
+      error.value = failures.join(' ')
+      if (failures.length < results.length) message.value = 'Some provider settings were saved.'
+    } else {
+      message.value = 'Providers saved.'
+    }
   } finally {
     saving.value = false
   }
@@ -84,27 +111,20 @@ async function testBazarr() {
   bazarrTest.value = result.message
 }
 
-async function saveOpenRouter() {
-  aiMessage.value = null
-  aiError.value = null
-  aiSaving.value = true
+async function clearOpenRouterApiKey() {
+  if (!confirm('Remove the saved OpenRouter API key? This cannot be undone.')) return
+  clearingApiKey.value = true
+  message.value = null
+  error.value = null
   try {
-    await api.updateAiProvider('openrouter', {
-      api_key: apiKey.value || undefined,
-      clear_api_key: clearApiKey.value,
-      openrouter_log_full_exchanges: logExchanges.value,
-      openrouter_temperature: Number.isFinite(Number(temperature.value))
-        ? Math.min(2, Math.max(0, Number(temperature.value)))
-        : 0,
-    })
+    await api.updateAiProvider('openrouter', { clear_api_key: true })
     apiKey.value = ''
-    clearApiKey.value = false
-    aiMessage.value = 'OpenRouter provider saved.'
-    await loadAi()
+    await loadAi({ silent: true })
+    message.value = 'Saved OpenRouter API key removed.'
   } catch (err) {
-    aiError.value = err instanceof Error ? err.message : String(err)
+    error.value = err instanceof Error ? err.message : String(err)
   } finally {
-    aiSaving.value = false
+    clearingApiKey.value = false
   }
 }
 
@@ -120,49 +140,28 @@ async function testOpenRouter(fresh = false) {
   }
 }
 
-async function refreshModels() {
-  aiMessage.value = null
-  const result = await api.refreshAiModels('openrouter')
-  aiMessage.value = result.ok
-    ? `Refreshed ${result.count} models.`
-    : result.message || 'Refresh failed; kept last catalog.'
-}
 </script>
 
 <template>
   <section class="space-y-8">
     <SettingsPageHeader
       title="Providers"
-      save-label="Save Bazarr"
-      form="settings-bazarr-form"
+      save-label="Save"
+      form="settings-providers-form"
       :saving="saving"
-    >
-      <template #actions>
-        <button
-          class="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
-          type="button"
-          :disabled="aiLoading || aiSaving"
-          @click="saveOpenRouter"
-        >
-          {{ aiSaving ? 'Saving…' : 'Save provider' }}
-        </button>
-      </template>
-    </SettingsPageHeader>
+      :disabled="aiLoading"
+    />
 
-    <section class="space-y-4">
-      <h3 class="font-display text-lg font-semibold">Media</h3>
+    <p v-if="message" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+      {{ message }}
+    </p>
+    <p v-if="error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+      {{ error }}
+    </p>
 
-      <p
-        v-if="bazarrMessage"
-        class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
-      >
-        {{ bazarrMessage }}
-      </p>
-      <p v-if="bazarrError" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
-        {{ bazarrError }}
-      </p>
-
-      <form id="settings-bazarr-form" class="space-y-4" @submit.prevent="saveBazarr">
+    <form id="settings-providers-form" class="space-y-8" @submit.prevent="save">
+      <section class="space-y-4">
+        <h3 class="font-display text-lg font-semibold">Media</h3>
         <fieldset
           class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
         >
@@ -204,121 +203,114 @@ async function refreshModels() {
             </span>
           </div>
         </fieldset>
-      </form>
-    </section>
+      </section>
 
-    <section class="space-y-4">
-      <div>
-        <h3 class="font-display text-lg font-semibold">AI</h3>
-        <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-          v0.3-alpha1 implements OpenRouter only. Anthropic and OpenAI are reserved for later.
-          ChatGPT or Claude subscriptions are not API access.
-        </p>
-      </div>
+      <section class="space-y-4">
+        <div>
+          <h3 class="font-display text-lg font-semibold">AI</h3>
+          <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+            v0.3-alpha1 implements OpenRouter only. Anthropic and OpenAI are reserved for later.
+            ChatGPT or Claude subscriptions are not API access.
+          </p>
+        </div>
 
-      <p v-if="aiError" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
-        {{ aiError }}
-      </p>
-      <p v-if="aiMessage" class="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-        {{ aiMessage }}
-      </p>
-      <p v-if="aiLoading" class="text-ink-500">Loading providers…</p>
+        <p v-if="aiLoading" class="text-ink-500">Loading providers…</p>
 
-      <template v-else>
-        <div
-          v-for="provider in providers"
-          :key="provider.provider_id"
-          class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
-        >
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h4 class="font-display text-lg font-semibold">{{ provider.display_name }}</h4>
-              <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-                <span v-if="provider.configured">● Configured</span>
-                <span v-else>○ Not configured</span>
-                <span v-if="provider.api_key_masked" class="ml-2 break-all text-xs text-ink-500">
-                  {{ provider.api_key_masked }}
+        <template v-else>
+          <div
+            v-for="provider in providers"
+            :key="provider.provider_id"
+            class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
+          >
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h4 class="font-display text-lg font-semibold">{{ provider.display_name }}</h4>
+                <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+                  <span v-if="provider.configured">● Configured</span>
+                  <span v-else>○ Not configured</span>
+                  <span v-if="provider.api_key_masked" class="ml-2 break-all text-xs text-ink-500">
+                    {{ provider.api_key_masked }}
+                  </span>
+                </p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <RouterLink
+                  class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+                  to="/settings/models"
+                >
+                  Models &amp; Routing
+                </RouterLink>
+              </div>
+            </div>
+
+            <template v-if="provider.provider_id === 'openrouter'">
+              <label class="mt-4 block text-sm">
+                <span class="text-ink-500">API key</span>
+                <input
+                  v-model="apiKey"
+                  type="password"
+                  class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+                  placeholder="Leave blank to keep existing"
+                />
+              </label>
+              <div class="mt-2">
+                <button
+                  type="button"
+                  class="rounded-md bg-red-600/90 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  :disabled="clearingApiKey || !provider.api_key_masked"
+                  @click="clearOpenRouterApiKey"
+                >
+                  {{ clearingApiKey ? 'Clearing…' : 'Clear saved OpenRouter API key' }}
+                </button>
+              </div>
+              <label class="mt-4 block text-sm">
+                <span class="text-ink-500">Temperature</span>
+                <input
+                  v-model.number="temperature"
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+                />
+                <span class="mt-1 block text-xs text-ink-500">
+                  Sent on every OpenRouter request. 0 is deterministic; higher values add variation (max 2).
                 </span>
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <RouterLink
-                class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-                to="/settings/models"
-              >
-                Models &amp; Routing
-              </RouterLink>
-            </div>
+              </label>
+              <label class="mt-2 flex items-center gap-2 text-sm">
+                <input v-model="logExchanges" type="checkbox" />
+                Log full OpenRouter exchanges (debug; may include prompts)
+              </label>
+              <p v-if="testMessage" class="mt-2 text-sm text-ink-600 dark:text-ink-300">{{ testMessage }}</p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button
+                  class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+                  type="button"
+                  @click="testOpenRouter(false)"
+                >
+                  Test connection
+                </button>
+                <button
+                  class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+                  type="button"
+                  @click="testOpenRouter(true)"
+                >
+                  Test (force refresh)
+                </button>
+              </div>
+            </template>
           </div>
 
-          <template v-if="provider.provider_id === 'openrouter'">
-            <label class="mt-4 block text-sm">
-              <span class="text-ink-500">API key</span>
-              <input
-                v-model="apiKey"
-                type="password"
-                class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
-                placeholder="Leave blank to keep existing"
-              />
-            </label>
-            <label class="mt-4 block text-sm">
-              <span class="text-ink-500">Temperature</span>
-              <input
-                v-model.number="temperature"
-                type="number"
-                min="0"
-                max="2"
-                step="0.1"
-                class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
-              />
-              <span class="mt-1 block text-xs text-ink-500">
-                Sent on every OpenRouter request. 0 is deterministic; higher values add variation (max 2).
-              </span>
-            </label>
-            <label class="mt-2 flex items-center gap-2 text-sm">
-              <input v-model="clearApiKey" type="checkbox" />
-              Clear saved OpenRouter API key
-            </label>
-            <label class="mt-2 flex items-center gap-2 text-sm">
-              <input v-model="logExchanges" type="checkbox" />
-              Log full OpenRouter exchanges (debug; may include prompts)
-            </label>
-            <p v-if="testMessage" class="mt-2 text-sm text-ink-600 dark:text-ink-300">{{ testMessage }}</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button
-                class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-                type="button"
-                @click="testOpenRouter(false)"
-              >
-                Test connection
-              </button>
-              <button
-                class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-                type="button"
-                @click="testOpenRouter(true)"
-              >
-                Test (force refresh)
-              </button>
-              <button
-                class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-                type="button"
-                @click="refreshModels"
-              >
-                Refresh models
-              </button>
-            </div>
-          </template>
-        </div>
-
-        <div
-          v-for="upcoming in upcomingProviders.filter((item) => !providers.some((p) => p.provider_id === item.id))"
-          :key="upcoming.id"
-          class="rounded-xl border border-dashed border-ink-300 bg-white/50 p-5 dark:border-ink-700 dark:bg-ink-900/40"
-        >
-          <h4 class="font-display text-lg font-semibold">{{ upcoming.name }}</h4>
-          <p class="mt-1 text-sm text-ink-500">Not available yet.</p>
-        </div>
-      </template>
-    </section>
+          <div
+            v-for="upcoming in upcomingProviders.filter((item) => !providers.some((p) => p.provider_id === item.id))"
+            :key="upcoming.id"
+            class="rounded-xl border border-dashed border-ink-300 bg-white/50 p-5 dark:border-ink-700 dark:bg-ink-900/40"
+          >
+            <h4 class="font-display text-lg font-semibold">{{ upcoming.name }}</h4>
+            <p class="mt-1 text-sm text-ink-500">Not available yet.</p>
+          </div>
+        </template>
+      </section>
+    </form>
   </section>
 </template>

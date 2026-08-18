@@ -1,8 +1,15 @@
 import { api } from '../services/api'
-import type { Candidate, Job, MediaRef } from '../types'
+import type { Candidate, Job, LocalizationTask, MediaRef } from '../types'
 
 export function mediaHref(mediaId: number) {
   return `/media/${mediaId}`
+}
+
+export function localizationTaskTitle(
+  task: Pick<LocalizationTask, 'media_title' | 'media_item_id' | 'media_year'>,
+) {
+  const title = task.media_title || `Media #${task.media_item_id}`
+  return task.media_year ? `${title} (${task.media_year})` : title
 }
 
 export function candidateToMediaRef(item: Candidate): MediaRef {

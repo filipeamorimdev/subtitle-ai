@@ -244,12 +244,6 @@ export interface LocalizationTask {
   progress_steps: ProgressStep[]
 }
 
-export interface ActiveTaskExistsError {
-  error: 'active_task_exists'
-  task_id: number
-  detail?: string
-}
-
 export interface JobAction {
   id: number
   action: string
@@ -354,24 +348,6 @@ export interface JobUsage {
   related_actions: JobUsageRelated[]
 }
 
-export interface BatchJobsResult {
-  jobs: Job[]
-  created_count: number
-  reused_count: number
-  skipped_count: number
-  errors: string[]
-}
-
-export interface Stats {
-  pending: number
-  processing: number
-  completed: number
-  failed: number
-  cancelled: number
-  skipped: number
-  total: number
-}
-
 export interface AutomationScanResult {
   ok: boolean
   message: string | null
@@ -429,94 +405,6 @@ export interface OpenRouterModel {
   pricing_freshness?: string | null
   input_modalities?: string[] | null
   output_modalities?: string[] | null
-}
-
-export interface OpenRouterModelsResult {
-  models: OpenRouterModel[]
-}
-
-export interface GlossaryUniverse {
-  key: string
-  display_name: string
-}
-
-export interface GlossaryScope {
-  id: number
-  kind: 'universe' | 'series' | 'movie' | string
-  key: string
-  display_name: string
-  target_language: string
-  parent_scope_id: number | null
-  bazarr_series_id: number | null
-  bazarr_movie_id: number | null
-  term_count: number
-  suggested_count: number
-  created_at: string | null
-  updated_at: string | null
-}
-
-export interface GlossaryTerm {
-  id: number
-  scope_id: number
-  source: string
-  target: string
-  term_type: string
-  policy: string
-  status: 'active' | 'suggested' | 'rejected' | string
-  locked: boolean
-  source_origin: string
-  notes: string | null
-  scope_kind: string | null
-  scope_name: string | null
-  created_at: string | null
-  updated_at: string | null
-}
-
-export interface GlossaryScopeCreate {
-  kind: 'universe' | 'series' | 'movie'
-  key: string
-  display_name: string
-  target_language: string
-  parent_scope_id?: number | null
-}
-
-export interface GlossaryTermCreate {
-  source: string
-  target: string
-  term_type?: string
-  policy?: string
-  status?: string
-  locked?: boolean
-  notes?: string | null
-}
-
-export interface GlossaryTermUpdate {
-  source?: string
-  target?: string
-  term_type?: string
-  policy?: string
-  status?: string
-  locked?: boolean
-  notes?: string | null
-}
-
-export interface GlossaryPendingScope {
-  id: number
-  display_name: string
-  kind: string
-  suggested_count: number
-}
-
-export interface GlossarySummary {
-  scopes: number
-  universes: number
-  series: number
-  movies: number
-  active_terms: number
-  locked_terms: number
-  awaiting_review: number
-  rejected: number
-  pending_scopes: GlossaryPendingScope[]
 }
 
 export interface AiRouting {

@@ -158,9 +158,8 @@ def estimate_request_cost_micro(
 
 
 # Conservative routing estimate constants (documented in docs/ai-model-routing.md).
-# Reuses the catalog system-prompt budget; adds glossary overhead and a repair allowance.
+# Reuses the catalog system-prompt budget and a repair allowance.
 SYSTEM_PROMPT_TOKEN_OVERHEAD = 2_000
-GLOSSARY_TOKEN_OVERHEAD = 1_500
 REPAIR_OUTPUT_ALLOWANCE = 0.15  # +15% expected output for repair/recovery
 CONSERVATIVE_COST_MULTIPLIER = Decimal("1.25")
 
@@ -181,11 +180,11 @@ def estimate_conservative_job_tokens(*, char_count: int) -> tuple[int, int, int]
     Return (subtitle_tokens, conservative_input_tokens, conservative_output_tokens).
 
     subtitle_tokens     = max(1, char_count // 4)
-    input_tokens        = subtitle + system prompt + glossary overhead
+    input_tokens        = subtitle + system prompt overhead
     output_tokens       = subtitle + 15% repair allowance
     """
     subtitle = max(1, int(char_count) // 4)
-    input_tokens = subtitle + SYSTEM_PROMPT_TOKEN_OVERHEAD + GLOSSARY_TOKEN_OVERHEAD
+    input_tokens = subtitle + SYSTEM_PROMPT_TOKEN_OVERHEAD
     output_tokens = max(1, int(round(subtitle * (1.0 + REPAIR_OUTPUT_ALLOWANCE))))
     return subtitle, input_tokens, output_tokens
 

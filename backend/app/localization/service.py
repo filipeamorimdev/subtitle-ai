@@ -20,19 +20,12 @@ from app.services.ai_cost import effective_cost_micro, micro_to_usd
 from app.db.models import AiUsageRecordRow
 
 
-SUPPORTED_CAPABILITIES = frozenset({"subtitles"})
 EXECUTABLE_CAPABILITIES = frozenset({"subtitles"})
 
 
 class UnsupportedCapabilityError(ValueError):
     def __init__(self, capability: str) -> None:
-        if capability == "audio":
-            msg = "This localization capability is not available."
-        elif capability == "metadata":
-            msg = "This localization capability is not available."
-        else:
-            msg = "This localization capability is not available."
-        super().__init__(msg)
+        super().__init__("This localization capability is not available.")
         self.capability = capability
         self.code = "unsupported_capability"
 
@@ -115,7 +108,6 @@ class LocalizationTaskService:
         capability: str = "subtitles",
         origin: str = "manual",
         requested_by: str | None = None,
-        create_if_missing: bool = True,
     ) -> tuple[LocalizationTaskRow, bool]:
         """Return (task, created). Reuses an active task when present."""
         if capability not in EXECUTABLE_CAPABILITIES:
@@ -124,8 +116,6 @@ class LocalizationTaskService:
         existing = self.find_active(media_item.id, language.code, capability)
         if existing is not None:
             return existing, False
-        if not create_if_missing:
-            raise ActiveTaskExistsError(0)
 
         origin_norm = origin if origin in {"manual", "automatic"} else "manual"
         priority = "high" if origin_norm == "manual" else "normal"
@@ -160,9 +150,8 @@ class LocalizationTaskService:
         target_language: str,
         capability: str = "subtitles",
         requested_by: str | None = None,
-        reuse_active: bool = False,
     ) -> tuple[LocalizationTaskRow, bool]:
-        """Create a manual task. Raises ActiveTaskExistsError unless reuse_active."""
+        """Create a manual task. Raises ActiveTaskExistsError if one is already active."""
         if capability not in EXECUTABLE_CAPABILITIES:
             raise UnsupportedCapabilityError(capability)
         try:
@@ -172,8 +161,6 @@ class LocalizationTaskService:
 
         existing = self.find_active(media_item.id, language.code, capability)
         if existing is not None:
-            if reuse_active:
-                return existing, False
             raise ActiveTaskExistsError(existing.id)
 
         task, created = self.ensure_task(
@@ -183,7 +170,7 @@ class LocalizationTaskService:
             origin="manual",
             requested_by=requested_by,
         )
-        if not created and not reuse_active:
+        if not created:
             raise ActiveTaskExistsError(task.id)
         return task, created
 
@@ -199,10 +186,9 @@ class LocalizationTaskService:
         limit: int = 100,
         offset: int = 0,
         active_only: bool = False,
+        sort: str = "created_at",
     ) -> list[LocalizationTaskRow]:
-        query = select(LocalizationTaskRow).order_by(
-            LocalizationTaskRow.created_at.desc(), LocalizationTaskRow.id.desc()
-        )
+        query = select(LocalizationTaskRow)
         if status:
             query = query.where(LocalizationTaskRow.status == status)
         if active_only:
@@ -217,6 +203,16 @@ class LocalizationTaskService:
             query = query.where(LocalizationTaskRow.media_item_id == media_item_id)
         if media_type:
             query = query.join(MediaItemRow).where(MediaItemRow.media_type == media_type)
+        if sort == "completed_at":
+            query = query.order_by(
+                LocalizationTaskRow.completed_at.is_(None),
+                LocalizationTaskRow.completed_at.desc(),
+                LocalizationTaskRow.id.desc(),
+            )
+        else:
+            query = query.order_by(
+                LocalizationTaskRow.created_at.desc(), LocalizationTaskRow.id.desc()
+            )
         query = query.limit(max(1, min(limit, 500))).offset(max(0, offset))
         return list(self.db.scalars(query).all())
 

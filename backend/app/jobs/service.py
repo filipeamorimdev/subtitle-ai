@@ -54,7 +54,6 @@ from app.ai.providers.registry import get_provider_registry
 from app.services.ai_budget import AiBudgetService, BudgetBlockedError
 from app.services.ai_usage import AiUsageService, RecordingAIProvider, job_stats_action_label
 from app.services.candidates import CandidateService, candidate_key, to_bazarr_code2
-from app.services.glossary import GlossaryService
 from app.services.model_router import (
     ModelRouter,
     RoutingBlockedError,
@@ -2043,7 +2042,7 @@ class JobService:
             current = self.db.get(JobRow, job_id)
             if current:
                 current.progress = 5
-                current.progress_detail = "Building glossary"
+                current.progress_detail = "Starting translation"
                 current.model = resolved_model
                 current.provider_id = resolved_provider
                 self.db.add(current)
@@ -2051,7 +2050,6 @@ class JobService:
             self._set_task_checkpoints(task_id, translate="active")
 
             checkpoint = TranslationCheckpoint()
-            glossary = None
             outcome = None
             last_error: Exception | None = None
             winning_model = resolved_model
@@ -2112,33 +2110,6 @@ class JobService:
                     self.db.commit()
 
                 try:
-                    if glossary is None:
-                        glossary = await GlossaryService(self.db).prepare_for_translation(
-                            client=recording,
-                            model=candidate.model_id,
-                            media_type=row.media_type,
-                            media_title=row.media_title,
-                            target_language_code=row.target_language,
-                            target_language_name=target_language_name,
-                            bazarr_series_id=row.bazarr_series_id,
-                            bazarr_movie_id=row.bazarr_movie_id,
-                            document=document,
-                        )
-                        exchange_log.record(
-                            {
-                                "event": "glossary_ready",
-                                "leaf_scope_id": glossary.leaf_scope.id,
-                                "leaf_scope_key": glossary.leaf_scope.key,
-                                "universe_key": glossary.universe_key,
-                                "scope_ids": [s.id for s in glossary.scopes],
-                                "term_count": len(glossary.terms),
-                                "suggested_new": glossary.suggested_new,
-                                "input_tokens": glossary.usage_input_tokens,
-                                "output_tokens": glossary.usage_output_tokens,
-                                "total_tokens": glossary.usage_total_tokens,
-                            }
-                        )
-
                     async def on_progress(done: int, total: int) -> None:
                         current = self.db.get(JobRow, job_id)
                         if not current or current.status == "cancelled":
@@ -2155,7 +2126,6 @@ class JobService:
                         target_language_name=target_language_name,
                         batch_size=public.batch_size,
                         progress_callback=on_progress,
-                        glossary_terms=glossary.terms,
                         checkpoint=checkpoint,
                         provider_id=candidate.provider_id,
                     )
@@ -2218,14 +2188,6 @@ class JobService:
                 )
 
             assert outcome is not None
-            assert glossary is not None
-            outcome.usage.input_tokens += glossary.usage_input_tokens
-            outcome.usage.output_tokens += glossary.usage_output_tokens
-            outcome.usage.total_tokens += glossary.usage_total_tokens
-            if glossary.suggested_new:
-                outcome.warnings.append(
-                    f"glossary_suggested:{glossary.suggested_new} new term(s) awaiting review"
-                )
 
             current = self.db.get(JobRow, job_id)
             if not current or current.status == "cancelled":
@@ -2259,12 +2221,7 @@ class JobService:
             current.completed_at = utcnow()
             if outcome.warnings:
                 current.warning = "; ".join(outcome.warnings)
-                if any(w.startswith("glossary_suggested:") for w in outcome.warnings) and all(
-                    w.startswith("glossary_suggested:") for w in outcome.warnings
-                ):
-                    current.reason_code = "glossary_review"
-                else:
-                    current.reason_code = "markup_warning"
+                current.reason_code = "markup_warning"
             else:
                 current.warning = None
 

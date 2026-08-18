@@ -1,17 +1,9 @@
 import type {
   AutomationScanResult,
   AutomationStatus,
-  BatchJobsResult,
   Candidate,
   ClearDataResult,
   ConnectionTestResult,
-  GlossaryScope,
-  GlossaryScopeCreate,
-  GlossaryTerm,
-  GlossaryTermCreate,
-  GlossaryTermUpdate,
-  GlossarySummary,
-  GlossaryUniverse,
   Health,
   Job,
   JobAction,
@@ -24,10 +16,8 @@ import type {
   MediaItem,
   MediaLocalization,
   MediaRef,
-  OpenRouterModelsResult,
   Settings,
   SettingsUpdate,
-  Stats,
   AiOverview,
   AiModelsPayload,
   AiUsagePage,
@@ -69,7 +59,6 @@ export const api = {
     request<ConnectionTestResult>('/api/settings/test/bazarr', { method: 'POST' }),
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
-  getOpenRouterModels: () => request<OpenRouterModelsResult>('/api/settings/openrouter/models'),
   clearJobs: (opts?: {
     job_kind?: 'translate' | 'extract' | 'request'
     status?: 'failed' | 'skipped' | 'cancelled'
@@ -78,113 +67,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(opts ?? {}),
     }),
-  clearGlossaries: (kind?: 'universe' | 'series' | 'movie') =>
-    request<ClearDataResult>('/api/settings/clear/glossaries', {
-      method: 'POST',
-      body: JSON.stringify(kind ? { kind } : {}),
-    }),
   clearUsageStats: () =>
     request<ClearDataResult>('/api/settings/clear/usage', { method: 'POST' }),
   getCandidates: () => request<Candidate[]>('/api/candidates'),
   refreshCandidates: () =>
     request<Candidate[]>('/api/candidates/refresh', { method: 'POST' }),
-  extractCandidate: (candidate_key: string) =>
-    request<Job>('/api/candidates/extract', {
-      method: 'POST',
-      body: JSON.stringify({ candidate_key }),
-    }),
-  requestSubtitle: (candidate_key: string, language?: string) =>
-    request<Job>('/api/candidates/request-subtitle', {
-      method: 'POST',
-      body: JSON.stringify({ candidate_key, language }),
-    }),
-  batchRequestSubtitles: () =>
-    request<BatchJobsResult>('/api/candidates/batch/request-subtitle', { method: 'POST' }),
-  batchExtract: () =>
-    request<BatchJobsResult>('/api/candidates/batch/extract', { method: 'POST' }),
-  batchTranslate: () =>
-    request<BatchJobsResult>('/api/candidates/batch/translate', { method: 'POST' }),
-  getJobs: (params?: { status?: string; limit?: number }) => {
-    const query = new URLSearchParams()
-    if (params?.status) query.set('status', params.status)
-    if (params?.limit != null) query.set('limit', String(params.limit))
-    const suffix = query.toString() ? `?${query}` : ''
-    return request<Job[]>(`/api/jobs${suffix}`)
-  },
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
-  getJobActions: (id: number) => request<JobAction[]>(`/api/jobs/${id}/actions`),
   getJobLog: (id: number) => request<JobLog>(`/api/jobs/${id}/log`),
   getJobRequests: (id: number) => request<JobUsageExchange[]>(`/api/jobs/${id}/requests`),
   getJobRequestLog: (id: number, index: number) =>
     request<JobRequestLog>(`/api/jobs/${id}/requests/${index}`),
   getJobUsage: (id: number) => request<JobUsage>(`/api/jobs/${id}/usage`),
-  createJob: (payload: { candidate_key?: string; source_subtitle_path?: string; target_language?: string }) =>
-    request<Job>('/api/jobs', { method: 'POST', body: JSON.stringify(payload) }),
   retryJob: (id: number) => request<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),
   cancelJob: (id: number) => request<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
   retryBazarrSync: (id: number) =>
     request<Job>(`/api/jobs/${id}/retry-bazarr-sync`, { method: 'POST' }),
-  getStats: () => request<Stats>('/api/stats'),
   getAutomationStatus: () => request<AutomationStatus>('/api/automation/status'),
   runAutomationScan: () =>
     request<AutomationScanResult>('/api/automation/run', { method: 'POST' }),
-  getGlossaryUniverses: () => request<GlossaryUniverse[]>('/api/glossary/universes'),
-  getGlossarySummary: (target_language?: string) => {
-    const suffix = target_language
-      ? `?target_language=${encodeURIComponent(target_language)}`
-      : ''
-    return request<GlossarySummary>(`/api/glossary/summary${suffix}`)
-  },
-  getGlossaryScopes: (params?: { target_language?: string; kind?: string }) => {
-    const query = new URLSearchParams()
-    if (params?.target_language) query.set('target_language', params.target_language)
-    if (params?.kind) query.set('kind', params.kind)
-    const suffix = query.toString() ? `?${query}` : ''
-    return request<GlossaryScope[]>(`/api/glossary/scopes${suffix}`)
-  },
-  getGlossaryScope: (id: number) => request<GlossaryScope>(`/api/glossary/scopes/${id}`),
-  createGlossaryScope: (payload: GlossaryScopeCreate) =>
-    request<GlossaryScope>('/api/glossary/scopes', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  updateGlossaryScope: (
-    id: number,
-    payload: { display_name?: string; parent_scope_id?: number | null; clear_parent?: boolean },
-  ) =>
-    request<GlossaryScope>(`/api/glossary/scopes/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    }),
-  deleteGlossaryScope: (id: number) =>
-    request<void>(`/api/glossary/scopes/${id}`, { method: 'DELETE' }),
-  getGlossaryTerms: (scopeId: number, status?: string) => {
-    const suffix = status ? `?status=${encodeURIComponent(status)}` : ''
-    return request<GlossaryTerm[]>(`/api/glossary/scopes/${scopeId}/terms${suffix}`)
-  },
-  createGlossaryTerm: (scopeId: number, payload: GlossaryTermCreate) =>
-    request<GlossaryTerm>(`/api/glossary/scopes/${scopeId}/terms`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  updateGlossaryTerm: (termId: number, payload: GlossaryTermUpdate) =>
-    request<GlossaryTerm>(`/api/glossary/terms/${termId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    }),
-  deleteGlossaryTerm: (termId: number) =>
-    request<void>(`/api/glossary/terms/${termId}`, { method: 'DELETE' }),
-  reviewGlossaryTerm: (termId: number, approve: boolean, lock = false) =>
-    request<GlossaryTerm>(`/api/glossary/terms/${termId}/review`, {
-      method: 'POST',
-      body: JSON.stringify({ approve, lock }),
-    }),
-  getSuggestedGlossaryTerms: (target_language?: string) => {
-    const suffix = target_language
-      ? `?target_language=${encodeURIComponent(target_language)}`
-      : ''
-    return request<GlossaryTerm[]>(`/api/glossary/suggested${suffix}`)
-  },
   getAiOverview: (period = 'month') =>
     request<AiOverview>(`/api/ai/overview?period=${encodeURIComponent(period)}`),
   getAiUsage: (params: Record<string, string | number | undefined> = {}) => {
@@ -235,7 +135,6 @@ export const api = {
     openrouter_temperature?: number
   }) =>
     request<AiRouting>('/api/ai/routing', { method: 'PUT', body: JSON.stringify(payload) }),
-  getAiBudget: () => request<AiOverview['budget']>('/api/ai/budget'),
   getAiProviders: () => request<{ providers: AiProviderInfo[] }>('/api/ai/providers'),
   updateAiProvider: (
     provider_id: string,
@@ -253,8 +152,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  deleteAiProvider: (provider_id: string) =>
-    request(`/api/ai/providers/${encodeURIComponent(provider_id)}`, { method: 'DELETE' }),
   testAiProvider: (provider_id: string, opts: { fresh?: boolean; model_id?: string } = {}) => {
     const search = new URLSearchParams()
     if (opts.fresh) search.set('fresh', 'true')
@@ -309,6 +206,7 @@ export const api = {
     include_detail?: boolean
     limit?: number
     offset?: number
+    sort?: 'created_at' | 'completed_at'
   }) => {
     const query = new URLSearchParams()
     if (params?.status) query.set('status', params.status)
@@ -321,6 +219,7 @@ export const api = {
     if (params?.include_detail) query.set('include_detail', 'true')
     if (params?.limit != null) query.set('limit', String(params.limit))
     if (params?.offset != null) query.set('offset', String(params.offset))
+    if (params?.sort) query.set('sort', params.sort)
     const suffix = query.toString() ? `?${query}` : ''
     return request<LocalizationTask[]>(`/api/localization-tasks${suffix}`)
   },
@@ -334,6 +233,7 @@ export const api = {
     active_only?: boolean
     limit?: number
     offset?: number
+    sort?: 'created_at' | 'completed_at'
   }) => {
     const query = new URLSearchParams()
     if (params?.status) query.set('status', params.status)
@@ -345,6 +245,7 @@ export const api = {
     if (params?.active_only) query.set('active_only', 'true')
     if (params?.limit != null) query.set('limit', String(params.limit))
     if (params?.offset != null) query.set('offset', String(params.offset))
+    if (params?.sort) query.set('sort', params.sort)
     const suffix = query.toString() ? `?${query}` : ''
     const response = await fetch(`/api/localization-tasks${suffix}`)
     if (!response.ok) {

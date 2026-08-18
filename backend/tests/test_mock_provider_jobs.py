@@ -38,13 +38,7 @@ World
 
 
 def _mock_response_factory(*, model_id, messages, request_id, **kwargs):
-    system = next((m.get("content") for m in messages if m.get("role") == "system"), "")
-    if "Classify media into a franchise universe" in system:
-        content = '{"universe":"none"}'
-    elif "extract audiovisual glossary terms" in system:
-        content = '{"terms":[]}'
-    else:
-        content = "[001]\nOlá\n\n[002]\nMundo\n"
+    content = "[001]\nOlá\n\n[002]\nMundo\n"
     return AIResponse(
         provider_id="mock",
         model_id=model_id,

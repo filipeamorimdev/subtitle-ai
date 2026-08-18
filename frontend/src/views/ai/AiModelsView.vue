@@ -11,10 +11,14 @@ const message = ref<string | null>(null)
 const loading = ref(true)
 const pickerOpen = ref(false)
 const pickerQuery = ref('')
+const pickerError = ref<string | null>(null)
 const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid'>('compatible')
 const testResult = ref<Record<number, string>>({})
 const batchSize = ref(25)
 const saving = ref(false)
+const catalogRefreshing = ref(false)
+
+const CATALOG_PAGE_CACHE_SECONDS = 5 * 60
 
 const routing = reactive({
   routing_strategy: 'free_first',
@@ -58,9 +62,24 @@ function badge(tier?: string | null, stale?: boolean, unavailable?: boolean) {
   return (tier || 'UNKNOWN').toUpperCase()
 }
 
-const freePool = computed(() => (data.value?.preferences || []).filter((p) => p.tier === 'free').sort((a, b) => a.priority - b.priority))
-const paidPool = computed(() => (data.value?.preferences || []).filter((p) => p.tier === 'paid').sort((a, b) => a.priority - b.priority))
+type ModelTier = 'free' | 'paid'
+
+const freePool = computed(() => poolItems('free'))
+const paidPool = computed(() => poolItems('paid'))
 const usedIds = computed(() => new Set((data.value?.preferences || []).map((p) => p.model_id)))
+const modelPools = computed(() => [
+  { tier: 'free' as const, title: 'Free models', empty: 'No free models configured.', badge: 'FREE', items: freePool.value },
+  { tier: 'paid' as const, title: 'Paid models', empty: 'No paid models configured.', badge: 'PAID', items: paidPool.value },
+])
+
+const drag = ref<{ tier: ModelTier; id: number; originalIds: number[] } | null>(null)
+const dropAt = ref<{ tier: ModelTier; index: number } | null>(null)
+
+function poolItems(tier: ModelTier): AiPreference[] {
+  return (data.value?.preferences || [])
+    .filter((p) => p.tier === tier)
+    .sort((a, b) => a.priority - b.priority)
+}
 
 const filteredCatalog = computed(() => {
   const models = data.value?.catalog || []
@@ -76,7 +95,8 @@ const filteredCatalog = computed(() => {
 })
 
 async function load() {
-  loading.value = true
+  const showLoading = data.value == null
+  if (showLoading) loading.value = true
   error.value = null
   try {
     data.value = await api.getAiModels()
@@ -116,21 +136,58 @@ async function saveRouting() {
   }
 }
 
+function catalogNeedsRefresh(payload: AiModelsPayload | null): boolean {
+  if (!payload?.openrouter_configured) return false
+  if (payload.catalog_stale) return true
+  if (payload.catalog_age_seconds == null) return true
+  return payload.catalog_age_seconds >= CATALOG_PAGE_CACHE_SECONDS
+}
+
+async function refreshCatalog(options: { force?: boolean; notify?: boolean } = {}) {
+  const { force = false, notify = false } = options
+  if (catalogRefreshing.value) return
+  if (!force && !catalogNeedsRefresh(data.value)) return
+  catalogRefreshing.value = true
+  if (notify) message.value = null
+  try {
+    const result = await api.refreshAiModels()
+    if (notify) {
+      message.value = result.ok
+        ? `Refreshed ${result.count} models.`
+        : (result.message || 'Refresh failed; kept last catalog.')
+    }
+    if (result.ok) await load()
+  } catch (err) {
+    if (notify) error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    catalogRefreshing.value = false
+  }
+}
+
 async function refresh() {
-  message.value = null
-  const result = await api.refreshAiModels()
-  message.value = result.ok ? `Refreshed ${result.count} models.` : (result.message || 'Refresh failed; kept last catalog.')
-  await load()
+  await refreshCatalog({ force: true, notify: true })
+}
+
+function openPicker(tier: ModelTier) {
+  pickerQuery.value = ''
+  pickerError.value = null
+  pickerFilter.value = tier
+  pickerOpen.value = true
+}
+
+function closePicker() {
+  pickerOpen.value = false
+  pickerError.value = null
 }
 
 async function addModel(model: OpenRouterModel, tier: 'free' | 'paid') {
-  error.value = null
+  pickerError.value = null
   try {
     await api.addAiModel(model.id, tier)
-    pickerOpen.value = false
+    closePicker()
     await load()
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
+    pickerError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -150,16 +207,90 @@ async function test(pref: AiPreference) {
   testResult.value[pref.id] = result.message
 }
 
-async function move(pref: AiPreference, dir: -1 | 1) {
-  const pool = pref.tier === 'free' ? [...freePool.value] : [...paidPool.value]
-  const idx = pool.findIndex((p) => p.id === pref.id)
-  const next = idx + dir
-  if (next < 0 || next >= pool.length) return
-  const ids = pool.map((p) => p.id)
-  const [item] = ids.splice(idx, 1)
-  ids.splice(next, 0, item)
-  await api.reorderAiModels(pref.tier as 'free' | 'paid', ids)
-  await load()
+function applyLocalOrder(tier: ModelTier, orderedIds: number[]) {
+  if (!data.value) return
+  const rank = new Map(orderedIds.map((id, i) => [id, i + 1]))
+  for (const pref of data.value.preferences) {
+    const next = rank.get(pref.id)
+    if (pref.tier === tier && next != null) pref.priority = next
+  }
+}
+
+function onDragStart(event: DragEvent, tier: ModelTier, pref: AiPreference) {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button')) {
+    event.preventDefault()
+    return
+  }
+  const transfer = event.dataTransfer
+  if (!transfer) return
+  transfer.effectAllowed = 'move'
+  transfer.setData('text/plain', String(pref.id))
+  drag.value = { tier, id: pref.id, originalIds: poolItems(tier).map((item) => item.id) }
+  dropAt.value = { tier, index: poolItems(tier).findIndex((item) => item.id === pref.id) }
+}
+
+function onDragOverCard(event: DragEvent, tier: ModelTier, index: number) {
+  event.preventDefault()
+  event.stopPropagation()
+  if (!drag.value || drag.value.tier !== tier) return
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  const el = event.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+  const insert = event.clientY > rect.top + rect.height / 2 ? index + 1 : index
+  if (dropAt.value?.tier !== tier || dropAt.value.index !== insert) {
+    dropAt.value = { tier, index: insert }
+  }
+}
+
+function onDragOverList(event: DragEvent, tier: ModelTier) {
+  event.preventDefault()
+  if (!drag.value || drag.value.tier !== tier) return
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  const items = poolItems(tier)
+  if (!dropAt.value || dropAt.value.tier !== tier) {
+    dropAt.value = { tier, index: items.length }
+  }
+}
+
+function showDropSlot(tier: ModelTier, index: number) {
+  if (!drag.value || !dropAt.value) return false
+  if (drag.value.tier !== tier || dropAt.value.tier !== tier) return false
+  const from = drag.value.originalIds.indexOf(drag.value.id)
+  if (index === from || index === from + 1) return false
+  return dropAt.value.index === index
+}
+
+function onDragEnd() {
+  drag.value = null
+  dropAt.value = null
+}
+
+async function onDrop(event: DragEvent, tier: ModelTier) {
+  event.preventDefault()
+  event.stopPropagation()
+  const state = drag.value
+  if (!state || state.tier !== tier) {
+    onDragEnd()
+    return
+  }
+  const insertAt = dropAt.value?.tier === tier ? dropAt.value.index : state.originalIds.indexOf(state.id)
+  const from = state.originalIds.indexOf(state.id)
+  onDragEnd()
+  if (from < 0 || insertAt < 0) return
+  let to = insertAt
+  if (from < to) to -= 1
+  if (from === to) return
+  const ids = [...state.originalIds]
+  const [item] = ids.splice(from, 1)
+  ids.splice(to, 0, item)
+  applyLocalOrder(tier, ids)
+  try {
+    await api.reorderAiModels(tier, ids)
+  } catch (err) {
+    applyLocalOrder(tier, state.originalIds)
+    error.value = err instanceof Error ? err.message : String(err)
+  }
 }
 
 function catalogAge(seconds: number | null): string {
@@ -177,7 +308,10 @@ function canAddPaid(model: OpenRouterModel) {
   return model.compatible !== false && (model.pricing_tier === 'paid' || model.pricing_tier === 'unknown')
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await refreshCatalog()
+})
 </script>
 
 <template>
@@ -200,7 +334,7 @@ onMounted(load)
         <button
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
           type="button"
-          :disabled="loading"
+          :disabled="loading || catalogRefreshing"
           @click="refresh"
         >
           Refresh models
@@ -227,7 +361,8 @@ onMounted(load)
         <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
           Connection: {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
           · Catalog: {{ catalogAge(data.catalog_age_seconds) }}
-          <span v-if="data.catalog_stale || data.pricing_freshness === 'stale'" class="text-amber-700">
+          <span v-if="catalogRefreshing" class="text-ink-500"> (updating…)</span>
+          <span v-else-if="data.catalog_stale || data.pricing_freshness === 'stale'" class="text-amber-700">
             (stale pricing)
           </span>
         </p>
@@ -293,128 +428,162 @@ onMounted(load)
       </section>
 
       <div class="grid gap-4 lg:grid-cols-2">
-        <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <section
+          v-for="pool in modelPools"
+          :key="pool.tier"
+          class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
+        >
           <div class="flex items-center justify-between">
-            <h2 class="font-display text-lg font-semibold">Free models</h2>
-            <button class="text-sm font-semibold text-accent" type="button" @click="pickerOpen = true">Add model</button>
+            <h2 class="font-display text-lg font-semibold">{{ pool.title }}</h2>
+            <button class="text-sm font-semibold text-accent" type="button" @click="openPicker(pool.tier)">Add model</button>
           </div>
-          <ul class="mt-3 space-y-3">
-            <li v-for="pref in freePool" :key="pref.id" class="rounded-md border border-ink-200 p-3 dark:border-ink-700">
-              <div class="flex items-start justify-between gap-2">
-                <div>
-                  <div class="font-medium">{{ pref.name || pref.model_id }}</div>
-                  <div class="mt-1 flex flex-wrap gap-1.5 text-xs">
-                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">{{ pref.provider_name || pref.provider_id || 'OpenRouter' }}</span>
-                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">Priority #{{ pref.priority }}</span>
-                    <span
-                      v-if="pref.adaptive_rank"
-                      class="rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent"
-                    >Adaptive #{{ pref.adaptive_rank }}</span>
-                    <span v-else class="text-ink-500">Adaptive: insufficient data ({{ pref.sample_count || 0 }} samples)</span>
-                    <span class="rounded border px-1.5 py-0.5">FREE</span>
-                    <span :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
-                      {{ pref.compatibility_reason || 'Compatible' }}
-                    </span>
-                  </div>
-                  <div class="mt-2 text-xs text-ink-600 dark:text-ink-300">
-                    Clean success: {{ formatPct(pref.clean_success_rate) }}
-                    · Cost: {{ formatUsd(pref.average_cost_per_clean_success_usd) }}
-                    · Speed: {{ formatLatency(pref.average_latency_ms) }}
-                    · Samples: {{ pref.sample_count || 0 }}
-                  </div>
-                  <div class="mt-1 text-xs text-ink-500">
-                    {{ pref.model_id }} · {{ badge(pref.pricing_tier, pref.stale, pref.unavailable) }}
-                    · {{ formatPrice(pref.prompt_price_per_million) }} in / {{ formatPrice(pref.completion_price_per_million) }} out
+          <ul
+            class="mt-3 flex flex-col gap-3"
+            @dragover="onDragOverList($event, pool.tier)"
+            @drop="onDrop($event, pool.tier)"
+          >
+            <li
+              v-for="(pref, index) in pool.items"
+              :key="pref.id"
+              class="contents"
+            >
+              <div v-show="showDropSlot(pool.tier, index)" class="h-1.5 rounded-full bg-accent" aria-hidden="true" />
+              <div
+                class="cursor-grab rounded-md border border-ink-200 p-3 select-none active:cursor-grabbing dark:border-ink-700"
+                :class="drag?.id === pref.id ? 'opacity-40' : ''"
+                draggable="true"
+                @dragstart="onDragStart($event, pool.tier, pref)"
+                @dragover="onDragOverCard($event, pool.tier, index)"
+                @drop="onDrop($event, pool.tier)"
+                @dragend="onDragEnd"
+              >
+                <div class="flex items-start gap-2">
+                  <span class="mt-1 text-ink-400" aria-hidden="true" title="Drag to reorder">
+                    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M7 4a1.25 1.25 0 1 1-2.5 0A1.25 1.25 0 0 1 7 4Zm8.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0ZM7 10a1.25 1.25 0 1 1-2.5 0A1.25 1.25 0 0 1 7 10Zm8.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0ZM7 16a1.25 1.25 0 1 1-2.5 0A1.25 1.25 0 0 1 7 16Zm8.5 0a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z" />
+                    </svg>
+                  </span>
+                  <div class="min-w-0 flex-1">
+                    <div class="font-medium">{{ pref.name || pref.model_id }}</div>
+                    <div class="mt-1 flex flex-wrap gap-1.5 text-xs">
+                      <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">{{ pref.provider_name || pref.provider_id || 'OpenRouter' }}</span>
+                      <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">Priority #{{ pref.priority }}</span>
+                      <span
+                        v-if="pref.adaptive_rank"
+                        class="rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent"
+                      >Adaptive #{{ pref.adaptive_rank }}</span>
+                      <span v-else class="text-ink-500">Adaptive: insufficient data ({{ pref.sample_count || 0 }} samples)</span>
+                      <span class="rounded border px-1.5 py-0.5">{{ pool.badge }}</span>
+                      <span :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
+                        {{ pref.compatibility_reason || 'Compatible' }}
+                      </span>
+                    </div>
+                    <div class="mt-2 text-xs text-ink-600 dark:text-ink-300">
+                      Clean success: {{ formatPct(pref.clean_success_rate) }}
+                      · Cost: {{ formatUsd(pref.average_cost_per_clean_success_usd) }}
+                      · Speed: {{ formatLatency(pref.average_latency_ms) }}
+                      · Samples: {{ pref.sample_count || 0 }}
+                    </div>
+                    <div class="mt-1 text-xs text-ink-500">
+                      {{ pref.model_id }} · {{ badge(pref.pricing_tier, pref.stale, pref.unavailable) }}
+                      · {{ formatPrice(pref.prompt_price_per_million) }} in / {{ formatPrice(pref.completion_price_per_million) }} out
+                    </div>
+                    <div class="mt-2 flex flex-wrap gap-2">
+                      <button class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="test(pref)">Test</button>
+                      <button class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="toggle(pref)">{{ pref.enabled ? 'Disable' : 'Enable' }}</button>
+                      <button class="rounded border border-red-300 px-2 py-1 text-xs text-red-700" type="button" @click="remove(pref)">Remove</button>
+                    </div>
+                    <p v-if="testResult[pref.id]" class="mt-1 text-xs text-ink-500">{{ testResult[pref.id] }}</p>
                   </div>
                 </div>
-                <div class="flex flex-col gap-1">
-                  <button class="text-xs" type="button" @click="move(pref, -1)">Up</button>
-                  <button class="text-xs" type="button" @click="move(pref, 1)">Down</button>
-                </div>
               </div>
-              <div class="mt-2 flex flex-wrap gap-2">
-                <button class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="test(pref)">Test</button>
-                <button class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="toggle(pref)">{{ pref.enabled ? 'Disable' : 'Enable' }}</button>
-                <button class="rounded border border-red-300 px-2 py-1 text-xs text-red-700" type="button" @click="remove(pref)">Remove</button>
-              </div>
-              <p v-if="testResult[pref.id]" class="mt-1 text-xs text-ink-500">{{ testResult[pref.id] }}</p>
             </li>
-            <li v-if="!freePool.length" class="text-sm text-ink-500">No free models configured.</li>
-          </ul>
-        </section>
-
-        <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-          <div class="flex items-center justify-between">
-            <h2 class="font-display text-lg font-semibold">Paid models</h2>
-            <button class="text-sm font-semibold text-accent" type="button" @click="pickerOpen = true">Add model</button>
-          </div>
-          <ul class="mt-3 space-y-3">
-            <li v-for="pref in paidPool" :key="pref.id" class="rounded-md border border-ink-200 p-3 dark:border-ink-700">
-              <div class="flex items-start justify-between gap-2">
-                <div>
-                  <div class="font-medium">{{ pref.name || pref.model_id }}</div>
-                  <div class="mt-1 flex flex-wrap gap-1.5 text-xs">
-                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">{{ pref.provider_name || pref.provider_id || 'OpenRouter' }}</span>
-                    <span class="rounded bg-ink-100 px-1.5 py-0.5 font-semibold dark:bg-ink-800">Priority #{{ pref.priority }}</span>
-                    <span
-                      v-if="pref.adaptive_rank"
-                      class="rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent"
-                    >Adaptive #{{ pref.adaptive_rank }}</span>
-                    <span v-else class="text-ink-500">Adaptive: insufficient data ({{ pref.sample_count || 0 }} samples)</span>
-                    <span class="rounded border px-1.5 py-0.5">PAID</span>
-                    <span :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
-                      {{ pref.compatibility_reason || 'Compatible' }}
-                    </span>
-                  </div>
-                  <div class="mt-2 text-xs text-ink-600 dark:text-ink-300">
-                    Clean success: {{ formatPct(pref.clean_success_rate) }}
-                    · Cost: {{ formatUsd(pref.average_cost_per_clean_success_usd) }}
-                    · Speed: {{ formatLatency(pref.average_latency_ms) }}
-                    · Samples: {{ pref.sample_count || 0 }}
-                  </div>
-                  <div class="mt-1 text-xs text-ink-500">
-                    {{ pref.model_id }} · {{ badge(pref.pricing_tier, pref.stale, pref.unavailable) }}
-                    · {{ formatPrice(pref.prompt_price_per_million) }} in / {{ formatPrice(pref.completion_price_per_million) }} out
-                  </div>
-                </div>
-                <div class="flex flex-col gap-1">
-                  <button class="text-xs" type="button" @click="move(pref, -1)">Up</button>
-                  <button class="text-xs" type="button" @click="move(pref, 1)">Down</button>
-                </div>
-              </div>
-              <div class="mt-2 flex flex-wrap gap-2">
-                <button class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="test(pref)">Test</button>
-                <button class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="toggle(pref)">{{ pref.enabled ? 'Disable' : 'Enable' }}</button>
-                <button class="rounded border border-red-300 px-2 py-1 text-xs text-red-700" type="button" @click="remove(pref)">Remove</button>
-              </div>
-              <p v-if="testResult[pref.id]" class="mt-1 text-xs text-ink-500">{{ testResult[pref.id] }}</p>
-            </li>
-            <li v-if="!paidPool.length" class="text-sm text-ink-500">No paid models configured.</li>
+            <li v-show="showDropSlot(pool.tier, pool.items.length)" class="h-1.5 rounded-full bg-accent" aria-hidden="true" />
+            <li v-if="!pool.items.length" class="text-sm text-ink-500">{{ pool.empty }}</li>
           </ul>
         </section>
       </div>
 
-      <div v-if="pickerOpen" class="rounded-xl border border-ink-200 bg-white p-5 dark:border-ink-800 dark:bg-ink-900">
-        <div class="flex items-center justify-between">
-          <h2 class="font-display text-lg font-semibold">Add model</h2>
-          <button class="text-sm" type="button" @click="pickerOpen = false">Close</button>
+      <div
+        v-if="pickerOpen"
+        class="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/50 p-4 sm:items-center"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-model-title"
+        @click.self="closePicker"
+      >
+        <div
+          class="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <h2 id="add-model-title" class="font-display text-lg font-semibold">Add model</h2>
+            <button
+              class="rounded-md px-2 py-1 text-sm text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800"
+              type="button"
+              @click="closePicker"
+            >
+              Close
+            </button>
+          </div>
+          <input
+            v-model="pickerQuery"
+            class="mt-3 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 text-sm dark:border-ink-600"
+            placeholder="Search models"
+          />
+          <div class="mt-2 flex flex-wrap gap-2 text-sm">
+            <button
+              v-for="f in ['all', 'compatible', 'free', 'paid']"
+              :key="f"
+              type="button"
+              class="rounded-md px-2 py-1"
+              :class="pickerFilter === f ? 'bg-ink-100 dark:bg-ink-800' : ''"
+              @click="pickerFilter = f as typeof pickerFilter"
+            >
+              {{ f }}
+            </button>
+          </div>
+          <p v-if="pickerError" class="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+            {{ pickerError }}
+          </p>
+          <ul class="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto">
+            <li v-if="!filteredCatalog.length" class="text-sm text-ink-500">No matching models.</li>
+            <li
+              v-for="model in filteredCatalog"
+              :key="model.id"
+              class="rounded-md border border-ink-200 p-3 text-sm dark:border-ink-700"
+            >
+              <div class="font-medium">{{ model.name }}</div>
+              <div class="text-xs text-ink-500">
+                {{ model.id }} · {{ (model.pricing_tier || 'unknown').toUpperCase() }} · {{ model.context_length || '—' }} ctx
+              </div>
+              <div class="text-xs">
+                {{ formatPrice(model.prompt_price_per_million) }} in /
+                {{ formatPrice(model.completion_price_per_million) }} out
+              </div>
+              <div class="text-xs" :class="model.compatible === false ? 'text-red-700' : 'text-emerald-700'">
+                {{ model.compatibility_reason }}
+              </div>
+              <div class="mt-2 flex gap-2">
+                <button
+                  class="rounded border px-2 py-1 text-xs disabled:opacity-40"
+                  type="button"
+                  :disabled="!canAddFree(model)"
+                  @click="addModel(model, 'free')"
+                >
+                  Add to Free
+                </button>
+                <button
+                  class="rounded border px-2 py-1 text-xs disabled:opacity-40"
+                  type="button"
+                  :disabled="!canAddPaid(model)"
+                  @click="addModel(model, 'paid')"
+                >
+                  Add to Paid
+                </button>
+              </div>
+            </li>
+          </ul>
         </div>
-        <input v-model="pickerQuery" class="mt-3 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 text-sm dark:border-ink-600" placeholder="Search models" />
-        <div class="mt-2 flex flex-wrap gap-2 text-sm">
-          <button v-for="f in ['all', 'compatible', 'free', 'paid']" :key="f" type="button" class="rounded-md px-2 py-1" :class="pickerFilter === f ? 'bg-ink-100 dark:bg-ink-800' : ''" @click="pickerFilter = f as typeof pickerFilter">{{ f }}</button>
-        </div>
-        <ul class="mt-3 max-h-96 space-y-2 overflow-y-auto">
-          <li v-for="model in filteredCatalog" :key="model.id" class="rounded-md border border-ink-200 p-3 text-sm dark:border-ink-700">
-            <div class="font-medium">{{ model.name }}</div>
-            <div class="text-xs text-ink-500">{{ model.id }} · {{ (model.pricing_tier || 'unknown').toUpperCase() }} · {{ model.context_length || '—' }} ctx</div>
-            <div class="text-xs">{{ formatPrice(model.prompt_price_per_million) }} in / {{ formatPrice(model.completion_price_per_million) }} out</div>
-            <div class="text-xs" :class="model.compatible === false ? 'text-red-700' : 'text-emerald-700'">{{ model.compatibility_reason }}</div>
-            <div class="mt-2 flex gap-2">
-              <button class="rounded border px-2 py-1 text-xs disabled:opacity-40" type="button" :disabled="!canAddFree(model)" @click="addModel(model, 'free')">Add to Free</button>
-              <button class="rounded border px-2 py-1 text-xs disabled:opacity-40" type="button" :disabled="!canAddPaid(model)" @click="addModel(model, 'paid')">Add to Paid</button>
-            </div>
-          </li>
-        </ul>
       </div>
     </template>
   </div>

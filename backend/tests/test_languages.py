@@ -114,3 +114,17 @@ def test_empty_language_raises():
 def test_get_language():
     assert get_language("pt-PT") is not None
     assert get_language("nope") is None
+
+
+def test_bazarr_custom_language_codes():
+    """Bazarr uses non-ISO alpha2 codes for LATAM Spanish, Brazilian Portuguese, Traditional Chinese."""
+    latino = normalize_language("ea")
+    assert latino.code == "ea"
+    assert latino.display_name == "Spanish (Latin America)"
+    assert get_language("spl").code == "ea"
+    assert get_language("es-la").code == "ea"
+    assert get_language("Spanish (Latino)").code == "ea"
+
+    assert normalize_language("pb").code == "pt-BR"
+    assert normalize_language("pob").code == "pt-BR"
+    assert normalize_language("zt").code == "zh-TW"

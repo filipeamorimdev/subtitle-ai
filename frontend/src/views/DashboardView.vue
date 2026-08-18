@@ -8,20 +8,19 @@ import type {
   AiOverview,
   AutomationStatus,
   Candidate,
-  GlossarySummary,
   Health,
   LocalizationTask,
 } from '../types'
 import { formatDateTime } from '../utils/datetime'
-import { mediaHref } from '../utils/mediaNav'
+import { localizationTaskTitle, mediaHref } from '../utils/mediaNav'
 import { isActiveTaskStatus, taskStatusIcon, taskStatusLabel } from '../utils/status'
 
 const store = useAppStore()
 const health = ref<Health | null>(null)
 const automation = ref<AutomationStatus | null>(null)
 const aiOverview = ref<AiOverview | null>(null)
-const glossary = ref<GlossarySummary | null>(null)
 const tasks = ref<LocalizationTask[]>([])
+const recentTranslations = ref<LocalizationTask[]>([])
 const pipelineLoading = ref(false)
 const pipelineError = ref<string | null>(null)
 const pipelineLoaded = ref(false)
@@ -95,10 +94,6 @@ const attentionReasons = computed(() => {
       `${failedTasks.value.length} failed localization${failedTasks.value.length === 1 ? '' : 's'}.`,
     )
   }
-  const pending = glossary.value?.awaiting_review || 0
-  if (pending > 0) {
-    reasons.push(`${pending} glossary term${pending === 1 ? '' : 's'} awaiting review.`)
-  }
   return reasons
 })
 
@@ -151,16 +146,28 @@ async function refreshDashboard() {
   await Promise.all([
     loadPipeline(true),
     loadTasks(),
+    loadRecentTranslations(),
     loadHealth(),
     loadAutomation(),
     loadAiSummary(),
-    loadGlossary(),
   ])
 }
 
 async function loadTasks() {
   try {
     tasks.value = await api.getLocalizationTasks({ limit: 100 })
+  } catch {
+    /* keep previous */
+  }
+}
+
+async function loadRecentTranslations() {
+  try {
+    recentTranslations.value = await api.getLocalizationTasks({
+      status: 'completed',
+      sort: 'completed_at',
+      limit: 4,
+    })
   } catch {
     /* keep previous */
   }
@@ -190,28 +197,19 @@ async function loadAiSummary() {
   }
 }
 
-async function loadGlossary() {
-  try {
-    const lang = store.settings?.target_language.code
-    glossary.value = await api.getGlossarySummary(lang)
-  } catch {
-    glossary.value = null
-  }
-}
-
 onMounted(async () => {
   await store.loadSettings().catch(() => undefined)
   await Promise.all([
-    store.loadJobs().catch(() => undefined),
     loadHealth(),
     loadAutomation(),
     loadAiSummary(),
-    loadGlossary(),
     loadPipeline(false),
     loadTasks(),
+    loadRecentTranslations(),
   ])
   timer = window.setInterval(() => {
     loadTasks().catch(() => undefined)
+    loadRecentTranslations().catch(() => undefined)
   }, 4000)
 })
 
@@ -376,7 +374,7 @@ onUnmounted(() => {
           <ul v-else class="divide-y divide-sky-100 dark:divide-ink-800">
             <li v-for="task in currentLocalization" :key="`cur-${task.id}`" class="px-4 py-3">
               <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(task.media_item_id)">
-                {{ task.media_title || `Media #${task.media_item_id}` }}
+                {{ localizationTaskTitle(task) }}
               </RouterLink>
               <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
                 <span>{{ task.target_language_name }}</span>
@@ -388,7 +386,34 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="grid grid-cols-2 gap-2 sm:gap-3">
+      <div class="flex h-full flex-col space-y-3">
+        <div class="flex items-baseline justify-between gap-2">
+          <h2 class="font-display text-lg font-semibold">✅ Last translations</h2>
+          <RouterLink class="text-xs font-medium text-accent hover:underline" to="/translations">
+            Show all
+          </RouterLink>
+        </div>
+        <div class="flex-1 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50/70 to-white shadow-sm dark:border-emerald-900 dark:from-emerald-950/30 dark:to-ink-900/60">
+          <p v-if="!recentTranslations.length" class="px-4 py-8 text-center text-sm text-ink-500">
+            No completed translations yet. 🎬
+          </p>
+          <ul v-else class="divide-y divide-emerald-100 dark:divide-ink-800">
+            <li v-for="task in recentTranslations" :key="`done-${task.id}`" class="px-4 py-3">
+              <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(task.media_item_id)">
+                {{ localizationTaskTitle(task) }}
+              </RouterLink>
+              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
+                <span>{{ task.target_language_name }}</span>
+                <span>{{ formatDateTime(task.completed_at || task.updated_at) }}</span>
+                <span class="capitalize">{{ task.origin }}</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3">
         <RouterLink
           class="group flex h-full flex-col rounded-2xl border border-rose-200 bg-gradient-to-br from-rose-50 to-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-rose-400 hover:shadow-md dark:border-rose-900 dark:from-rose-950/40 dark:to-ink-900/60"
           to="/media?filter=needs-work"
@@ -437,53 +462,9 @@ onUnmounted(() => {
             {{ formatUsd(monthCost) }}
           </div>
         </RouterLink>
-        <RouterLink
-          class="group flex h-full flex-col rounded-2xl border px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
-          :class="
-            (glossary?.awaiting_review || 0) > 0
-              ? 'border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50 hover:border-amber-400 dark:border-amber-800 dark:from-amber-950/40 dark:to-ink-900/60'
-              : 'border-lime-200 bg-gradient-to-br from-lime-50 to-white hover:border-lime-400 dark:border-lime-900 dark:from-lime-950/30 dark:to-ink-900/60'
-          "
-          to="/settings/glossary?tab=review"
-        >
-          <div class="flex items-start justify-between gap-2">
-            <div
-              class="text-[10px] uppercase tracking-wide sm:text-xs"
-              :class="
-                (glossary?.awaiting_review || 0) > 0
-                  ? 'text-amber-800 dark:text-amber-300'
-                  : 'text-lime-800 dark:text-lime-300'
-              "
-            >
-              Glossary review
-            </div>
-            <span
-              class="flex h-9 w-9 items-center justify-center rounded-xl text-lg shadow-inner transition group-hover:rotate-6"
-              :class="
-                (glossary?.awaiting_review || 0) > 0
-                  ? 'bg-amber-200 dark:bg-amber-900/80'
-                  : 'bg-lime-200 dark:bg-lime-900/80'
-              "
-            >
-              {{ (glossary?.awaiting_review || 0) > 0 ? '📝' : '📚' }}
-            </span>
-          </div>
-          <div
-            class="mt-1 font-display text-2xl font-bold"
-            :class="
-              (glossary?.awaiting_review || 0) > 0
-                ? 'text-amber-800 dark:text-amber-200'
-                : 'text-lime-800 dark:text-lime-200'
-            "
-          >
-            {{ glossary?.awaiting_review ?? '—' }}
-          </div>
-        </RouterLink>
-      </div>
     </div>
 
-    <div class="grid gap-6 lg:grid-cols-2">
-      <section class="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50/80 to-white p-5 shadow-sm dark:border-violet-900 dark:from-violet-950/30 dark:to-ink-900/60">
+    <section class="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50/80 to-white p-5 shadow-sm dark:border-violet-900 dark:from-violet-950/30 dark:to-ink-900/60">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <h2 class="font-display text-lg font-semibold">🤖 AI brain</h2>
           <RouterLink class="text-sm font-semibold text-accent hover:underline" to="/ai/overview">
@@ -536,56 +517,6 @@ onUnmounted(() => {
           </p>
         </template>
       </section>
-
-      <section class="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50/80 to-white p-5 shadow-sm dark:border-amber-900 dark:from-amber-950/30 dark:to-ink-900/60">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">📚 Glossary stash</h2>
-          <RouterLink class="text-sm font-semibold text-accent hover:underline" to="/settings/glossary">
-            Manage glossary →
-          </RouterLink>
-        </div>
-        <dl class="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">👀 Awaiting review</dt>
-            <dd class="font-display text-xl font-bold">{{ glossary?.awaiting_review ?? '—' }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">✅ Active terms</dt>
-            <dd class="font-display text-xl font-bold">{{ glossary?.active_terms ?? '—' }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">🔒 Locked</dt>
-            <dd class="font-display text-xl font-bold">{{ glossary?.locked_terms ?? '—' }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">🗂️ Scopes</dt>
-            <dd class="font-display text-xl font-bold">{{ glossary?.scopes ?? '—' }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">🌌 Universes</dt>
-            <dd class="font-semibold">{{ glossary?.universes ?? '—' }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">🎞️ Series / movies</dt>
-            <dd class="font-semibold">
-              {{ glossary ? `${glossary.series} / ${glossary.movies}` : '—' }}
-            </dd>
-          </div>
-        </dl>
-        <ul v-if="glossary?.pending_scopes?.length" class="mt-4 space-y-2 text-sm">
-          <li v-for="scope in glossary.pending_scopes" :key="scope.id">
-            <RouterLink
-              class="font-medium text-accent hover:underline"
-              :to="`/settings/glossary?tab=review&scope=${scope.id}`"
-            >
-              {{ scope.display_name }}
-            </RouterLink>
-            <span class="text-ink-500"> · {{ scope.suggested_count }} to review</span>
-          </li>
-        </ul>
-        <p v-else class="mt-4 text-sm text-ink-500">No suggested terms awaiting review. Dictionary is napping.</p>
-      </section>
-    </div>
 
     <RequestSubtitlesModal :open="modalOpen" @close="modalOpen = false" @created="loadTasks" />
   </section>

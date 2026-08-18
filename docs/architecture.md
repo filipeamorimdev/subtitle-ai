@@ -65,7 +65,6 @@ See [localization-tasks.md](localization-tasks.md) for the media-centric task mo
 - `jobs` — translation / extract / request work (`trigger_type` = manual \| automatic); optional `task_id`; includes `provider_id`
 - `observed_candidates` — first-seen / grace-period state for automation
 - `translation_cache` — completed hash/language/provider/model tuples
-- `glossary_scopes` / `glossary_terms` — persistent term memory (universe/series/movie)
 - `ai_provider_accounts` — encrypted provider credentials (OpenRouter in alpha1)
 - `ai_model_preferences` — free/paid model pools keyed by `(provider_id, model_id)`
 - `ai_model_catalog_cache` — per-provider catalog snapshot (6-hour freshness)
@@ -96,9 +95,9 @@ Budget reservations use a **process-wide lock** around check / insert / commit. 
 
 | Surface | Answers |
 | --- | --- |
-| Dashboard | What is Subtitle AI doing right now? Includes AI cost/quality snapshot and glossary review counters. |
+| Dashboard | What is Subtitle AI doing right now? Includes AI cost/quality snapshot. |
 | AI dashboard | Detailed AI observability (Overview / Usage), opened from Dashboard. |
-| Settings | How is Subtitle AI configured? General, Providers (Bazarr and AI), Models, Language, Glossary. |
+| Settings | How is Subtitle AI configured? General, Providers (Bazarr and AI), Models, Language. |
 
 Provider credentials live under **Settings → Providers**. Pools, strategy, and budgets live under **Settings → Models**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
 
