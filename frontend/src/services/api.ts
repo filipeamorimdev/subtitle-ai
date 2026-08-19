@@ -28,6 +28,7 @@ import type {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers || {}),
@@ -51,7 +52,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getHealth: () => request<Health>('/api/health'),
+  getHealth: (live = false) => request<Health>(`/api/health${live ? '?live=1' : ''}`),
   getSettings: () => request<Settings>('/api/settings'),
   updateSettings: (payload: SettingsUpdate) =>
     request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
@@ -166,7 +167,8 @@ export const api = {
   getLanguages: () => request<LanguageCatalogItem[]>('/api/languages'),
   searchMedia: (q: string) =>
     request<MediaRef[]>(`/api/media/search?q=${encodeURIComponent(q)}`),
-  listMedia: (limit = 100) => request<MediaItem[]>(`/api/media?limit=${limit}`),
+  listMedia: (limit = 100, offset = 0) =>
+    request<MediaItem[]>(`/api/media?limit=${limit}&offset=${offset}`),
   ensureMedia: (payload: Partial<MediaRef> & { external_id?: string }) =>
     request<MediaItem>('/api/media', { method: 'POST', body: JSON.stringify(payload) }),
   getMedia: (id: number) => request<MediaItem>(`/api/media/${id}`),
@@ -181,6 +183,7 @@ export const api = {
   createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {
     const response = await fetch(`/api/media/${mediaId}/localization-tasks`, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
@@ -252,7 +255,7 @@ export const api = {
     if (params?.offset != null) query.set('offset', String(params.offset))
     if (params?.sort) query.set('sort', params.sort)
     const suffix = query.toString() ? `?${query}` : ''
-    const response = await fetch(`/api/localization-tasks${suffix}`)
+    const response = await fetch(`/api/localization-tasks${suffix}`, { credentials: 'same-origin' })
     if (!response.ok) {
       let detail = response.statusText
       try {
@@ -273,4 +276,24 @@ export const api = {
     request<LocalizationTask>(`/api/localization-tasks/${id}/retry`, { method: 'POST' }),
   cancelLocalizationTask: (id: number) =>
     request<LocalizationTask>(`/api/localization-tasks/${id}/cancel`, { method: 'POST' }),
+  approveLocalizationTask: (id: number) =>
+    request<LocalizationTask>(`/api/localization-tasks/${id}/approve`, { method: 'POST' }),
+  getMediaGlossary: (mediaId: number, language: string) =>
+    request<{
+      scope_key: string
+      target_language: string
+      entries: { id: number; source: string; target: string; locked: boolean }[]
+    }>(`/api/media/${mediaId}/glossary?language=${encodeURIComponent(language)}`),
+  putMediaGlossary: (
+    mediaId: number,
+    language: string,
+    entries: { source: string; target: string; locked?: boolean }[],
+  ) =>
+    request(`/api/media/${mediaId}/glossary?language=${encodeURIComponent(language)}`, {
+      method: 'PUT',
+      body: JSON.stringify(entries),
+    }),
+  exportSettings: () => request<{ settings: Settings; secrets_omitted: boolean }>('/api/settings/export'),
+  importSettings: (payload: SettingsUpdate) =>
+    request<Settings>('/api/settings/import', { method: 'POST', body: JSON.stringify(payload) }),
 }

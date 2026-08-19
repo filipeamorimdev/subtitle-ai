@@ -56,6 +56,7 @@ class SettingsUpdate(BaseModel):
     monthly_budget_amount_usd: float | None = Field(default=None, ge=0)
     clear_monthly_budget_amount: bool = False
     allow_manual_budget_override: bool | None = None
+    require_translation_approval: bool | None = None
 
 
 class SettingsOut(BaseModel):
@@ -93,6 +94,7 @@ class SettingsOut(BaseModel):
     monthly_budget_enabled: bool = False
     monthly_budget_amount_usd: float | None = None
     allow_manual_budget_override: bool = False
+    require_translation_approval: bool = False
 
 
 class ConnectionTestResult(BaseModel):
@@ -393,6 +395,7 @@ class HealthOut(BaseModel):
     database: str = "healthy"
     bazarr: str = "unknown"
     openrouter: str = "unknown"
+    planner_error: str | None = None
 
 
 class AiRoutingOut(BaseModel):
@@ -573,3 +576,24 @@ class LocalizationTaskOut(BaseModel):
     executions: list[JobOut] = Field(default_factory=list)
     ai: TaskAiSummaryOut | None = None
     progress_steps: list[dict[str, str]] = Field(default_factory=list)
+    draft_subtitle_path: str | None = None
+
+
+class GlossaryEntryIn(BaseModel):
+    source: str
+    target: str
+    locked: bool = True
+
+
+class GlossaryEntryOut(BaseModel):
+    id: int
+    source: str
+    target: str
+    locked: bool
+
+
+class GlossaryOut(BaseModel):
+    scope_key: str
+    target_language: str
+    entries: list[GlossaryEntryOut] = Field(default_factory=list)
+

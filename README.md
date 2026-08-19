@@ -222,7 +222,8 @@ Keep `/config` mounted across image upgrades. Recreate the container on the new 
 
 ## Security notes
 
-- Designed for a trusted local network. No UI auth yet.
+- Designed for a trusted local network. Optional HTTP Basic auth (`SUBTITLE_AI_AUTH_PASSWORD`) or reverse-proxy forward-auth (`SUBTITLE_AI_AUTH_FORWARD_HEADER`).
+- Live job/task updates stream over `GET /api/events` (SSE).
 - API keys are never returned in full from the API.
 - Paths are restricted to configured media roots.
 - Do not expose this service to the public internet without additional hardening.
@@ -236,9 +237,9 @@ Keep `/config` mounted across image upgrades. Recreate the container on the new 
 
 ## Roadmap
 
+- UI authentication
 - Stronger Bazarr subtitle registration via upload API
 - ASS/SSA support
-- UI authentication
 
 ## Docs
 

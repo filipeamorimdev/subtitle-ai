@@ -48,6 +48,11 @@ class AppConfig(BaseSettings):
     secret_key_filename: str = "secret.key"
     frontend_dist: Path | None = None
     log_level: str = "INFO"
+    auth_username: str = "admin"
+    auth_password: str | None = None
+    auth_forward_header: str | None = None
+    # 0/unset = auto (half the cores, leaving headroom for the API).
+    whisper_cpu_threads: int = 0
 
     @field_validator("media_roots", mode="before")
     @classmethod

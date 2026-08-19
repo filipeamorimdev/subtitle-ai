@@ -26,6 +26,7 @@ class JobWorker:
         self._inflight: dict[str, set[asyncio.Task]] = {kind: set() for kind in JOB_KINDS}
         self._tasks_by_job: dict[int, asyncio.Task] = {}
         self._last_task_replan = 0.0
+        self._limits_cache: tuple[float, dict[str, int]] = (0.0, {})
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -121,11 +122,17 @@ class JobWorker:
             task.cancel()
 
     def _concurrency_limits(self) -> dict[str, int]:
+        now = time.monotonic()
+        cached_at, cached = self._limits_cache
+        if cached and now - cached_at < 5.0:
+            return cached
         session = get_session_factory()()
         try:
-            return SettingsService(session).concurrency_limits()
+            limits = SettingsService(session).concurrency_limits()
         finally:
             session.close()
+        self._limits_cache = (now, limits)
+        return limits
 
     def _claim(self, job_kind: str) -> int | None:
         session = get_session_factory()()

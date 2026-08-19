@@ -166,7 +166,8 @@ def init_db() -> None:
                     CREATE UNIQUE INDEX uq_localization_tasks_active
                     ON localization_tasks (media_item_id, target_language_code, capability)
                     WHERE status IN (
-                        'requested', 'planning', 'waiting_for_source', 'processing', 'verifying'
+                        'requested', 'planning', 'waiting_for_source', 'processing',
+                        'verifying', 'awaiting_approval'
                     )
                     """
                 )
@@ -197,6 +198,7 @@ def init_db() -> None:
             ("monthly_budget_enabled", "ALTER TABLE settings ADD COLUMN monthly_budget_enabled BOOLEAN NOT NULL DEFAULT 0"),
             ("monthly_budget_amount_micro_usd", "ALTER TABLE settings ADD COLUMN monthly_budget_amount_micro_usd INTEGER"),
             ("allow_manual_budget_override", "ALTER TABLE settings ADD COLUMN allow_manual_budget_override BOOLEAN NOT NULL DEFAULT 0"),
+            ("require_translation_approval", "ALTER TABLE settings ADD COLUMN require_translation_approval BOOLEAN NOT NULL DEFAULT 0"),
         ):
             if column not in settings_columns:
                 conn.execute(text(ddl))

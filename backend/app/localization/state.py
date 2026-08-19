@@ -11,6 +11,7 @@ ACTIVE_STATUSES: Final[frozenset[str]] = frozenset(
         "waiting_for_source",
         "processing",
         "verifying",
+        "awaiting_approval",
     }
 )
 
@@ -26,13 +27,23 @@ TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
 # from_status -> allowed next statuses
 ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "requested": frozenset(
-        {"planning", "waiting_for_source", "processing", "verifying", "completed", "cancelled", "blocked"}
+        {
+            "planning",
+            "waiting_for_source",
+            "processing",
+            "verifying",
+            "awaiting_approval",
+            "completed",
+            "cancelled",
+            "blocked",
+        }
     ),
     "planning": frozenset(
         {
             "waiting_for_source",
             "processing",
             "verifying",
+            "awaiting_approval",
             "completed",
             "blocked",
             "failed",
@@ -42,10 +53,13 @@ ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "waiting_for_source": frozenset(
         {"planning", "processing", "completed", "failed", "cancelled", "blocked"}
     ),
-    "processing": frozenset({"verifying", "waiting_for_source", "failed", "cancelled", "completed"}),
-    "verifying": frozenset({"completed", "failed", "cancelled", "processing"}),
+    "processing": frozenset(
+        {"verifying", "waiting_for_source", "failed", "cancelled", "completed", "awaiting_approval"}
+    ),
+    "awaiting_approval": frozenset({"verifying", "processing", "cancelled", "failed"}),
+    "verifying": frozenset({"completed", "failed", "cancelled", "processing", "awaiting_approval"}),
     "completed": frozenset(),
-    "failed": frozenset({"planning", "requested"}),  # retry re-enters planning
+    "failed": frozenset({"planning", "requested", "awaiting_approval"}),  # retry re-enters planning
     "blocked": frozenset({"planning", "requested"}),
     "cancelled": frozenset(),
 }

@@ -7,6 +7,7 @@ import { formatElapsed } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
 import { withReturnTo } from '../utils/mediaNav'
 import { jobHasAiArtifacts, jobStatusClass, taskStatusLabel } from '../utils/status'
+import { latestActiveJob } from '../utils/taskProgress'
 
 const props = defineProps<{
   tasks: LocalizationTask[]
@@ -45,14 +46,7 @@ onUnmounted(() => {
 })
 
 const rows = computed<RunningRow[]>(() =>
-  props.tasks.map((task) => {
-    const jobs = task.executions || []
-    const job =
-      [...jobs].reverse().find((item) => item.status === 'pending' || item.status === 'processing') ||
-      jobs[jobs.length - 1] ||
-      null
-    return { task, job }
-  }),
+  props.tasks.map((task) => ({ task, job: latestActiveJob(task) })),
 )
 
 function progressSummary(row: RunningRow) {

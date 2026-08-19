@@ -6,6 +6,7 @@ import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
 import RunningJobsPanel from '../components/RunningJobsPanel.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
+import { onLiveEvent } from '../stores/events'
 import type {
   Candidate,
   Job,
@@ -19,6 +20,7 @@ import {
   canCancelTask,
   canRetryBazarrSync,
   canRetryTask,
+  canApproveTask,
   isActiveTaskStatus,
   languageChipClass,
   taskStatusLabel,
@@ -39,6 +41,7 @@ const retryingId = ref<number | null>(null)
 const canTranscribe = ref(false)
 const transcribeReason = ref<string | null>(null)
 let timer: number | undefined
+let stopLive: (() => void) | undefined
 
 const mediaId = computed(() => Number(props.id))
 
@@ -74,7 +77,12 @@ const historyActions = computed(() => {
 const verifyFailedTasks = computed(() => tasks.value.filter((task) => canRetryBazarrSync(task)))
 
 const runningTasks = computed(() =>
-  tasks.value.filter((task) => isActiveTaskStatus(task.status) && !canRetryBazarrSync(task)),
+  tasks.value.filter(
+    (task) =>
+      isActiveTaskStatus(task.status) &&
+      task.status !== 'awaiting_approval' &&
+      !canRetryBazarrSync(task),
+  ),
 )
 
 const matchedCandidate = computed<Candidate | null>(() => {
@@ -232,6 +240,20 @@ async function retryTask() {
   }
 }
 
+async function approveTask() {
+  if (!selectedTask.value || busy.value) return
+  busy.value = true
+  actionError.value = null
+  try {
+    await api.approveLocalizationTask(selectedTask.value.id)
+    await load()
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function retryBazarrSync() {
   const targets = verifyFailedTasks.value
   if (!targets.length || busy.value) return
@@ -312,11 +334,18 @@ onMounted(() => {
   load().catch(() => undefined)
   timer = window.setInterval(() => {
     if (anyActive.value) load().catch(() => undefined)
-  }, 3000)
+  }, 30000)
+  stopLive = onLiveEvent((event) => {
+    if (event.type === 'hello') return
+    if (event.media_item_id === mediaId.value || event.task_id) {
+      load().catch(() => undefined)
+    }
+  })
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  stopLive?.()
 })
 </script>
 
@@ -338,6 +367,15 @@ onUnmounted(() => {
           <p class="mt-1 text-sm capitalize text-ink-500">{{ mediaMeta }}</p>
         </div>
         <div class="flex flex-wrap gap-2">
+          <button
+            v-if="selectedTask && canApproveTask(selectedTask.status)"
+            type="button"
+            class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white"
+            :disabled="busy"
+            @click="approveTask"
+          >
+            Approve translation
+          </button>
           <button
             v-if="selectedTask && canRetryTask(selectedTask.status)"
             type="button"

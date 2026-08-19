@@ -21,6 +21,9 @@ from app.api.schemas import (
     MediaRefOut,
     TaskAiSummaryOut,
     TranscribeCreate,
+    GlossaryEntryIn,
+    GlossaryOut,
+    GlossaryEntryOut,
 )
 from app.db import get_db, release_session_connection
 from app.db.models import LocalizationTaskRow, MediaItemRow
@@ -185,6 +188,9 @@ def _task_out(
         executions=[job_to_out(j) for j in jobs],
         ai=ai,
         progress_steps=_progress_steps(task, jobs) if include_detail else [],
+        draft_subtitle_path=(task.metadata_json or {}).get("draft_subtitle_path")
+        if isinstance(task.metadata_json, dict)
+        else None,
     )
 
 
@@ -245,10 +251,14 @@ async def search_media(
 
 @router.get("/media", response_model=list[MediaItemOut])
 def list_media(
-    limit: int = Query(100, ge=1, le=500),
+    response: Response,
+    limit: int = Query(100, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ) -> list[MediaItemOut]:
-    return [_media_item_out(row) for row in MediaItemService(db).list_items(limit=limit)]
+    svc = MediaItemService(db)
+    response.headers["X-Total-Count"] = str(svc.count_items())
+    return [_media_item_out(row) for row in svc.list_items(limit=limit, offset=offset)]
 
 
 @router.post("/media", response_model=MediaItemOut)
@@ -515,3 +525,98 @@ def cancel_localization_task(task_id: int, db: Session = Depends(get_db)) -> Loc
         if job.status == "cancelled":
             worker.cancel_job(job.id)
     return _task_out(db, task, include_detail=True)
+
+
+@router.post("/localization-tasks/{task_id}/approve", response_model=LocalizationTaskOut)
+async def approve_localization_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+) -> LocalizationTaskOut:
+    import shutil
+    from pathlib import Path
+
+    from app.jobs.translate import draft_subtitle_path
+
+    task = LocalizationTaskService(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Task is not awaiting approval")
+    jobs = LocalizationTaskService(db).jobs_for_task(task.id)
+    translate = next(
+        (
+            j
+            for j in reversed(jobs)
+            if (j.job_kind or "translate") == "translate" and j.status == "completed"
+        ),
+        None,
+    )
+    if translate is None:
+        raise HTTPException(status_code=400, detail="No completed translation to approve")
+    meta = dict(task.metadata_json or {})
+    draft = Path(
+        str(meta.get("draft_subtitle_path") or draft_subtitle_path(Path(translate.target_subtitle_path)))
+    )
+    target = Path(translate.target_subtitle_path)
+    if not draft.is_file():
+        raise HTTPException(status_code=400, detail="Draft subtitle file is missing")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(draft, target)
+    LocalizationTaskService(db).transition(
+        task, "verifying", substate="bazarr_sync", clear_error=True
+    )
+    await TaskPlanner(db).plan(task.id)
+    task = LocalizationTaskService(db).get(task.id)
+    assert task is not None
+    return _task_out(db, task, include_detail=True)
+
+
+@router.get("/media/{media_id}/glossary", response_model=GlossaryOut)
+def get_media_glossary(
+    media_id: int,
+    language: str = Query(..., min_length=2),
+    db: Session = Depends(get_db),
+) -> GlossaryOut:
+    from app.localization.glossary import GlossaryService, scope_key_for_media
+
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    scope = scope_key_for_media(media)
+    entries = GlossaryService(db).list_entries(scope_key=scope, target_language=language)
+    return GlossaryOut(
+        scope_key=scope,
+        target_language=language,
+        entries=[
+            GlossaryEntryOut(id=row.id, source=row.source, target=row.target, locked=row.locked)
+            for row in entries
+        ],
+    )
+
+
+@router.put("/media/{media_id}/glossary", response_model=GlossaryOut)
+def put_media_glossary(
+    media_id: int,
+    language: str = Query(..., min_length=2),
+    payload: list[GlossaryEntryIn] | None = None,
+    db: Session = Depends(get_db),
+) -> GlossaryOut:
+    from app.localization.glossary import GlossaryService, scope_key_for_media
+
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    scope = scope_key_for_media(media)
+    saved = GlossaryService(db).replace_entries(
+        scope_key=scope,
+        target_language=language,
+        entries=[item.model_dump() for item in (payload or [])],
+    )
+    return GlossaryOut(
+        scope_key=scope,
+        target_language=language,
+        entries=[
+            GlossaryEntryOut(id=row.id, source=row.source, target=row.target, locked=row.locked)
+            for row in saved
+        ],
+    )

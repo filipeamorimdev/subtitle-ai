@@ -30,10 +30,25 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function loadMediaList() {
-    const [media, taskList] = await Promise.all([
-      api.listMedia(500),
-      api.getLocalizationTasks({ limit: 500 }),
-    ])
+    const pageSize = 500
+    const media: MediaItem[] = []
+    let offset = 0
+    while (true) {
+      const chunk = await api.listMedia(pageSize, offset)
+      media.push(...chunk)
+      if (chunk.length < pageSize) break
+      offset += pageSize
+      if (offset >= 20000) break
+    }
+    const taskList: LocalizationTask[] = []
+    offset = 0
+    while (true) {
+      const page = await api.getLocalizationTasksPage({ limit: pageSize, offset })
+      taskList.push(...page.items)
+      if (page.items.length < pageSize || taskList.length >= page.total) break
+      offset += pageSize
+      if (offset >= 20000) break
+    }
     mediaItems.value = media
     localizationTasks.value = taskList
     mediaListLoaded.value = true

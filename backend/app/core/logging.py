@@ -13,6 +13,8 @@ class ComponentFormatter(logging.Formatter):
             record.component = record.name
         if not hasattr(record, "job_id"):
             record.job_id = "-"
+        if not hasattr(record, "task_id"):
+            record.task_id = "-"
         return super().format(record)
 
 
@@ -24,7 +26,7 @@ def setup_logging(level: str = "INFO") -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
         ComponentFormatter(
-            fmt="%(asctime)s level=%(levelname)s component=%(component)s job_id=%(job_id)s %(message)s",
+            fmt="%(asctime)s level=%(levelname)s component=%(component)s job_id=%(job_id)s task_id=%(task_id)s %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
@@ -34,6 +36,11 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-def get_logger(component: str) -> logging.LoggerAdapter[Any]:
+def get_logger(
+    component: str, *, job_id: int | str = "-", task_id: int | str = "-"
+) -> logging.LoggerAdapter[Any]:
     logger = logging.getLogger(component)
-    return logging.LoggerAdapter(logger, {"component": component, "job_id": "-"})
+    return logging.LoggerAdapter(
+        logger,
+        {"component": component, "job_id": str(job_id), "task_id": str(task_id)},
+    )

@@ -1650,135 +1650,32 @@ class JobService:
         return row
 
     def claim_next_job(self, job_kind: str | None = None) -> JobRow | None:
-        query = (
-            select(JobRow)
-            .where(JobRow.status == "pending")
-            .order_by(
-                # Manual jobs before automatic ("manual" > "automatic"); then oldest first.
-                JobRow.trigger_type.desc(),
-                JobRow.created_at.asc(),
-            )
-            .limit(1)
-        )
-        if job_kind:
-            query = query.where(JobRow.job_kind == job_kind)
-        row = self.db.scalar(query)
-        if not row:
-            return None
-        # Optimistic claim so parallel workers cannot steal the same row.
-        result = self.db.execute(
-            update(JobRow)
-            .where(JobRow.id == row.id, JobRow.status == "pending")
-            .values(
-                status="processing",
-                started_at=utcnow(),
-                progress=0,
-                progress_detail="Starting",
-            )
-        )
-        if not result.rowcount:
-            self.db.rollback()
-            return None
-        self.db.commit()
-        self.db.refresh(row)
-        task_id = getattr(row, "task_id", None)
-        if task_id is not None:
-            task = self.db.get(LocalizationTaskRow, task_id)
-            if task is not None and task.status == "cancelled":
-                row.status = "cancelled"
-                row.completed_at = utcnow()
-                row.progress_detail = "Cancelled with localization task"
-                row.reason_code = "cancelled"
-                self.db.add(row)
-                self.db.commit()
-                return None
-        return row
+        from app.jobs.queue import claim_next_job as claim
+
+        return claim(self.db, job_kind)
 
     @staticmethod
     def recover_interrupted_jobs(db: Session) -> int:
-        """Reset orphaned processing jobs to pending after restart."""
-        result = db.execute(
-            update(JobRow)
-            .where(JobRow.status == "processing")
-            .values(
-                status="pending",
-                started_at=None,
-                progress=0,
-                progress_detail="Recovered after restart",
-            )
-        )
-        db.commit()
-        return int(result.rowcount or 0)
+        from app.jobs.queue import recover_interrupted_jobs as recover
+
+        return recover(db)
 
     @staticmethod
     def recover_orphaned_processing_jobs(db: Session, inflight_ids: set[int]) -> int:
-        """Requeue processing jobs that no worker task is running.
+        from app.jobs.queue import recover_orphaned_processing_jobs as recover
 
-        Concurrent SQLite writers can kill a job task without persisting
-        ``failed``. The in-memory slot then frees and the worker claims more
-        pending work, leaving zombies in ``processing``.
-        """
-        stmt = update(JobRow).where(JobRow.status == "processing")
-        if inflight_ids:
-            stmt = stmt.where(JobRow.id.notin_(list(inflight_ids)))
-        result = db.execute(
-            stmt.values(
-                status="pending",
-                started_at=None,
-                progress=0,
-                progress_detail="Recovered after worker lost the job",
-            )
-        )
-        db.commit()
-        return int(result.rowcount or 0)
+        return recover(db, inflight_ids)
 
     @staticmethod
     def fail_job_from_worker(job_id: int, exc: BaseException) -> None:
-        """Mark a job failed on a fresh session after the worker task dies.
+        from app.jobs.queue import fail_job_from_worker as fail
 
-        The job's own session is often unusable here (pending rollback after
-        ``database is locked``), so this must not reuse it.
-        """
-        from app.db import get_session_factory
-
-        session = get_session_factory()()
-        try:
-            row = session.get(JobRow, job_id)
-            if row is None or row.status not in {"pending", "processing"}:
-                return
-            row.status = "failed"
-            row.error = _public_error(exc if isinstance(exc, Exception) else Exception(str(exc)))
-            row.reason_code = (
-                _reason_code(exc) if isinstance(exc, Exception) else "failed"
-            )
-            row.completed_at = utcnow()
-            if not row.progress_detail:
-                row.progress_detail = "Worker failed"
-            session.add(row)
-            session.commit()
-        except Exception as persist_exc:  # noqa: BLE001
-            session.rollback()
-            get_logger("jobs").error(
-                "Failed to persist worker failure job_id=%s error=%s",
-                job_id,
-                persist_exc,
-            )
-        finally:
-            session.close()
+        fail(job_id, exc, public_error=_public_error, reason_code=_reason_code)
 
     def cancel_job(self, job_id: int) -> JobOut:
-        row = self.db.get(JobRow, job_id)
-        if not row:
-            raise ValueError("Job not found")
-        if row.status not in {"pending", "processing"}:
-            raise ValueError("Only pending or processing jobs can be cancelled")
-        row.status = "cancelled"
-        row.completed_at = utcnow()
-        row.progress_detail = "Cancelled by user"
-        row.reason_code = "cancelled"
-        self.db.add(row)
-        self.db.commit()
-        return job_to_out(row)
+        from app.jobs.queue import cancel_job_row
+
+        return job_to_out(cancel_job_row(self.db, job_id))
 
     async def retry_job(self, job_id: int) -> JobOut:
         row = self.db.get(JobRow, job_id)
@@ -1841,21 +1738,9 @@ class JobService:
         return job_to_out(row)
 
     async def process_job(self, job_id: int) -> None:
-        row = self.db.get(JobRow, job_id)
-        if not row or row.status != "processing":
-            return
-        kind = getattr(row, "job_kind", None) or "translate"
-        try:
-            if kind == "extract":
-                await self._process_extract_job(job_id)
-            elif kind == "request":
-                await self._process_request_subtitle_job(job_id)
-            elif kind == "transcribe":
-                await self._process_transcribe_job(job_id)
-            else:
-                await self._process_translate_job(job_id)
-        finally:
-            await self._notify_task_planner(job_id)
+        from app.jobs.kinds import process_claimed_job
+
+        await process_claimed_job(self, job_id)
 
     async def _process_request_subtitle_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
@@ -2146,11 +2031,16 @@ class JobService:
                     return
                 ratio = 0.0 if total <= 0 else min(1.0, max(0.0, done / total))
                 current.progress = 15 + int(75 * ratio)
-                current.progress_detail = (
-                    f"Transcribing {format_timecode(done)} / {format_timecode(total)}"
-                    if total > 0
-                    else "Transcribing audio"
-                )
+                if total > 0 and done <= 0:
+                    current.progress_detail = (
+                        f"Loading Whisper model · 0:00 / {format_timecode(total)}"
+                    )
+                elif total > 0:
+                    current.progress_detail = (
+                        f"Transcribing {format_timecode(done)} / {format_timecode(total)}"
+                    )
+                else:
+                    current.progress_detail = "Transcribing audio"
                 self.db.add(current)
                 self.db.commit()
 
@@ -2483,6 +2373,9 @@ class JobService:
                 task_row = self.db.get(LocalizationTaskRow, int(task_id))
                 if task_row is not None:
                     target_language_name = task_row.target_language_name
+            from app.jobs.translate import extra_prompt_context
+
+            locale_note, glossary_block = extra_prompt_context(self.db, row)
 
             current = self._fresh_job(job_id)
             if not current or current.status == "cancelled":
@@ -2562,6 +2455,8 @@ class JobService:
 
                 try:
                     async def on_progress(done: int, total: int) -> None:
+                        from app.core.events import publish_job
+
                         current = self._fresh_job(job_id)
                         if not current or current.status == "cancelled":
                             raise RuntimeError("Job cancelled")
@@ -2569,6 +2464,14 @@ class JobService:
                         current.progress_detail = f"{done} / {total} batches"
                         self.db.add(current)
                         self.db.commit()
+                        publish_job(
+                            job_id=job_id,
+                            task_id=getattr(current, "task_id", None),
+                            status=current.status,
+                            progress=current.progress,
+                            job_kind=current.job_kind,
+                            detail=current.progress_detail,
+                        )
 
                     outcome = await service.translate_document(
                         document,
@@ -2579,6 +2482,8 @@ class JobService:
                         progress_callback=on_progress,
                         checkpoint=checkpoint,
                         provider_id=candidate.provider_id,
+                        locale_note=locale_note,
+                        glossary_block=glossary_block,
                     )
                     winning_model = candidate.model_id
                     winning_provider = candidate.provider_id
@@ -2651,9 +2556,37 @@ class JobService:
                 task_id, translate="done", validate="done", write="active"
             )
             target_path = Path(current.target_subtitle_path)
-            write_srt_atomic(target_path, outcome.document, overwrite=False)
-            ensure_canonical_sidecar(target_path, current.target_language)
-            self._set_task_checkpoints(task_id, write="done", sync="active")
+            from app.jobs.translate import draft_subtitle_path, should_hold_for_approval
+
+            hold_approval = should_hold_for_approval(
+                require_approval=bool(getattr(public, "require_translation_approval", False)),
+                trigger_type=getattr(current, "trigger_type", None),
+                task_id=task_id,
+            )
+            if hold_approval:
+                draft_path = draft_subtitle_path(target_path)
+                write_srt_atomic(draft_path, outcome.document, overwrite=True)
+                if task_id:
+                    task_row = self.db.get(LocalizationTaskRow, int(task_id))
+                    if task_row is not None:
+                        meta = dict(task_row.metadata_json or {})
+                        meta["draft_subtitle_path"] = str(draft_path)
+                        task_row.metadata_json = meta
+                        self.db.add(task_row)
+                        self.db.commit()
+                        from app.localization.service import LocalizationTaskService
+
+                        LocalizationTaskService(self.db).transition(
+                            task_row,
+                            "awaiting_approval",
+                            substate="review",
+                            clear_error=True,
+                        )
+                self._set_task_checkpoints(task_id, write="done", sync="pending", verify="pending")
+            else:
+                write_srt_atomic(target_path, outcome.document, overwrite=False)
+                ensure_canonical_sidecar(target_path, current.target_language)
+                self._set_task_checkpoints(task_id, write="done", sync="active")
 
             current.model = winning_model
             current.provider_id = winning_provider
@@ -2667,10 +2600,13 @@ class JobService:
             current.output_tokens = outcome.usage.output_tokens
             current.total_tokens = outcome.usage.total_tokens
             current.progress = 100
-            current.progress_detail = "Written"
+            current.progress_detail = "Draft ready for approval" if hold_approval else "Written"
             current.status = "completed"
             current.completed_at = utcnow()
-            if outcome.warnings:
+            if hold_approval:
+                current.reason_code = "awaiting_approval"
+                current.warning = "Translation written as a draft. Approve it to publish and sync Bazarr."
+            elif outcome.warnings:
                 current.warning = "; ".join(outcome.warnings)
                 current.reason_code = "markup_warning"
             else:
@@ -2691,24 +2627,27 @@ class JobService:
             )
 
             try:
-                await self._rescan(current)
-                self._set_task_checkpoints(task_id, sync="done", verify="active")
-                verified = await self._verify_target_with_backoff(current)
-                if not verified:
-                    self._set_task_checkpoints(task_id, verify="failed")
-                    verify_warning = (
-                        "Bazarr rescan succeeded but the target subtitle was still "
-                        "reported missing after verification retries."
-                    )
-                    if current.warning:
-                        current.warning = f"{current.warning}; {verify_warning}"
-                    else:
-                        current.warning = verify_warning
-                    current.reason_code = "bazarr_verify_failed"
+                if hold_approval:
+                    pass
                 else:
-                    self._set_task_checkpoints(task_id, verify="done")
-                    if not task_id:
-                        await self._discard_extracted_source_after_verify(current)
+                    await self._rescan(current)
+                    self._set_task_checkpoints(task_id, sync="done", verify="active")
+                    verified = await self._verify_target_with_backoff(current)
+                    if not verified:
+                        self._set_task_checkpoints(task_id, verify="failed")
+                        verify_warning = (
+                            "Bazarr rescan succeeded but the target subtitle was still "
+                            "reported missing after verification retries."
+                        )
+                        if current.warning:
+                            current.warning = f"{current.warning}; {verify_warning}"
+                        else:
+                            current.warning = verify_warning
+                        current.reason_code = "bazarr_verify_failed"
+                    else:
+                        self._set_task_checkpoints(task_id, verify="done")
+                        if not task_id:
+                            await self._discard_extracted_source_after_verify(current)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Bazarr rescan failed job_id=%s error=%s", job_id, exc)
                 self._set_task_checkpoints(task_id, sync="failed", verify="failed")
@@ -2768,16 +2707,13 @@ class JobService:
                 )
 
     async def _rescan(self, row: JobRow) -> None:
+        from app.jobs.bazarr_sync import register_or_rescan
+
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if not bazarr_url:
             raise BazarrError("Bazarr URL is not configured")
         client = BazarrClient(bazarr_url, bazarr_key)
-        if row.media_type == "movie" and row.bazarr_movie_id is not None:
-            await client.rescan_movie(row.bazarr_movie_id)
-        elif row.media_type == "episode" and row.bazarr_episode_id is not None:
-            await client.rescan_episode(row.bazarr_episode_id, row.bazarr_series_id)
-        else:
-            raise BazarrError("Missing Bazarr media identifiers for rescan")
+        await register_or_rescan(client, row)
 
     async def _verify_target_present(self, row: JobRow) -> bool:
         """Check disk + Bazarr metadata for the target subtitle."""

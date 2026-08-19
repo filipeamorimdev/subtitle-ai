@@ -2,12 +2,14 @@
 import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useAppStore } from './stores/app'
+import { startLiveEvents } from './stores/events'
 
 const store = useAppStore()
 const route = useRoute()
 
 onMounted(() => {
   store.loadSettings().catch(() => undefined)
+  startLiveEvents()
 })
 
 const links = [

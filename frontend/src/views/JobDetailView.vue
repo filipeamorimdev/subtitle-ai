@@ -6,6 +6,7 @@ import type { Job, JobLog, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
 import { mediaHrefForJob, mediaHrefForTaskId, safeReturnTo, withReturnTo } from '../utils/mediaNav'
+import { onLiveEvent } from '../stores/events'
 
 const props = defineProps<{ id: string }>()
 const route = useRoute()
@@ -25,6 +26,7 @@ const mediaHref = ref<string | null>(null)
 const retryingId = ref<number | null>(null)
 let timer: number | undefined
 let lastStatus: string | null = null
+let stopLive: (() => void) | undefined
 
 const returnTo = computed(() => safeReturnTo(route.query.from))
 const backHref = computed(() => returnTo.value || mediaHref.value || '/media')
@@ -141,11 +143,15 @@ onMounted(async () => {
     if (job.value && ['pending', 'processing'].includes(job.value.status)) {
       load()
     }
-  }, 2000)
+  }, 15000)
+  stopLive = onLiveEvent((event) => {
+    if (event.job_id === Number(props.id)) load().catch(() => undefined)
+  })
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  stopLive?.()
 })
 
 watch(
@@ -287,6 +293,16 @@ async function viewRequestLog(row: JobUsageExchange) {
       <span class="text-ink-400">/</span>
       <span class="text-ink-500">Job #{{ job.id }}</span>
     </div>
+    <p
+      v-if="job.task_id && mediaHref"
+      class="rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-sm"
+    >
+      This is one execution of a localization task.
+      <RouterLink class="font-semibold text-accent hover:underline" :to="mediaHref">
+        Open the media page
+      </RouterLink>
+      for the full progress.
+    </p>
 
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div class="min-w-0">

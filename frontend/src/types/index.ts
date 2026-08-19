@@ -43,6 +43,7 @@ export interface Settings {
   monthly_budget_enabled: boolean
   monthly_budget_amount_usd: number | null
   allow_manual_budget_override: boolean
+  require_translation_approval: boolean
 }
 
 export interface SettingsUpdate {
@@ -82,6 +83,7 @@ export interface SettingsUpdate {
   monthly_budget_amount_usd?: number | null
   clear_monthly_budget_amount?: boolean
   allow_manual_budget_override?: boolean
+  require_translation_approval?: boolean
 }
 
 export interface EmbeddedSubtitle {
@@ -256,6 +258,7 @@ export interface LocalizationTask {
   executions: Job[]
   ai: TaskAiSummary | null
   progress_steps: ProgressStep[]
+  draft_subtitle_path?: string | null
 }
 
 export interface JobAction {
@@ -388,6 +391,7 @@ export interface Health {
   database: string
   bazarr: string
   openrouter: string
+  planner_error?: string | null
 }
 
 export interface ConnectionTestResult {

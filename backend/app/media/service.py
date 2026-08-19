@@ -25,14 +25,20 @@ class MediaItemService:
             )
         )
 
-    def list_items(self, *, limit: int = 100) -> list[MediaItemRow]:
+    def list_items(self, *, limit: int = 100, offset: int = 0) -> list[MediaItemRow]:
         return list(
             self.db.scalars(
                 select(MediaItemRow)
                 .order_by(MediaItemRow.updated_at.desc())
-                .limit(max(1, min(limit, 500)))
+                .limit(max(1, min(limit, 5000)))
+                .offset(max(0, offset))
             ).all()
         )
+
+    def count_items(self) -> int:
+        from sqlalchemy import func
+
+        return int(self.db.scalar(select(func.count()).select_from(MediaItemRow)) or 0)
 
     def upsert_from_ref(self, ref: MediaRef, *, parent_media_id: int | None = None) -> MediaItemRow:
         row = self.get_by_external(ref.provider_id, ref.external_id)

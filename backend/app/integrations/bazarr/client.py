@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -214,6 +215,60 @@ class BazarrClient:
             params={**ids, "action": "scan-disk"},
             timeout=self._SCAN_DISK_TIMEOUT,
         )
+
+    async def upload_subtitle(
+        self,
+        *,
+        media_type: str,
+        language: str,
+        path: Path,
+        movie_id: int | None = None,
+        episode_id: int | None = None,
+        series_id: int | None = None,
+    ) -> bool:
+        """Register a sidecar with Bazarr via the upload API.
+
+        Returns False when the endpoint is missing or rejects the payload so
+        callers can fall back to Scan Disk.
+        """
+        target = Path(path)
+        if not target.is_file():
+            return False
+        if media_type == "movie" and movie_id is not None:
+            api_path = "/api/movies/subtitles"
+            params: dict[str, Any] = {"radarrid": movie_id, "language": language}
+        elif media_type == "episode" and episode_id is not None:
+            api_path = "/api/episodes/subtitles"
+            params = {"episodeid": episode_id, "language": language}
+            if series_id is not None:
+                params["seriesid"] = series_id
+        else:
+            return False
+
+        url = urljoin(self.base_url, api_path.lstrip("/"))
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                with target.open("rb") as handle:
+                    response = await client.post(
+                        url,
+                        params=self._params(params),
+                        files={"file": (target.name, handle, "application/x-subrip")},
+                    )
+        except httpx.HTTPError as exc:
+            logger.info("Bazarr subtitle upload failed: %s", exc)
+            return False
+        if response.status_code in {404, 405, 415}:
+            return False
+        if response.status_code == 401:
+            raise BazarrError("Bazarr authentication failed.", status_code=401)
+        if response.status_code >= 400:
+            logger.info(
+                "Bazarr subtitle upload rejected (%s): %s",
+                response.status_code,
+                response.text[:200],
+            )
+            return False
+        return True
 
     async def download_movie_subtitle(
         self,

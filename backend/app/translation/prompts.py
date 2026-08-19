@@ -52,18 +52,28 @@ BLOCK_RE = re.compile(r"^\[(\d{3,})\]\s*$")
 def build_system_prompt(
     target_language_code: str,
     target_language_name: str,
+    *,
+    locale_note: str = "",
+    glossary_block: str = "",
 ) -> str:
-    locale_note = ""
-    if target_language_code.lower() in {"pt-pt", "pt"} and "brazil" not in target_language_name.lower():
-        locale_note = (
-            "\nUse European Portuguese (PT-PT), not Brazilian Portuguese (PT-BR).\n"
-        )
-    return (
-        SYSTEM_PROMPT
-        + f"\nTarget language code: {target_language_code}\n"
-        + f"Target language name: {target_language_name}\n"
-        + locale_note
-    )
+    extra = locale_note.strip()
+    if not extra:
+        code = target_language_code.lower()
+        if code in {"pt-pt", "pt"} and "brazil" not in target_language_name.lower():
+            extra = (
+                "Use European Portuguese (PT-PT), not Brazilian Portuguese (PT-BR)."
+            )
+    parts = [
+        SYSTEM_PROMPT,
+        f"Target language code: {target_language_code}",
+        f"Target language name: {target_language_name}",
+    ]
+    if extra:
+        parts.append(extra)
+    if glossary_block.strip():
+        parts.append(glossary_block.strip())
+    return "\n".join(parts) + "\n"
+
 
 
 def format_batch(blocks: list[tuple[int, str]]) -> str:

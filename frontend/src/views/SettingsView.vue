@@ -25,6 +25,7 @@ const form = reactive({
   bazarr_grace_period_minutes: 10,
   automatic_retry_enabled: true,
   maximum_automatic_retries: 3,
+  require_translation_approval: false,
 })
 
 async function loadAutomationStatus() {
@@ -48,6 +49,7 @@ onMounted(async () => {
   form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
   form.automatic_retry_enabled = s.automatic_retry_enabled ?? true
   form.maximum_automatic_retries = s.maximum_automatic_retries ?? 3
+  form.require_translation_approval = s.require_translation_approval ?? false
   await loadAutomationStatus()
 })
 
@@ -66,6 +68,7 @@ async function save() {
       bazarr_grace_period_minutes: Number(form.bazarr_grace_period_minutes) || 0,
       automatic_retry_enabled: form.automatic_retry_enabled,
       maximum_automatic_retries: Number(form.maximum_automatic_retries) || 0,
+      require_translation_approval: form.require_translation_approval,
     })
     await store.loadSettings()
     await loadAutomationStatus()
@@ -93,6 +96,22 @@ async function runAutomaticScan() {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     scanning.value = false
+  }
+}
+
+async function exportSettings() {
+  try {
+    const payload = await api.exportSettings()
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'subtitle-ai-settings.json'
+    link.click()
+    URL.revokeObjectURL(url)
+    message.value = 'Settings exported (secrets omitted).'
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -218,6 +237,14 @@ function clearUsageStats() {
             </template>
           </span>
         </div>
+      </fieldset>
+
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <legend class="px-1 font-display text-lg font-semibold">Translation review</legend>
+        <label class="flex items-center gap-2 text-sm">
+          <input v-model="form.require_translation_approval" type="checkbox" />
+          Hold manual translations for approval before writing the sidecar
+        </label>
       </fieldset>
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
@@ -360,6 +387,20 @@ function clearUsageStats() {
         <p class="text-xs text-ink-500">
           Removes OpenRouter exchange logs and resets token totals. Job history rows are kept.
         </p>
+      </div>
+
+      <div class="space-y-3">
+        <h2 class="text-sm font-semibold text-ink-700 dark:text-ink-200">Configuration backup</h2>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+            @click="exportSettings"
+          >
+            Download settings
+          </button>
+        </div>
+        <p class="text-xs text-ink-500">Exports non-secret settings as JSON. API keys are omitted.</p>
       </div>
     </fieldset>
   </section>

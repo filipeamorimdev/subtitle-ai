@@ -53,12 +53,12 @@ docker compose up
 1. Stop the container (keep the `/config` volume).
 2. Pull/build the new image.
 3. Start the same compose stack with the same `/config` mount.
-4. On startup the app runs `init_db()`: missing tables/columns are added, and a lone legacy `openrouter_model` is seeded into the model pool without enabling paid fallback.
+4. On startup the app runs `init_db()` then **Alembic** (`alembic upgrade head`). Pre-Alembic databases are stamped at revision `0012` first, then upgraded.
 5. Open Dashboard, then **Open AI dashboard** and **Settings → Models**, and confirm the previous model is still selected.
 
 Do not run multiple Subtitle AI containers against the same SQLite file.
 
-Alembic revisions exist under `backend/alembic/versions` for schema history. Docker deployments rely on `init_db()` rather than `alembic upgrade` at runtime.
+Alembic revisions live under `backend/alembic/versions`. Runtime schema changes go through Alembic; `init_db()` remains a compatibility layer for very old installs.
 
 ## Project layout
 

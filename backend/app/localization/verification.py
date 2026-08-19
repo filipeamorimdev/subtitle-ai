@@ -106,7 +106,12 @@ class BazarrVerificationService:
         media_like = _JobMediaAdapter(row)
         ensure_canonical_sidecar(row.target_subtitle_path, row.target_language)
         try:
-            await self._rescan(media_like)
+            from app.jobs.bazarr_sync import register_or_rescan
+
+            url, key = self.settings.get_bazarr_credentials()
+            if not url:
+                raise BazarrError("Bazarr URL is not configured")
+            await register_or_rescan(BazarrClient(url, key), row)
         except BazarrError as exc:
             logger.warning("Bazarr rescan failed job=%s error=%s", row.id, exc)
             return VerificationResult(

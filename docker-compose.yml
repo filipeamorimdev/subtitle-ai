@@ -12,5 +12,7 @@ services:
       - TZ=Europe/Lisbon
       - SUBTITLE_AI_CONFIG_DIR=/config
       - SUBTITLE_AI_LOG_LEVEL=INFO
+      # Optional HTTP Basic auth:
+      # - SUBTITLE_AI_AUTH_PASSWORD=change-me
       # Optional; omit to auto-discover mounts under /data and /media:
       # - SUBTITLE_AI_MEDIA_ROOTS=/media

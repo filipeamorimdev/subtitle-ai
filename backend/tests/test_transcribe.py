@@ -28,6 +28,8 @@ from app.subtitles.transcribe import (
     filter_segments,
     segments_to_document,
     transcribe_audio,
+    transcribe_with_local,
+    whisper_cpu_threads,
 )
 
 
@@ -377,6 +379,59 @@ def test_claim_transcribe_independent_of_extract(asr_env):
     assert claimed.job_kind == "transcribe"
     leftover = db.scalar(select(JobRow).where(JobRow.job_kind == "extract", JobRow.status == "pending"))
     assert leftover is not None
+
+
+def test_whisper_cpu_threads_leaves_headroom(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "app.subtitles.transcribe.get_app_config",
+        lambda: SimpleNamespace(whisper_cpu_threads=0),
+    )
+    monkeypatch.setattr("app.subtitles.transcribe.os.cpu_count", lambda: 8)
+    assert whisper_cpu_threads() == 4
+    monkeypatch.setattr("app.subtitles.transcribe.os.cpu_count", lambda: 2)
+    assert whisper_cpu_threads() == 1
+    monkeypatch.setattr(
+        "app.subtitles.transcribe.get_app_config",
+        lambda: SimpleNamespace(whisper_cpu_threads=3),
+    )
+    assert whisper_cpu_threads() == 3
+
+
+@pytest.mark.asyncio
+async def test_local_whisper_reports_segment_progress(monkeypatch, tmp_path):
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"x")
+    seen: list[tuple[float, float]] = []
+
+    def fake_run(*_args, **kwargs):
+        callback = kwargs.get("on_progress")
+        if callback:
+            callback(12.0, 120.0)
+            callback(60.0, 120.0)
+        return TranscriptResult(
+            language="en",
+            segments=[TranscriptSegment(0.0, 60.0, "Hi")],
+            engine="faster-whisper:tiny",
+            duration=120.0,
+        )
+
+    monkeypatch.setattr("app.subtitles.transcribe._run_faster_whisper", fake_run)
+
+    async def on_progress(done: float, total: float) -> None:
+        seen.append((done, total))
+
+    result = await transcribe_with_local(
+        audio,
+        model_size="tiny",
+        duration=120.0,
+        on_progress=on_progress,
+    )
+    assert result.duration == 120.0
+    assert (0.0, 120.0) in seen
+    assert any(done == 60.0 and total == 120.0 for done, total in seen)
+    assert seen[-1] == (120.0, 120.0)
 
 
 def test_worker_includes_transcribe_kind():

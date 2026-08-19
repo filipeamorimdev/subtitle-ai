@@ -48,6 +48,7 @@ class SettingsRow(Base):
     monthly_budget_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     monthly_budget_amount_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
     allow_manual_budget_override: Mapped[bool] = mapped_column(Boolean, default=False)
+    require_translation_approval: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -337,3 +338,42 @@ class TranslationCacheRow(Base):
     target_subtitle_path: Mapped[str] = mapped_column(String(1024))
     job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GlossaryEntryRow(Base):
+    """Locked name map for a series or movie + target language."""
+
+    __tablename__ = "glossary_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_key",
+            "target_language",
+            "source_normalized",
+            name="uq_glossary_entries_scope_lang_source",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    target_language: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
+    target: Mapped[str] = mapped_column(String(512), nullable=False)
+    locked: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LocalePromptNoteRow(Base):
+    """Optional override for locale translator notes."""
+
+    __tablename__ = "locale_prompt_notes"
+
+    language_code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    notes: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+

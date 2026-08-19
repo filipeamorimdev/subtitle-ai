@@ -4,6 +4,7 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   waiting_for_source: 'Waiting for source',
   processing: 'Processing',
   verifying: 'Verifying',
+  awaiting_approval: 'Awaiting approval',
   completed: 'Completed',
   failed: 'Failed',
   blocked: 'Blocked',
@@ -16,6 +17,7 @@ const ACTIVE_TASK_STATUSES = new Set([
   'waiting_for_source',
   'processing',
   'verifying',
+  'awaiting_approval',
 ])
 
 export function isActiveTaskStatus(status: string) {
@@ -41,7 +43,11 @@ export function taskStatusIcon(status: string) {
 }
 
 export function canRetryTask(status: string) {
-  return ['failed', 'blocked', 'cancelled', 'waiting_for_source'].includes(status)
+  return ['failed', 'blocked', 'cancelled', 'waiting_for_source', 'awaiting_approval'].includes(status)
+}
+
+export function canApproveTask(status: string) {
+  return status === 'awaiting_approval'
 }
 
 const BAZARR_VERIFY_FAIL_CODES = new Set(['bazarr_verify_failed', 'bazarr_rescan_failed'])
@@ -101,7 +107,14 @@ export function jobStatusClass(status: string) {
   if (status === 'skipped' || status === 'blocked') {
     return 'text-amber-700 dark:text-amber-300'
   }
-  if (status === 'processing' || status === 'waiting_for_source' || status === 'planning' || status === 'requested' || status === 'verifying') {
+  if (
+    status === 'processing' ||
+    status === 'waiting_for_source' ||
+    status === 'planning' ||
+    status === 'requested' ||
+    status === 'verifying' ||
+    status === 'awaiting_approval'
+  ) {
     return 'text-accent'
   }
   return 'text-ink-700 dark:text-ink-200'
@@ -126,6 +139,7 @@ export function jobStatusBadgeClass(status: string) {
     status === 'planning' ||
     status === 'requested' ||
     status === 'verifying' ||
+    status === 'awaiting_approval' ||
     status === 'pending'
   ) {
     return 'inline-flex rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs font-semibold capitalize text-accent'

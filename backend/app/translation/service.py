@@ -125,6 +125,8 @@ class TranslationService:
         progress_callback=None,
         checkpoint: TranslationCheckpoint | None = None,
         provider_id: str | None = None,
+        locale_note: str = "",
+        glossary_block: str = "",
     ) -> TranslationOutcome:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -132,6 +134,8 @@ class TranslationService:
         system_prompt = build_system_prompt(
             target_language_code,
             target_language_name,
+            locale_note=locale_note,
+            glossary_block=glossary_block,
         )
         state = checkpoint or TranslationCheckpoint()
         usage = state.usage
@@ -302,6 +306,35 @@ class TranslationService:
                 "Translation response failed validation. "
                 + "; ".join(f"{i.code}: {i.message}" for i in final_validation.hard_issues)
             )
+
+        from app.subtitles.reading import analyze_document, overcrowded_blocks, reading_repair_prompt_extra
+
+        crowded = overcrowded_blocks(result_doc)
+        if crowded:
+            repair_used = True
+            protected_payload: list[tuple[int, str, list[str]]] = []
+            for block in crowded:
+                protection = protect_markup(block.text)
+                protected_payload.append(
+                    (block.index, protection.protected_text, protection.tags)
+                )
+            mapping, _ = await self._translate_batch(
+                model=sync_model,
+                system_prompt=system_prompt + reading_repair_prompt_extra(),
+                protected_payload=protected_payload,
+                usage=usage,
+            )
+            self._apply_mapping(crowded, protected_payload, mapping, translated_by_id)
+            result_doc = SubtitleDocument(
+                format=document.format,
+                encoding=document.encoding,
+                blocks=[translated_by_id[b.index] for b in document.blocks],
+            )
+            leftover = analyze_document(result_doc)
+            if leftover:
+                warnings.append(
+                    f"reading_speed: {len({i.block_index for i in leftover})} cue(s) still over reading limits"
+                )
 
         return TranslationOutcome(
             document=result_doc,

@@ -79,6 +79,8 @@ class TaskPlanner:
             return task
         if task.status == "cancelled":
             return task
+        if task.status == "awaiting_approval":
+            return task
 
         media = self.media.get(task.media_item_id)
         if media is None:
@@ -425,6 +427,8 @@ class TaskPlanner:
         if task.status == "verifying":
             return True
         if latest_translate is None or latest_translate.status != "completed":
+            return False
+        if latest_translate.reason_code == "awaiting_approval":
             return False
         existing = find_existing_sidecar(
             latest_translate.target_subtitle_path,

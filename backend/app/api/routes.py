@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app import __version__
@@ -44,7 +45,11 @@ router = APIRouter(prefix="/api")
 
 
 @router.get("/health", response_model=HealthOut)
-def health(db: Session = Depends(get_db)) -> HealthOut:
+async def health(
+    request: Request,
+    live: bool = False,
+    db: Session = Depends(get_db),
+) -> HealthOut:
     bazarr = "unknown"
     openrouter = "unknown"
     try:
@@ -54,12 +59,50 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
     except Exception:  # noqa: BLE001
         bazarr = "unknown"
         openrouter = "unknown"
+    if live:
+        from app.core.health import probe_bazarr, probe_openrouter
+
+        bazarr = await probe_bazarr(db)
+        openrouter = await probe_openrouter(db)
+    planner_error = getattr(request.app.state, "planner_error", None)
+    status = "degraded" if planner_error else "ok"
     return HealthOut(
-        status="ok",
+        status=status,
         version=__version__,
         database="healthy",
         bazarr=bazarr,
         openrouter=openrouter,
+        planner_error=planner_error,
+    )
+
+
+@router.get("/events")
+async def stream_events():
+    import asyncio
+
+    from app.core.events import subscribe, unsubscribe
+
+    queue = await subscribe()
+
+    async def generate():
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=25)
+                    yield f"data: {payload}\n\n"
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            await unsubscribe(queue)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -70,6 +113,21 @@ def get_settings(db: Session = Depends(get_db)) -> SettingsOut:
 
 @router.put("/settings", response_model=SettingsOut)
 def put_settings(payload: SettingsUpdate, db: Session = Depends(get_db)) -> SettingsOut:
+    return SettingsService(db).update(payload)
+
+
+@router.get("/settings/export")
+def export_settings(db: Session = Depends(get_db)) -> dict:
+    public = SettingsService(db).get_public()
+    data = public.model_dump()
+    for key in list(data):
+        if "key" in key and "configured" not in key:
+            data[key] = None
+    return {"settings": data, "secrets_omitted": True}
+
+
+@router.post("/settings/import", response_model=SettingsOut)
+def import_settings(payload: SettingsUpdate, db: Session = Depends(get_db)) -> SettingsOut:
     return SettingsService(db).update(payload)
 
 

@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
+import { onLiveEvent } from '../stores/events'
 import type {
   AiOverview,
   AutomationStatus,
@@ -14,6 +15,7 @@ import type {
 import { formatDateTime, formatElapsedClock } from '../utils/datetime'
 import { localizationTaskTitle, mediaHref } from '../utils/mediaNav'
 import { isActiveTaskStatus, taskStatusIcon, taskStatusLabel } from '../utils/status'
+import { latestActiveJob, taskProgressPct } from '../utils/taskProgress'
 
 const store = useAppStore()
 const health = ref<Health | null>(null)
@@ -29,6 +31,7 @@ const modalOpen = ref(false)
 const now = ref(Date.now())
 let timer: number | undefined
 let tick: number | undefined
+let stopLive: (() => void) | undefined
 
 const LIST_LIMIT = 5
 
@@ -55,24 +58,7 @@ const currentLocalization = computed(() => {
 })
 
 function latestJob(task: LocalizationTask) {
-  const jobs = task.executions || []
-  return (
-    [...jobs].reverse().find((item) => item.status === 'pending' || item.status === 'processing') ||
-    jobs[jobs.length - 1] ||
-    null
-  )
-}
-
-function taskProgressPct(task: LocalizationTask) {
-  if (task.status === 'waiting_for_source') return 0
-  const jobs = task.executions || []
-  const active = [...jobs]
-    .reverse()
-    .find((item) => item.status === 'pending' || item.status === 'processing')
-  if (active) return Math.round(Math.min(100, Math.max(0, active.progress ?? 0)))
-  if (task.status === 'verifying') return 100
-  const job = latestJob(task)
-  return Math.round(Math.min(100, Math.max(0, job?.progress ?? 0)))
+  return latestActiveJob(task)
 }
 
 function taskElapsed(task: LocalizationTask) {
@@ -93,12 +79,14 @@ const completedToday = computed(() => {
 })
 
 const bazarrOk = computed(() => {
-  if (health.value) return health.value.bazarr === 'configured'
+  if (health.value) return health.value.bazarr === 'configured' || health.value.bazarr === 'ok'
   return Boolean(store.settings?.bazarr_url && store.settings.bazarr_api_key_configured)
 })
 
 const openRouterOk = computed(() => {
-  if (health.value) return health.value.openrouter === 'configured'
+  if (health.value) {
+    return health.value.openrouter === 'configured' || health.value.openrouter === 'ok'
+  }
   return Boolean(store.settings?.openrouter_api_key_configured)
 })
 
@@ -116,7 +104,14 @@ const budgetPct = computed(() => aiOverview.value?.budget.percent_used)
 
 const attentionReasons = computed(() => {
   const reasons: string[] = []
-  if (!bazarrOk.value) reasons.push('Bazarr is not configured.')
+  if (!bazarrOk.value) {
+    reasons.push(
+      health.value?.bazarr === 'unreachable'
+        ? 'Bazarr is unreachable.'
+        : 'Bazarr is not configured.',
+    )
+  }
+  if (health.value?.planner_error) reasons.push('Localization planner failed to resume after restart.')
   if (!openRouterOk.value) reasons.push('OpenRouter is not configured.')
   if (aiOverview.value?.status === 'attention') {
     const aiReasons = aiOverview.value.status_reasons?.filter(Boolean) || []
@@ -222,7 +217,7 @@ async function loadRecentTranslations() {
 
 async function loadHealth() {
   try {
-    health.value = await api.getHealth()
+    health.value = await api.getHealth(true)
   } catch {
     health.value = null
   }
@@ -262,12 +257,20 @@ onMounted(async () => {
     loadTasks().catch(() => undefined)
     loadCurrentLocalization().catch(() => undefined)
     loadRecentTranslations().catch(() => undefined)
-  }, 4000)
+    loadHealth().catch(() => undefined)
+  }, 30000)
+  stopLive = onLiveEvent((event) => {
+    if (event.type === 'hello') return
+    loadTasks().catch(() => undefined)
+    loadCurrentLocalization().catch(() => undefined)
+    loadRecentTranslations().catch(() => undefined)
+  })
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
   if (tick) window.clearInterval(tick)
+  stopLive?.()
 })
 </script>
 

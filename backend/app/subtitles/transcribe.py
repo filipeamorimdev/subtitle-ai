@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -223,44 +224,73 @@ def _whisper_model_cache() -> Path:
     return path
 
 
+def whisper_cpu_threads() -> int:
+    """Cap CTranslate2 threads so the API/event loop keeps a core."""
+    configured = int(getattr(get_app_config(), "whisper_cpu_threads", 0) or 0)
+    if configured > 0:
+        return configured
+    count = os.cpu_count() or 2
+    if count <= 2:
+        return 1
+    return max(1, count // 2)
+
+
 def _run_faster_whisper(
     audio_path: str,
     *,
     model_size: str,
     duration: float | None,
     is_cancelled: CancelCheck | None,
+    on_progress: Callable[[float, float], None] | None = None,
 ) -> TranscriptResult:
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise TranscribeError("faster-whisper is not installed") from exc
 
+    threads = whisper_cpu_threads()
+    logger.info("Loading Whisper model %s (cpu_threads=%s)", model_size, threads)
     model = WhisperModel(
         model_size,
         device="cpu",
         compute_type="int8",
+        cpu_threads=threads,
         download_root=str(_whisper_model_cache()),
     )
+    logger.info("Whisper model loaded; starting transcription (VAD + decode)")
+    if on_progress:
+        on_progress(0.0, duration or 0.0)
     segments_iter, info = model.transcribe(
         audio_path,
         vad_filter=True,
         beam_size=5,
         word_timestamps=False,
     )
+    detected_duration = float(getattr(info, "duration", 0.0) or 0.0) or duration
+    total = detected_duration or duration or 0.0
+    logger.info(
+        "Whisper iterator ready language=%s duration=%.1fs",
+        getattr(info, "language", None),
+        total or 0.0,
+    )
     collected: list[TranscriptSegment] = []
     for item in segments_iter:
         if is_cancelled and is_cancelled():
             raise TranscribeError("Transcription cancelled.")
+        end = float(getattr(item, "end", 0.0) or 0.0)
         collected.append(
             TranscriptSegment(
                 start=float(getattr(item, "start", 0.0) or 0.0),
-                end=float(getattr(item, "end", 0.0) or 0.0),
+                end=end,
                 text=str(getattr(item, "text", "") or ""),
                 no_speech_prob=float(getattr(item, "no_speech_prob", 0.0) or 0.0),
             )
         )
+        if on_progress:
+            on_progress(end, total or end)
+        if len(collected) == 1:
+            logger.info("Whisper first segment at %.1fs", end)
     language = normalize_language_code(getattr(info, "language", None)) or "en"
-    detected_duration = float(getattr(info, "duration", 0.0) or 0.0) or duration
     return TranscriptResult(
         language=language,
         segments=collected,
@@ -279,22 +309,63 @@ async def transcribe_with_local(
 ) -> TranscriptResult:
     size = normalize_asr_local_model(model_size)
     path = str(audio_path)
+    progress = {"done": 0.0, "total": duration or 0.0}
+
+    def on_sync_progress(done: float, total: float) -> None:
+        progress["done"] = done
+        if total > 0:
+            progress["total"] = total
+
     if on_progress:
         await _maybe_progress(on_progress, 0.0, duration or 0.0)
+
+    stop_pump = asyncio.Event()
+
+    async def pump() -> None:
+        last: tuple[float, float] | None = None
+        while not stop_pump.is_set():
+            current = (progress["done"], progress["total"])
+            if on_progress and current != last:
+                last = current
+                await _maybe_progress(on_progress, current[0], current[1])
+            try:
+                await asyncio.wait_for(stop_pump.wait(), timeout=1.0)
+            except TimeoutError:
+                continue
+        current = (progress["done"], progress["total"])
+        if on_progress and current != last:
+            await _maybe_progress(on_progress, current[0], current[1])
+
+    pump_task = asyncio.create_task(pump()) if on_progress else None
     try:
-        result = await asyncio.to_thread(
-            _run_faster_whisper,
-            path,
-            model_size=size,
-            duration=duration,
-            is_cancelled=is_cancelled,
-        )
-    except TranscribeError:
-        raise
-    except MemoryError as exc:
-        raise TranscribeError("Local Whisper ran out of memory. Try a smaller model or OpenAI fallback.") from exc
-    except Exception as exc:  # noqa: BLE001
-        raise TranscribeError(f"Local Whisper failed: {exc}") from exc
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_faster_whisper,
+                    path,
+                    model_size=size,
+                    duration=duration,
+                    is_cancelled=is_cancelled,
+                    on_progress=on_sync_progress if on_progress else None,
+                ),
+                timeout=LOCAL_TRANSCRIBE_TIMEOUT,
+            )
+        except TimeoutError as exc:
+            raise TranscribeError(
+                f"Local Whisper timed out after {int(LOCAL_TRANSCRIBE_TIMEOUT / 60)} minutes."
+            ) from exc
+        except TranscribeError:
+            raise
+        except MemoryError as exc:
+            raise TranscribeError(
+                "Local Whisper ran out of memory. Try a smaller model or OpenAI fallback."
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise TranscribeError(f"Local Whisper failed: {exc}") from exc
+    finally:
+        stop_pump.set()
+        if pump_task is not None:
+            await pump_task
     if on_progress:
         done = result.duration or duration or 0.0
         await _maybe_progress(on_progress, done, done or 1.0)

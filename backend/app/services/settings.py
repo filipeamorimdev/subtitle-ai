@@ -188,6 +188,9 @@ class SettingsService:
             allow_manual_budget_override=_bool(
                 getattr(row, "allow_manual_budget_override", False), False
             ),
+            require_translation_approval=_bool(
+                getattr(row, "require_translation_approval", False), False
+            ),
         )
 
     def concurrency_limits(self) -> dict[str, int]:
@@ -295,6 +298,8 @@ class SettingsService:
             row.monthly_budget_amount_micro_usd = usd_to_micro(payload.monthly_budget_amount_usd)
         if payload.allow_manual_budget_override is not None:
             row.allow_manual_budget_override = payload.allow_manual_budget_override
+        if payload.require_translation_approval is not None:
+            row.require_translation_approval = payload.require_translation_approval
         self.db.add(row)
         self.db.commit()
         # Mirror OpenRouter credentials into ai_provider_accounts (same ciphertext).
