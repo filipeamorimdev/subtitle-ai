@@ -22,7 +22,11 @@ from app.localization.service import LocalizationTaskService
 from app.media.service import MediaItemService
 from app.services.settings import SettingsService
 from app.subtitles.filenames import build_dub_preview_path
-from app.dubbing.dub import _piper_voice_download_urls
+from app.dubbing.dub import (
+    _piper_voice_download_urls,
+    build_mux_command,
+    build_tts_mix_command,
+)
 
 
 def test_piper_voice_download_urls_encode_unicode():
@@ -30,6 +34,72 @@ def test_piper_voice_download_urls_encode_unicode():
     assert "tug%C3%A3o" in model_url
     assert model_url.endswith(".onnx?download=true")
     assert config_url.endswith(".onnx.json?download=true")
+
+
+def test_build_tts_mix_command_uses_itsoffset_for_long_delays(tmp_path):
+    clip_a = tmp_path / "a.wav"
+    clip_b = tmp_path / "b.wav"
+    clip_a.write_bytes(b"a")
+    clip_b.write_bytes(b"b")
+    out = tmp_path / "mix.wav"
+
+    cmd = build_tts_mix_command(
+        [(clip_a, 0), (clip_b, 1_140_000)],
+        out,
+        media_duration_s=1_428.0,
+    )
+    joined = " ".join(cmd)
+
+    assert "adelay" not in joined
+    assert "-itsoffset 1140.000" in joined
+    assert "normalize=0" in joined
+    assert "volume=18.0dB" in joined
+    assert "alimiter" in joined
+    assert "apad=whole_dur=1428.000" in joined
+    assert "-ar 48000" in joined
+
+
+def test_build_mux_command_copies_original_audio(tmp_path):
+    media = tmp_path / "film.mkv"
+    tts = tmp_path / "tts.wav"
+    out = tmp_path / "out.mkv"
+    media.write_bytes(b"m")
+    tts.write_bytes(b"t")
+
+    cmd = build_mux_command(
+        media,
+        tts,
+        out,
+        lang_tag="por",
+        copy_original_audio=True,
+    )
+
+    assert "-c:a:0" in cmd and "copy" in cmd[cmd.index("-c:a:0") + 1]
+    assert "-c:a:1" in cmd and "aac" in cmd[cmd.index("-c:a:1") + 1]
+    assert "-b:a:1" in cmd and "192k" in cmd[cmd.index("-b:a:1") + 1]
+    assert "-map" in cmd and "0:a:0" in cmd
+    assert "-map" in cmd and "1:a:0" in cmd
+
+
+def test_build_mux_command_encodes_tts_when_no_original_audio(tmp_path):
+    media = tmp_path / "film.mkv"
+    tts = tmp_path / "tts.wav"
+    out = tmp_path / "out.mkv"
+    media.write_bytes(b"m")
+    tts.write_bytes(b"t")
+
+    cmd = build_mux_command(
+        media,
+        tts,
+        out,
+        lang_tag="por",
+        copy_original_audio=False,
+    )
+
+    assert "-c:a:0" in cmd and "aac" in cmd[cmd.index("-c:a:0") + 1]
+    assert "-b:a:0" in cmd and "192k" in cmd[cmd.index("-b:a:0") + 1]
+    assert "1:a:0" in cmd
+    assert "-c:a:1" not in cmd
 
 
 @pytest.fixture

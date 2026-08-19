@@ -28,6 +28,12 @@ from app.subtitles.parsers.srt import parse_srt
 
 logger = get_logger("dubbing")
 
+# Piper clips are quiet; amix with many non-overlapping inputs also attenuates unless
+# normalize=0. Boost the final bus so the TTS track is audible beside the original.
+TTS_CUE_GAIN_DB = 6.0
+TTS_MIX_GAIN_DB = 18.0
+TTS_LIMITER_CEILING = 0.98
+
 TAG_RE = re.compile(r"</?(?:i|b|u)>", flags=re.IGNORECASE)
 PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 VOICE_PATTERN = re.compile(
@@ -120,6 +126,42 @@ def clean_text_for_tts(text: str) -> str:
     # Strip the subset of player-friendly tags we keep elsewhere in the pipeline.
     stripped = TAG_RE.sub("", text or "")
     return stripped.replace("\n", " ").strip()
+
+
+async def probe_has_audio_stream(path: str | Path) -> bool:
+    """Return True when `path` contains at least one audio stream."""
+    p = Path(path)
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "json",
+        str(p),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+    except (TimeoutError, FileNotFoundError):
+        return False
+
+    if proc.returncode != 0:
+        return False
+
+    try:
+        payload = json.loads(stdout.decode("utf-8"))
+    except json.JSONDecodeError:
+        return False
+
+    return bool(payload.get("streams"))
 
 
 async def probe_duration_seconds(path: str | Path) -> float | None:
@@ -237,7 +279,7 @@ async def shape_clip_to_duration(
             "-c:a",
             "pcm_s16le",
             "-af",
-            f"apad,atrim=0:{target_duration_s}",
+            f"volume={TTS_CUE_GAIN_DB}dB,apad,atrim=0:{target_duration_s}",
             str(output_wav),
         ]
         await run_process_checked(cmd, timeout_s=1800.0)
@@ -271,7 +313,7 @@ async def shape_clip_to_duration(
         "pcm_s16le",
         "-af",
         # atempo -> apad -> trim. apad ensures we can always pad up to target_duration_s.
-        f"atempo={atempo},apad,atrim=0:{target_duration_s}",
+        f"atempo={atempo},volume={TTS_CUE_GAIN_DB}dB,apad,atrim=0:{target_duration_s}",
         str(output_wav),
     ]
     await run_process_checked(cmd, timeout_s=1800.0)
@@ -331,6 +373,126 @@ async def synthesize_piper_to_wav(
         detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
         raise DubError(f"piper failed for model={voice_model}: {detail or 'unknown error'}")
     _ = stdout
+
+
+def build_tts_mix_command(
+    shaped_clips: list[tuple[Path, int]],
+    output_wav: Path,
+    *,
+    media_duration_s: float | None = None,
+    sample_rate: int = 48000,
+) -> list[str]:
+    """Build ffmpeg command to mix cue clips onto a full-length timeline.
+
+    Uses per-input ``-itsoffset`` instead of ``adelay`` so cue start times above
+    65535 ms (ffmpeg's adelay limit) are honored.
+    """
+    if not shaped_clips:
+        raise DubError("No cue clips to mix")
+
+    inputs: list[str] = []
+    for clip_path, start_ms in shaped_clips:
+        start_s = max(0, start_ms) / 1000.0
+        if start_s > 0:
+            inputs.extend(["-itsoffset", f"{start_s:.3f}"])
+        inputs.extend(["-i", str(clip_path)])
+
+    input_count = len(shaped_clips)
+    labels = "".join(f"[{i}:a]" for i in range(input_count))
+    filter_graph = (
+        f"{labels}amix=inputs={input_count}:duration=longest:"
+        f"dropout_transition=0:normalize=0[mixed]"
+    )
+    if media_duration_s is not None and media_duration_s > 0:
+        filter_graph += (
+            f";[mixed]apad=whole_dur={media_duration_s:.3f}[padded];"
+            f"[padded]volume={TTS_MIX_GAIN_DB}dB,alimiter=limit={TTS_LIMITER_CEILING}[out]"
+        )
+    else:
+        filter_graph += (
+            f";[mixed]volume={TTS_MIX_GAIN_DB}dB,alimiter=limit={TTS_LIMITER_CEILING}[out]"
+        )
+    map_label = "[out]"
+
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        filter_graph,
+        "-map",
+        map_label,
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "-c:a",
+        "pcm_s16le",
+        str(output_wav),
+    ]
+
+
+def build_mux_command(
+    media: Path,
+    tts_audio_wav: Path,
+    output: Path,
+    *,
+    lang_tag: str,
+    copy_original_audio: bool,
+) -> list[str]:
+    """Build ffmpeg mux command, copying original audio when present."""
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(media),
+        "-i",
+        str(tts_audio_wav),
+        "-map",
+        "0:v:0",
+        "-c:v",
+        "copy",
+    ]
+    if copy_original_audio:
+        cmd.extend(
+            [
+                "-map",
+                "0:a:0",
+                "-map",
+                "1:a:0",
+                "-c:a:0",
+                "copy",
+                "-c:a:1",
+                "aac",
+                "-b:a:1",
+                "192k",
+                "-metadata:s:a:1",
+                f"language={lang_tag}",
+                "-metadata:s:a:1",
+                "title=Dub (TTS)",
+            ]
+        )
+    else:
+        cmd.extend(
+            [
+                "-map",
+                "1:a:0",
+                "-c:a:0",
+                "aac",
+                "-b:a:0",
+                "192k",
+                "-metadata:s:a:0",
+                f"language={lang_tag}",
+                "-metadata:s:a:0",
+                "title=Dub (TTS)",
+            ]
+        )
+    cmd.append(str(output))
+    return cmd
 
 
 def resolve_voice_model_for_language(target_language: str) -> str:
@@ -480,39 +642,27 @@ async def dub_media_from_srt_to_mkv(
         if not shaped_clips:
             raise DubError("No cue text was synthesized; dub output would be silence.")
 
-        event_log.record(event="mix", input_clips=len(shaped_clips), voice_model=voice_model)
-
-        # Build filter graph: adelay + amix
-        inputs = []
-        delay_filters = []
-        for i, (clip_path, start_ms) in enumerate(shaped_clips):
-            inputs.append(["-i", str(clip_path)])
-            delay_filters.append(
-                f"[{i}:a]adelay={start_ms}|{start_ms}[d{i}]"
+        media_duration_s = await probe_duration_seconds(media)
+        if media_duration_s is None:
+            last_end_ms = max(
+                (parse_srt_timestamp(block.end) or 0 for block in doc.blocks),
+                default=0,
             )
+            if last_end_ms > 0:
+                media_duration_s = last_end_ms / 1000.0
 
-        # Note: We do not force a fixed output duration; `amix` uses the longest input.
-        filter_graph = ";".join(delay_filters) + ";"
-        labels = "".join([f"[d{i}]" for i in range(len(shaped_clips))])
-        filter_graph += f"{labels}amix=inputs={len(shaped_clips)}:duration=longest:dropout_transition=0[out]"
+        event_log.record(
+            event="mix",
+            input_clips=len(shaped_clips),
+            voice_model=voice_model,
+            media_duration_s=media_duration_s,
+        )
 
         tts_audio_wav = tmp_dir / "tts-audio.wav"
-        mix_cmd = (
-            ["ffmpeg", "-hide_banner", "-nostdin", "-y"]
-            + sum(inputs, [])
-            + [
-                "-filter_complex",
-                filter_graph,
-                "-map",
-                "[out]",
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-c:a",
-                "pcm_s16le",
-                str(tts_audio_wav),
-            ]
+        mix_cmd = build_tts_mix_command(
+            shaped_clips,
+            tts_audio_wav,
+            media_duration_s=media_duration_s,
         )
 
         if is_cancelled():
@@ -530,33 +680,14 @@ async def dub_media_from_srt_to_mkv(
         tmp_out = tmp_dir / out.name
         lang_tag = sidecar_language_tag(target_language)
 
-        mux_cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-nostdin",
-            "-y",
-            "-i",
-            str(media),
-            "-i",
-            str(tts_audio_wav),
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a:0?",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-metadata:s:a:1",
-            f"language={lang_tag}",
-            "-metadata:s:a:1",
-            "title=Dub (TTS)",
-            str(tmp_out),
-        ]
+        copy_original_audio = await probe_has_audio_stream(media)
+        mux_cmd = build_mux_command(
+            media,
+            tts_audio_wav,
+            tmp_out,
+            lang_tag=lang_tag,
+            copy_original_audio=copy_original_audio,
+        )
 
         await run_process_checked(mux_cmd, timeout_s=12 * 3600.0, is_cancelled=is_cancelled)
 
