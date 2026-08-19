@@ -36,7 +36,7 @@ def test_piper_voice_download_urls_encode_unicode():
     assert config_url.endswith(".onnx.json?download=true")
 
 
-def test_build_tts_mix_command_uses_itsoffset_for_long_delays(tmp_path):
+def test_build_tts_mix_command_mixes_prepositioned_clips(tmp_path):
     clip_a = tmp_path / "a.wav"
     clip_b = tmp_path / "b.wav"
     clip_a.write_bytes(b"a")
@@ -44,19 +44,20 @@ def test_build_tts_mix_command_uses_itsoffset_for_long_delays(tmp_path):
     out = tmp_path / "mix.wav"
 
     cmd = build_tts_mix_command(
-        [(clip_a, 0), (clip_b, 1_140_000)],
+        [(clip_a, 0), (clip_b, 0)],
         out,
         media_duration_s=1_428.0,
     )
     joined = " ".join(cmd)
 
     assert "adelay" not in joined
-    assert "-itsoffset 1140.000" in joined
+    assert "-itsoffset" not in joined
     assert "normalize=0" in joined
     assert "volume=18.0dB" in joined
     assert "alimiter" in joined
     assert "apad=whole_dur=1428.000" in joined
     assert "-ar 48000" in joined
+    assert str(clip_a) in joined and str(clip_b) in joined
 
 
 def test_build_mux_command_copies_original_audio(tmp_path):

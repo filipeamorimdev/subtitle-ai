@@ -34,6 +34,41 @@ let tick: number | undefined
 let stopLive: (() => void) | undefined
 
 const LIST_LIMIT = 5
+const RECENT_MEDIA_LIMIT = 4
+const RECENT_FETCH_LIMIT = 40
+
+type RecentTranslationGroup = {
+  mediaItemId: number
+  task: LocalizationTask
+  languages: string[]
+  origin: string
+}
+
+function groupRecentTranslationsByMedia(
+  tasks: LocalizationTask[],
+  limit: number,
+): RecentTranslationGroup[] {
+  const groups: RecentTranslationGroup[] = []
+  const byMedia = new Map<number, RecentTranslationGroup>()
+  for (const task of tasks) {
+    let group = byMedia.get(task.media_item_id)
+    if (!group) {
+      if (groups.length >= limit) continue
+      group = {
+        mediaItemId: task.media_item_id,
+        task,
+        languages: [],
+        origin: task.origin,
+      }
+      byMedia.set(task.media_item_id, group)
+      groups.push(group)
+    }
+    if (!group.languages.includes(task.target_language_name)) {
+      group.languages.push(task.target_language_name)
+    }
+  }
+  return groups
+}
 
 function isTargetDone(item: Candidate) {
   return item.reason_code === 'target_exists'
@@ -71,6 +106,10 @@ const failedTasks = computed(() =>
   tasks.value
     .filter((t) => isUnresolvedFailedTask(t, tasks.value))
     .slice(0, LIST_LIMIT),
+)
+
+const recentTranslationGroups = computed(() =>
+  groupRecentTranslationsByMedia(recentTranslations.value, RECENT_MEDIA_LIMIT),
 )
 
 const completedToday = computed(() => {
@@ -217,7 +256,7 @@ async function loadRecentTranslations() {
     recentTranslations.value = await api.getLocalizationTasks({
       status: 'completed',
       sort: 'completed_at',
-      limit: 4,
+      limit: RECENT_FETCH_LIMIT,
     })
   } catch {
     /* keep previous */
@@ -469,18 +508,18 @@ onUnmounted(() => {
           </RouterLink>
         </div>
         <div class="flex-1 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50/70 to-white shadow-sm dark:border-emerald-900 dark:from-emerald-950/30 dark:to-ink-900/60">
-          <p v-if="!recentTranslations.length" class="px-4 py-8 text-center text-sm text-ink-500">
+          <p v-if="!recentTranslationGroups.length" class="px-4 py-8 text-center text-sm text-ink-500">
             No completed translations yet. 🎬
           </p>
           <ul v-else class="divide-y divide-emerald-100 dark:divide-ink-800">
-            <li v-for="task in recentTranslations" :key="`done-${task.id}`" class="px-4 py-3">
-              <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(task.media_item_id)">
-                {{ localizationTaskTitle(task) }}
+            <li v-for="group in recentTranslationGroups" :key="`done-${group.mediaItemId}`" class="px-4 py-3">
+              <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(group.mediaItemId)">
+                {{ localizationTaskTitle(group.task) }}
               </RouterLink>
               <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
-                <span>{{ task.target_language_name }}</span>
-                <span>{{ formatDateTime(task.completed_at || task.updated_at) }}</span>
-                <span class="capitalize">{{ task.origin }}</span>
+                <span>{{ group.languages.join(', ') }}</span>
+                <span>{{ formatDateTime(group.task.completed_at || group.task.updated_at) }}</span>
+                <span class="capitalize">{{ group.origin }}</span>
               </div>
             </li>
           </ul>

@@ -253,6 +253,41 @@ async def run_process_checked(
             raise DubError(f"Command timed out: {argv[:2]}...") from exc
 
 
+async def prepend_silence_to_clip(
+    input_wav: Path,
+    output_wav: Path,
+    *,
+    start_ms: int,
+    sample_rate: int = 16000,
+) -> None:
+    """Place a shaped cue on the timeline by prepending silence."""
+    start_s = max(0, start_ms) / 1000.0
+    if start_s <= 0.001:
+        shutil.copyfile(input_wav, output_wav)
+        return
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"anullsrc=r={sample_rate}:cl=mono:d={start_s:.3f}",
+        "-i",
+        str(input_wav),
+        "-filter_complex",
+        "[0:a][1:a]concat=n=2:v=0:a=1[out]",
+        "-map",
+        "[out]",
+        "-c:a",
+        "pcm_s16le",
+        str(output_wav),
+    ]
+    await run_process_checked(cmd, timeout_s=1800.0)
+
+
 async def shape_clip_to_duration(
     input_wav: Path,
     output_wav: Path,
@@ -384,17 +419,14 @@ def build_tts_mix_command(
 ) -> list[str]:
     """Build ffmpeg command to mix cue clips onto a full-length timeline.
 
-    Uses per-input ``-itsoffset`` instead of ``adelay`` so cue start times above
-    65535 ms (ffmpeg's adelay limit) are honored.
+    Each clip must already include leading silence for its cue start time
+    (see ``prepend_silence_to_clip``). ``start_ms`` in each tuple is ignored.
     """
     if not shaped_clips:
         raise DubError("No cue clips to mix")
 
     inputs: list[str] = []
-    for clip_path, start_ms in shaped_clips:
-        start_s = max(0, start_ms) / 1000.0
-        if start_s > 0:
-            inputs.extend(["-itsoffset", f"{start_s:.3f}"])
+    for clip_path, _start_ms in shaped_clips:
         inputs.extend(["-i", str(clip_path)])
 
     input_count = len(shaped_clips)
@@ -631,7 +663,14 @@ async def dub_media_from_srt_to_mkv(
                 target_duration_s=target_s,
             )
 
-            shaped_clips.append((shaped_wav, start_ms))
+            delayed_wav = tmp_dir / f"cue-{block.index}-delayed.wav"
+            await prepend_silence_to_clip(
+                shaped_wav,
+                delayed_wav,
+                start_ms=start_ms,
+            )
+
+            shaped_clips.append((delayed_wav, 0))
 
             if on_progress:
                 maybe = on_progress(block_idx, total)
