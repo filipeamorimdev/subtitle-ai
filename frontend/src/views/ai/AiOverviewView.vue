@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../../services/api'
-import type { AiCosts, AiOverview } from '../../types'
-import { formatDateTime } from '../../utils/datetime'
+import type { AiCosts, AiModelJobTimes, AiOverview } from '../../types'
+import { formatDateTime, formatDuration } from '../../utils/datetime'
 
 const period = ref('month')
 const overview = ref<AiOverview | null>(null)
@@ -11,6 +11,9 @@ const costs = ref<AiCosts | null>(null)
 const error = ref<string | null>(null)
 const loading = ref(true)
 const hoverPoint = ref<{ date: string; cost_usd: number; request_count?: number } | null>(null)
+const jobTimes = ref<AiModelJobTimes | null>(null)
+const jobTimesError = ref<string | null>(null)
+const jobTimesLoading = ref(false)
 
 function formatUsd(n: number | null | undefined, digits = 2): string {
   if (n == null) return '—'
@@ -59,6 +62,7 @@ async function load() {
   loading.value = true
   error.value = null
   hoverPoint.value = null
+  closeJobTimes()
   try {
     overview.value = await api.getAiOverview(period.value)
     costs.value = await api.getAiCosts(costPeriodFor(period.value))
@@ -66,6 +70,37 @@ async function load() {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
+  }
+}
+
+function closeJobTimes() {
+  jobTimes.value = null
+  jobTimesError.value = null
+  jobTimesLoading.value = false
+}
+
+async function openJobTimes(row: AiOverview['ranking'][number]) {
+  if (!row.completed_job_count) return
+  jobTimesLoading.value = true
+  jobTimesError.value = null
+  jobTimes.value = {
+    period: period.value,
+    provider_id: row.provider_id || 'openrouter',
+    model_id: row.model_id,
+    average_job_duration_seconds: row.average_job_duration_seconds ?? null,
+    completed_job_count: row.completed_job_count,
+    items: [],
+  }
+  try {
+    jobTimes.value = await api.getAiModelJobTimes({
+      period: period.value,
+      provider_id: row.provider_id,
+      model_id: row.model_id,
+    })
+  } catch (err) {
+    jobTimesError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    jobTimesLoading.value = false
   }
 }
 
@@ -176,7 +211,9 @@ onMounted(load)
       <template v-else>
         <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
           <h2 class="font-display text-lg font-bold">Model performance</h2>
-          <p class="mt-1 text-xs text-ink-500">Display only. User priority still controls routing.</p>
+          <p class="mt-1 text-xs text-ink-500">
+            Display only. User priority still controls routing. Mean time is the average wall-clock duration of successful finished translation jobs.
+          </p>
           <div class="mt-4 overflow-x-auto">
             <table class="min-w-full text-left text-sm">
               <thead class="text-xs uppercase text-ink-500">
@@ -188,6 +225,7 @@ onMounted(load)
                   <th class="py-2 pr-3">Clean</th>
                   <th class="py-2 pr-3">Cost</th>
                   <th class="py-2 pr-3">Speed</th>
+                  <th class="py-2 pr-3" title="Wall-clock time of successful finished translation jobs">Mean time</th>
                   <th class="py-2 pr-3">Samples</th>
                 </tr>
               </thead>
@@ -213,6 +251,20 @@ onMounted(load)
                   <td class="py-2 pr-3">{{ formatPct(row.clean_success_rate) }}</td>
                   <td class="py-2 pr-3">{{ formatUsd(row.average_cost_per_clean_success_usd, 4) }}</td>
                   <td class="py-2 pr-3">{{ formatLatency(row.average_latency_ms) }}</td>
+                  <td class="py-2 pr-3">
+                    <button
+                      v-if="row.completed_job_count"
+                      type="button"
+                      class="font-medium text-accent hover:underline"
+                      @click="openJobTimes(row)"
+                    >
+                      {{ formatDuration(row.average_job_duration_seconds) }}
+                      <span class="text-xs font-normal text-ink-500">
+                        · {{ row.completed_job_count }}
+                      </span>
+                    </button>
+                    <span v-else class="text-ink-400">—</span>
+                  </td>
                   <td class="py-2 pr-3">{{ row.sample_count }} · {{ row.confidence }}</td>
                 </tr>
               </tbody>
@@ -267,5 +319,78 @@ onMounted(load)
         </div>
       </template>
     </template>
+
+    <div
+      v-if="jobTimes"
+      class="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/50 p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="job-times-title"
+      @click.self="closeJobTimes"
+    >
+      <div
+        class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 id="job-times-title" class="break-words font-display text-lg font-bold">
+              Mean time · {{ jobTimes.model_id }}
+            </h2>
+            <p class="mt-1 text-sm text-ink-500">
+              {{ formatDuration(jobTimes.average_job_duration_seconds) }}
+              across {{ jobTimes.completed_job_count }}
+              successful finished translation {{ jobTimes.completed_job_count === 1 ? 'job' : 'jobs' }}.
+              <span v-if="jobTimes.items.length < jobTimes.completed_job_count">
+                Showing the {{ jobTimes.items.length }} most recent.
+              </span>
+            </p>
+          </div>
+          <button
+            type="button"
+            class="rounded-md px-2 py-1 text-sm text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800"
+            @click="closeJobTimes"
+          >
+            Close
+          </button>
+        </div>
+        <p v-if="jobTimesError" class="mt-4 text-sm text-red-700 dark:text-red-300">{{ jobTimesError }}</p>
+        <p v-else-if="jobTimesLoading" class="mt-4 text-sm text-ink-500">Loading jobs…</p>
+        <div v-else class="mt-4 min-h-0 flex-1 overflow-auto">
+          <table class="min-w-full text-left text-sm">
+            <thead class="sticky top-0 bg-white text-xs uppercase text-ink-500 dark:bg-ink-900">
+              <tr>
+                <th class="py-2 pr-3">Completed</th>
+                <th class="py-2 pr-3">Media</th>
+                <th class="py-2 pr-3">Duration</th>
+                <th class="py-2 pr-3">Trigger</th>
+                <th class="py-2">Job</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in jobTimes.items"
+                :key="item.job_id"
+                class="border-t border-ink-100 dark:border-ink-800"
+              >
+                <td class="py-2 pr-3 whitespace-nowrap">
+                  {{ item.completed_at ? formatDateTime(item.completed_at) : '—' }}
+                </td>
+                <td class="py-2 pr-3">{{ item.media_title || `Job #${item.job_id}` }}</td>
+                <td class="py-2 pr-3 whitespace-nowrap">{{ formatDuration(item.duration_seconds) }}</td>
+                <td class="py-2 pr-3">{{ item.trigger_type }}</td>
+                <td class="py-2">
+                  <RouterLink class="font-medium text-accent hover:underline" :to="`/jobs/${item.job_id}`">
+                    #{{ item.job_id }}
+                  </RouterLink>
+                </td>
+              </tr>
+              <tr v-if="!jobTimes.items.length">
+                <td class="py-3 text-ink-500" colspan="5">No completed jobs in this period.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

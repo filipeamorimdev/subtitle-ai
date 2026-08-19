@@ -19,6 +19,7 @@ import type {
   Settings,
   SettingsUpdate,
   AiOverview,
+  AiModelJobTimes,
   AiModelsPayload,
   AiUsagePage,
   AiCosts,
@@ -88,6 +89,12 @@ export const api = {
     request<AutomationScanResult>('/api/automation/run', { method: 'POST' }),
   getAiOverview: (period = 'month') =>
     request<AiOverview>(`/api/ai/overview?period=${encodeURIComponent(period)}`),
+  getAiModelJobTimes: (params: { period?: string; provider_id?: string; model_id: string }) => {
+    const search = new URLSearchParams({ model_id: params.model_id })
+    if (params.period) search.set('period', params.period)
+    if (params.provider_id) search.set('provider_id', params.provider_id)
+    return request<AiModelJobTimes>(`/api/ai/overview/job-times?${search}`)
+  },
   getAiUsage: (params: Record<string, string | number | undefined> = {}) => {
     const search = new URLSearchParams()
     Object.entries(params).forEach(([key, value]) => {

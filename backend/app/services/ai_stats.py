@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID
 from app.db.models import (
     AiRoutingEventRow,
     AiUsageRecordRow,
@@ -63,6 +64,31 @@ def _cost_expr():
         AiUsageRecordRow.estimated_cost_micro_usd,
         0,
     )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _completed_job_duration_seconds(row: JobRow) -> float | None:
+    start = _as_utc(row.started_at) or _as_utc(row.created_at)
+    end = _as_utc(row.completed_at)
+    if start is None or end is None or end < start:
+        return None
+    return round((end - start).total_seconds(), 3)
+
+
+def _job_model_keys(provider_id: str, model_id: str) -> list[str]:
+    keys = [f"{provider_id}|{model_id}", model_id]
+    base = batch_base_model(model_id)
+    if base != model_id:
+        keys.append(f"{provider_id}|{base}")
+        keys.append(base)
+    return keys
 
 
 class AiStatsService:
@@ -232,6 +258,7 @@ class AiStatsService:
         previous = self._aggregate(prev_start, prev_end) if prev_start else None
         budget = AiBudgetService(self.db).status()
         ranking = AiRankingService(self.db).rank_models(start=start, end=end)
+        job_times = self.completed_job_duration_by_model(start, end)
         prefs = list_preferences(self.db, enabled_only=False)
         priority_by_model: dict[str, int] = {}
         for pref in prefs:
@@ -328,6 +355,14 @@ class AiStatsService:
                     "technical_failure_rate": r.technical_failure_rate,
                     "average_cost_per_clean_success_usd": r.average_cost_per_clean_success_usd,
                     "average_latency_ms": r.average_latency_ms,
+                    **(
+                        job_times.get(f"{r.provider_id}|{r.model_id}")
+                        or job_times.get(r.model_id)
+                        or {
+                            "average_job_duration_seconds": None,
+                            "completed_job_count": 0,
+                        }
+                    ),
                     "sample_count": r.sample_count,
                     "confidence": r.confidence,
                     "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None,
@@ -581,6 +616,118 @@ class AiStatsService:
             "items": items,
             "by_model": breakdown,
             "totals": self._aggregate(current_start, current_end),
+        }
+
+    def _completed_translate_jobs(
+        self,
+        start: datetime | None,
+        end: datetime | None,
+        *,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[tuple[JobRow, float]]:
+        query = select(JobRow).where(
+            JobRow.status == "completed",
+            JobRow.job_kind == "translate",
+            JobRow.completed_at.is_not(None),
+        )
+        if start is not None:
+            query = query.where(JobRow.completed_at >= start)
+        if end is not None:
+            query = query.where(JobRow.completed_at < end)
+        if model_id:
+            base = batch_base_model(model_id)
+            if base != model_id:
+                query = query.where(JobRow.model.in_([model_id, base]))
+            else:
+                query = query.where(JobRow.model == model_id)
+        if provider_id:
+            query = query.where(
+                func.coalesce(JobRow.provider_id, OPENROUTER_PROVIDER_ID) == provider_id
+            )
+        items: list[tuple[JobRow, float]] = []
+        for job in self.db.scalars(query).all():
+            if not (job.model or "").strip():
+                continue
+            duration = _completed_job_duration_seconds(job)
+            if duration is None:
+                continue
+            items.append((job, duration))
+        return items
+
+    def completed_job_duration_by_model(
+        self,
+        start: datetime | None,
+        end: datetime | None,
+    ) -> dict[str, dict[str, Any]]:
+        buckets: dict[str, list[float]] = {}
+        providers: dict[str, tuple[str, str]] = {}
+        for job, duration in self._completed_translate_jobs(start, end):
+            provider_id = getattr(job, "provider_id", None) or OPENROUTER_PROVIDER_ID
+            model_id = job.model
+            primary = f"{provider_id}|{model_id}"
+            buckets.setdefault(primary, []).append(duration)
+            providers[primary] = (provider_id, model_id)
+
+        stats: dict[str, dict[str, Any]] = {}
+        for primary, durations in buckets.items():
+            payload = {
+                "average_job_duration_seconds": sum(durations) / len(durations),
+                "completed_job_count": len(durations),
+            }
+            provider_id, model_id = providers[primary]
+            for key in _job_model_keys(provider_id, model_id):
+                existing = stats.get(key)
+                if existing is None or existing["completed_job_count"] < payload["completed_job_count"]:
+                    stats[key] = payload
+        return stats
+
+    def completed_jobs_for_model(
+        self,
+        *,
+        period: str = "month",
+        provider_id: str | None = None,
+        model_id: str,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        start, end, _, _ = period_bounds(period)
+        provider = provider_id or OPENROUTER_PROVIDER_ID
+        rows = self._completed_translate_jobs(
+            start, end, provider_id=provider, model_id=model_id
+        )
+        rows.sort(
+            key=lambda pair: (
+                _as_utc(pair[0].completed_at) or datetime.min.replace(tzinfo=timezone.utc),
+                pair[0].id,
+            ),
+            reverse=True,
+        )
+        durations = [duration for _, duration in rows]
+        average = (sum(durations) / len(durations)) if durations else None
+        cap = min(500, max(1, limit))
+        items = []
+        for job, duration in rows[:cap]:
+            items.append(
+                {
+                    "job_id": job.id,
+                    "media_title": job.media_title,
+                    "status": job.status,
+                    "duration_seconds": duration,
+                    "started_at": job.started_at.isoformat() if job.started_at else None,
+                    "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "provider_id": getattr(job, "provider_id", None) or OPENROUTER_PROVIDER_ID,
+                    "model_id": job.model,
+                    "trigger_type": job.trigger_type,
+                }
+            )
+        return {
+            "period": period,
+            "provider_id": provider,
+            "model_id": model_id,
+            "average_job_duration_seconds": average,
+            "completed_job_count": len(rows),
+            "items": items,
         }
 
     def recent_routing(self, *, limit: int = 20) -> list[dict[str, Any]]:

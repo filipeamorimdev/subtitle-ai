@@ -21,3 +21,8 @@ export function taskProgressPct(task: LocalizationTask) {
   const job = latestActiveJob(task)
   return Math.round(Math.min(100, Math.max(0, job?.progress ?? 0)))
 }
+
+export function taskElapsedStart(task: LocalizationTask) {
+  const job = latestActiveJob(task)
+  return job?.started_at || task.started_at || job?.created_at || task.created_at
+}

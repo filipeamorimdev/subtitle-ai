@@ -551,6 +551,8 @@ export interface AiOverview {
     technical_failure_rate?: number | null
     average_cost_per_clean_success_usd: number | null
     average_latency_ms: number | null
+    average_job_duration_seconds?: number | null
+    completed_job_count?: number
     sample_count: number
     confidence: string
     last_used_at: string | null
@@ -567,6 +569,26 @@ export interface AiOverview {
     next_model_id: string | null
     failure_category: string | null
     detail: string | null
+  }>
+}
+
+export interface AiModelJobTimes {
+  period: string
+  provider_id: string
+  model_id: string
+  average_job_duration_seconds: number | null
+  completed_job_count: number
+  items: Array<{
+    job_id: number
+    media_title: string | null
+    status: string
+    duration_seconds: number
+    started_at: string | null
+    completed_at: string | null
+    created_at: string | null
+    provider_id: string
+    model_id: string
+    trigger_type: string
   }>
 }
 

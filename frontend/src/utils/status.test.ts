@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { canRetryTask, isActiveTaskStatus, isUnresolvedFailedTask, latestTasksByLanguage, taskStatusLabel } from './status'
-import { latestActiveJob, taskProgressPct } from './taskProgress'
+import { latestActiveJob, taskElapsedStart, taskProgressPct } from './taskProgress'
 import type { LocalizationTask } from '../types'
 
 function task(partial: Partial<LocalizationTask>): LocalizationTask {
@@ -70,5 +70,25 @@ describe('task progress helpers', () => {
     })
     expect(latestActiveJob(row)?.id).toBe(2)
     expect(taskProgressPct(row)).toBe(40)
+  })
+})
+
+describe('task elapsed start', () => {
+  it('prefers the in-flight job start', () => {
+    const row = task({
+      started_at: '2026-08-19 10:00:00',
+      created_at: '2026-08-19 09:00:00',
+      executions: [
+        {
+          id: 2,
+          status: 'processing',
+          progress: 40,
+          job_kind: 'translate',
+          started_at: '2026-08-19 10:05:00',
+          created_at: '2026-08-19 10:04:00',
+        } as never,
+      ],
+    })
+    expect(taskElapsedStart(row)).toBe('2026-08-19 10:05:00')
   })
 })

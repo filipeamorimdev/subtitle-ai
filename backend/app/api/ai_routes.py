@@ -87,6 +87,20 @@ def ai_overview(
     return AiStatsService(db).overview(period=period)
 
 
+@router.get("/overview/job-times")
+def ai_overview_job_times(
+    period: str = Query(default="month"),
+    model_id: str = Query(...),
+    provider_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    return AiStatsService(db).completed_jobs_for_model(
+        period=period,
+        provider_id=provider_id,
+        model_id=model_id,
+    )
+
+
 @router.get("/usage")
 def ai_usage(
     period: str = Query(default="30d"),

@@ -5,13 +5,16 @@ import { useRoute, useRouter } from 'vue-router'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
+import { onLiveEvent } from '../stores/events'
 import type { Candidate, LocalizationTask, MediaItem, MediaRef } from '../types'
+import { formatElapsedClock } from '../utils/datetime'
 import {
   candidateExternalId,
   candidateToMediaRef,
   mediaHref,
 } from '../utils/mediaNav'
 import { isActiveTaskStatus, languageChipClass, latestTasksByLanguage, taskStatusLabel } from '../utils/status'
+import { latestActiveJob, taskElapsedStart, taskProgressPct } from '../utils/taskProgress'
 
 type MediaFilter = 'all' | 'needs-work' | 'in-progress' | 'failed' | 'completed'
 type RowKind = 'in-progress' | 'needs-work' | 'failed' | 'completed' | 'idle'
@@ -56,7 +59,11 @@ const requestLanguage = ref<string | null>(null)
 const selectedKeys = ref<Set<string>>(new Set())
 const localizing = ref(false)
 const openingKey = ref<string | null>(null)
+const now = ref(Date.now())
+const activeTasksDetailed = ref<LocalizationTask[]>([])
 let timer: number | undefined
+let tick: number | undefined
+let stopLive: (() => void) | undefined
 
 function parseFilter(value: unknown): MediaFilter {
   const raw = Array.isArray(value) ? value[0] : value
@@ -139,7 +146,8 @@ const rows = computed(() => {
     index(row)
   }
 
-  for (const task of localizationTasks.value) {
+  const detailedById = new Map(activeTasksDetailed.value.map((task) => [task.id, task]))
+  for (const task of localizationTasks.value.map((task) => detailedById.get(task.id) || task)) {
     let row = byId.get(task.media_item_id)
     if (!row) {
       row = emptyRow({
@@ -237,6 +245,19 @@ function rowMeta(row: MediaRow) {
   return parts.join(' · ')
 }
 
+function runningTask(row: MediaRow): LocalizationTask | null {
+  const active = [...latestTasksByLanguage(row.tasks).values()].filter((task) =>
+    isActiveTaskStatus(task.status),
+  )
+  if (!active.length) return null
+  return (
+    active.find((task) => {
+      const job = latestActiveJob(task)
+      return job?.status === 'pending' || job?.status === 'processing'
+    }) || active[0]
+  )
+}
+
 const KIND_ORDER: Record<RowKind, number> = {
   'in-progress': 0,
   'needs-work': 1,
@@ -266,6 +287,19 @@ const filteredRows = computed(() => {
       if (kindDiff !== 0) return kindDiff
       return a.title.localeCompare(b.title)
     })
+})
+
+const progressByKey = computed(() => {
+  const map: Record<string, { pct: number; elapsed: string }> = {}
+  for (const row of filteredRows.value) {
+    const task = runningTask(row)
+    if (!task) continue
+    map[row.key] = {
+      pct: taskProgressPct(task),
+      elapsed: formatElapsedClock(taskElapsedStart(task), now.value),
+    }
+  }
+  return map
 })
 
 const counts = computed(() => {
@@ -299,6 +333,18 @@ const selectedRows = computed(() =>
 
 const empty = computed(() => !loading.value && !filteredRows.value.length)
 
+async function loadActiveDetails() {
+  try {
+    activeTasksDetailed.value = await api.getLocalizationTasks({
+      active_only: true,
+      include_detail: true,
+      limit: 100,
+    })
+  } catch {
+    /* keep previous */
+  }
+}
+
 async function load(refreshCandidates = false, silent = false) {
   if (!silent) loading.value = true
   error.value = null
@@ -306,7 +352,7 @@ async function load(refreshCandidates = false, silent = false) {
     const candidatePromise = refreshCandidates
       ? store.loadCandidates()
       : store.loadCandidatesCached().catch(() => store.loadCandidates())
-    await Promise.all([store.loadMediaList(), candidatePromise])
+    await Promise.all([store.loadMediaList(), candidatePromise, loadActiveDetails()])
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -420,13 +466,22 @@ onMounted(async () => {
   syncFilterFromRoute()
   await store.loadSettings().catch(() => undefined)
   await load(false, mediaListLoaded.value)
+  tick = window.setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
   timer = window.setInterval(() => {
     load(false, true).catch(() => undefined)
   }, 8000)
+  stopLive = onLiveEvent((event) => {
+    if (event.type === 'hello') return
+    loadActiveDetails().catch(() => undefined)
+  })
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  if (tick) window.clearInterval(tick)
+  stopLive?.()
 })
 </script>
 
@@ -583,8 +638,16 @@ onUnmounted(() => {
               </span>
             </div>
           </div>
+          <p
+            v-if="progressByKey[row.key]"
+            class="shrink-0 text-xs tabular-nums text-ink-500"
+          >
+            <span class="font-medium text-ink-700 dark:text-ink-200">{{ progressByKey[row.key].pct }}%</span>
+            <span class="mx-1.5 text-ink-300 dark:text-ink-600">·</span>
+            <span>{{ progressByKey[row.key].elapsed }}</span>
+          </p>
           <button
-            v-if="rowKind(row) === 'needs-work'"
+            v-else-if="rowKind(row) === 'needs-work'"
             type="button"
             class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white"
             @click="openRequest(row)"
