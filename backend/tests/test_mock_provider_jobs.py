@@ -213,7 +213,6 @@ async def test_mock_provider_full_localization_task_path(mock_job_env, monkeypat
     db = mock_job_env["db"]
     mock = mock_job_env["mock"]
     media_path = mock_job_env["media"] / "Example.mkv"
-    source = mock_job_env["source"]
 
     present = {"ok": False}
 

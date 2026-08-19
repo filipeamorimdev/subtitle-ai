@@ -6,7 +6,7 @@ States: pending | active | done | failed | skipped.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 CHECKPOINT_IDS: tuple[str, ...] = (
     "source",

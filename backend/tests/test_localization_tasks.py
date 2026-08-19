@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import httpx
 import pytest
@@ -11,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
-from app.api.schemas import JobCreate, PathMappingIn, SettingsUpdate
+from app.api.schemas import PathMappingIn, SettingsUpdate
 from app.core.config import get_app_config
 from app.core.secrets import load_or_create_fernet
 from app.db import Base
@@ -537,7 +536,7 @@ async def test_api_languages_and_tasks(loc_env, monkeypatch):
     client = TestClient(create_app())
     langs = client.get("/api/languages")
     assert langs.status_code == 200
-    assert any(l["code"] == "pt-PT" for l in langs.json())
+    assert any(lang["code"] == "pt-PT" for lang in langs.json())
 
     search = client.get("/api/media/search", params={"q": "matrix"})
     assert search.status_code == 200

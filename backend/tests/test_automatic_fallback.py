@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.api.schemas import JobCreate, PathMappingIn, SettingsUpdate
+from app.api.schemas import PathMappingIn, SettingsUpdate
 from app.core.config import get_app_config
 from app.core.secrets import load_or_create_fernet
 from app.db import Base
@@ -384,7 +384,7 @@ async def test_translate_verify_success_and_failure(auto_env, monkeypatch):
 
     scan = await FallbackPlanner(db).scan_once()
     assert scan.created_count == 1
-    job = db.scalars(select(JobRow).where(JobRow.job_kind == "translate")).one()
+    assert db.scalars(select(JobRow).where(JobRow.job_kind == "translate")).one()
     service = JobService(db)
     claimed = service.claim_next_job("translate")
     assert claimed is not None

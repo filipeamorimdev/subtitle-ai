@@ -7,7 +7,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CandidateOut, ExtractCreate, JobCreate
+from app.api.schemas import ExtractCreate, JobCreate
 from app.core.logging import get_logger
 from app.db.models import JobRow, LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
@@ -26,7 +26,7 @@ from app.localization.verification import (
     BazarrVerificationService,
 )
 from app.media.service import MediaItemService
-from app.services.candidates import CandidateService, candidate_key, to_bazarr_code2
+from app.services.candidates import CandidateService, candidate_key
 from app.services.settings import SettingsService
 from app.subtitles.embedded import pick_extractable_track, probe_subtitle_tracks
 from app.subtitles.filenames import (

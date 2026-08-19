@@ -30,7 +30,7 @@ from app.db.models import LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrError
 from app.jobs.service import JobService, job_to_out
 from app.jobs.worker import worker
-from app.languages import LanguageNormalizationError, list_featured_languages, list_languages, normalize_language
+from app.languages import LanguageNormalizationError, list_featured_languages, list_languages
 from app.localization.planner import TaskPlanner
 from app.localization.service import (
     ActiveTaskExistsError,

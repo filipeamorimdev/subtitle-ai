@@ -379,7 +379,6 @@ async def test_model(payload: AiModelTestIn, db: Session = Depends(get_db)) -> C
     accounts = ProviderAccountService(db)
     if not accounts.is_configured(OPENROUTER_PROVIDER_ID):
         return ConnectionTestResult(ok=False, message="OpenRouter API key is not configured.")
-    public = SettingsService(db).get_public()
     catalog = ModelCatalogService(db)
     provider_id = OPENROUTER_PROVIDER_ID
     info = catalog.get_model(provider_id, payload.model_id)

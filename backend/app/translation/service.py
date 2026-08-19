@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from app.ai.errors import AIProviderError
-from app.ai.models import AIResponse, CAPABILITY_BATCH
+from app.ai.models import CAPABILITY_BATCH
 from app.core.logging import get_logger
 from app.subtitles.markup import protect_markup, restore_markup
 from app.subtitles.models import SubtitleBlock, SubtitleDocument
@@ -18,7 +18,7 @@ from app.translation.prompts import (
     build_translate_user_message,
     parse_batch_response,
 )
-from app.translation.openrouter.client import BatchChatRequest, OpenRouterError, batch_base_model, is_batch_model
+from app.translation.openrouter.client import BatchChatRequest, batch_base_model, is_batch_model
 
 logger = get_logger("translation")
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from app.api.schemas import AutomationScanResult, AutomationStatusOut
 from app.core.logging import get_logger

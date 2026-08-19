@@ -153,6 +153,6 @@ def test_v03_alpha1_upgrade_adds_localization_tables(tmp_path, monkeypatch):
 
     langs = client.get("/api/languages")
     assert langs.status_code == 200
-    assert any(l["code"] == "pt-PT" for l in langs.json())
+    assert any(lang["code"] == "pt-PT" for lang in langs.json())
 
     get_app_config.cache_clear()
