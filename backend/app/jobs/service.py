@@ -1953,6 +1953,33 @@ class JobService:
         if not row:
             raise ValueError("Job not found")
         kind = getattr(row, "job_kind", None) or "translate"
+        if kind == "dub":
+            # Retry should re-create the same dubbing job (not translate).
+            # We reconstruct a lightweight MediaItemRow from the job row fields.
+            from app.db.models import MediaItemRow
+
+            media = MediaItemRow(
+                provider_id="manual",
+                external_id=f"job:{row.id}",
+                media_type=row.media_type or "movie",
+                title=row.media_title or "",
+                year=None,
+                season=None,
+                episode=None,
+                episode_title=None,
+                path=row.media_path,
+                bazarr_movie_id=row.bazarr_movie_id,
+                bazarr_series_id=row.bazarr_series_id,
+                bazarr_episode_id=row.bazarr_episode_id,
+                parent_media_id=None,
+                metadata_json=None,
+            )
+            return await self.create_dub_job(
+                media,
+                target_language=row.target_language,
+                trigger_type=getattr(row, "trigger_type", "manual") or "manual",
+                task_id=getattr(row, "task_id", None),
+            )
         if kind == "extract":
             if not row.candidate_key:
                 raise ValueError("Extract job is missing candidate key")

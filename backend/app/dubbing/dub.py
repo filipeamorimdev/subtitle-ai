@@ -14,6 +14,7 @@ import math
 import re
 import shutil
 import tempfile
+import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -30,6 +31,37 @@ TAG_RE = re.compile(r"</?(?:i|b|u)>", flags=re.IGNORECASE)
 
 class DubError(Exception):
     pass
+
+
+async def ensure_piper_voice_available(
+    *,
+    voice_model: str,
+    voices_dir: Path,
+    is_cancelled: Callable[[], bool],
+) -> None:
+    """Ensure Piper voice files exist under `voices_dir`.
+
+    `piper-tts` does not automatically download voices when you pass
+    `--model <voice_name>`. When Piper cannot find a voice it recommends
+    running `piper.download_voices`.
+    """
+    voices_dir.mkdir(parents=True, exist_ok=True)
+
+    # Quick presence check: voice files are typically named like
+    # "<lang>-<voice>-<quality>.onnx" (same identifier we pass to piper).
+    try:
+        if any(voices_dir.glob(f"{voice_model}*")):
+            return
+    except OSError:
+        # If glob fails for some reason, fall back to downloader.
+        pass
+
+    logger.info("Downloading Piper voice model=%s into %s", voice_model, voices_dir)
+    await run_process_checked(
+        [sys.executable, "-m", "piper.download_voices", "--download-dir", str(voices_dir), voice_model],
+        timeout_s=1800.0,
+        is_cancelled=is_cancelled,
+    )
 
 
 def clean_text_for_tts(text: str) -> str:
@@ -298,6 +330,11 @@ async def dub_media_from_srt_to_mkv(
     event_log.record(event="source_srt", path=str(source_srt), cue_count=total)
 
     voice_model = voice_model or resolve_voice_model_for_language(target_language)
+    await ensure_piper_voice_available(
+        voice_model=voice_model,
+        voices_dir=voices_dir,
+        is_cancelled=is_cancelled,
+    )
 
     with tempfile.TemporaryDirectory(prefix="subtitle-ai-dub-") as tmp:
         tmp_dir = Path(tmp)
