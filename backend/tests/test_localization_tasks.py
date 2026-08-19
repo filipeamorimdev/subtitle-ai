@@ -103,6 +103,8 @@ def test_task_state_transitions():
     assert_transition("requested", "planning")
     assert_transition("processing", "verifying")
     assert_transition("verifying", "completed")
+    assert_transition("failed", "completed")
+    assert_transition("blocked", "completed")
     with pytest.raises(InvalidTaskTransition):
         assert_transition("completed", "processing")
 
@@ -404,6 +406,66 @@ async def test_planner_completes_when_target_exists(loc_env, monkeypatch):
     planned = await TaskPlanner(db).plan(task.id)
     assert planned is not None
     assert planned.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_planner_completes_failed_task_when_target_exists(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media_path = media_dir / "The Matrix.mkv"
+    target = media_dir / "The Matrix.pt-PT.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\nOlá\n\n", encoding="utf-8")
+
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_path),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "failed", error_code="failed", error_message="Translation failed.")
+
+    async def fake_bazarr_present(self, media_row, target_language):
+        return True
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_bazarr_present)
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "completed"
+    assert planned.error_code is None
+    assert planned.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_planner_leaves_failed_task_when_target_missing(loc_env, monkeypatch):
+    db, tmp_path, media_dir, source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path=str(media_dir / "The Matrix.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "failed", error_code="failed", error_message="Translation failed.")
+
+    async def fake_bazarr_present(self, media_row, target_language):
+        return False
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_bazarr_present)
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "failed"
+    assert planned.error_code == "failed"
+    assert not db.scalars(select(JobRow)).all()
 
 
 @pytest.mark.asyncio

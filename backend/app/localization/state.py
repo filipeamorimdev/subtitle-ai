@@ -59,8 +59,8 @@ ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "awaiting_approval": frozenset({"verifying", "processing", "cancelled", "failed"}),
     "verifying": frozenset({"completed", "failed", "cancelled", "processing", "awaiting_approval"}),
     "completed": frozenset(),
-    "failed": frozenset({"planning", "requested", "awaiting_approval"}),  # retry re-enters planning
-    "blocked": frozenset({"planning", "requested"}),
+    "failed": frozenset({"planning", "requested", "awaiting_approval", "completed"}),
+    "blocked": frozenset({"planning", "requested", "completed"}),
     "cancelled": frozenset(),
 }
 

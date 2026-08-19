@@ -11,7 +11,7 @@ import {
   candidateToMediaRef,
   mediaHref,
 } from '../utils/mediaNav'
-import { isActiveTaskStatus, languageChipClass, taskStatusLabel } from '../utils/status'
+import { isActiveTaskStatus, languageChipClass, latestTasksByLanguage, taskStatusLabel } from '../utils/status'
 
 type MediaFilter = 'all' | 'needs-work' | 'in-progress' | 'failed' | 'completed'
 type RowKind = 'in-progress' | 'needs-work' | 'failed' | 'completed' | 'idle'
@@ -180,27 +180,40 @@ const rows = computed(() => {
 })
 
 function rowKind(row: MediaRow): RowKind {
-  if (row.tasks.some((task) => isActiveTaskStatus(task.status))) return 'in-progress'
-  if (row.tasks.some((task) => task.status === 'failed')) return 'failed'
-  if (row.candidate?.reason_code === 'target_exists') return 'completed'
+  const latest = [...latestTasksByLanguage(row.tasks).values()]
+  if (latest.some((task) => isActiveTaskStatus(task.status))) return 'in-progress'
+
+  const targetLang = row.candidate?.target_language
+  const targetExists = row.candidate?.reason_code === 'target_exists'
+  const unresolvedFailed = latest.some((task) => {
+    if (task.status !== 'failed') return false
+    if (targetExists && task.target_language_code === targetLang) return false
+    return true
+  })
+  if (unresolvedFailed) return 'failed'
+  if (targetExists) return 'completed'
   // Cancelled/blocked requests are still missing subtitles. Without a Bazarr
   // wanted candidate they used to fall through to `idle` and vanish from Needs work.
-  if (row.tasks.some((task) => task.status === 'cancelled' || task.status === 'blocked')) {
+  if (latest.some((task) => task.status === 'cancelled' || task.status === 'blocked')) {
     return 'needs-work'
   }
   if (row.candidate && row.candidate.reason_code !== 'target_exists') return 'needs-work'
-  if (row.tasks.some((task) => task.status === 'completed')) return 'completed'
+  if (latest.some((task) => task.status === 'completed')) return 'completed'
   return 'idle'
 }
 
 function rowLanguages(row: MediaRow): LanguageChip[] {
   const map = new Map<string, LanguageChip>()
-  for (const task of row.tasks) {
+  for (const task of latestTasksByLanguage(row.tasks).values()) {
+    const available =
+      task.status === 'completed' ||
+      (row.candidate?.reason_code === 'target_exists' &&
+        task.target_language_code === row.candidate.target_language)
     map.set(task.target_language_code, {
       code: task.target_language_code,
       name: task.target_language_name,
-      status: task.status,
-      available: task.status === 'completed',
+      status: available && task.status === 'failed' ? 'completed' : task.status,
+      available,
     })
   }
   if (row.candidate && !map.has(row.candidate.target_language)) {

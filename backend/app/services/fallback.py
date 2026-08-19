@@ -309,7 +309,7 @@ class FallbackPlanner:
             self.db.commit()
             return None, "wait_grace"
         if action == "none":
-            # Target exists / nothing to do — complete any active automatic task.
+            # Target exists / nothing to do — complete active, failed, or blocked tasks.
             if candidate.reason_code == "target_exists":
                 try:
                     media = MediaItemService(self.db).upsert_from_candidate_fields(
@@ -322,9 +322,11 @@ class FallbackPlanner:
                     )
                     language = normalize_language(candidate.target_language)
                     task_svc = LocalizationTaskService(self.db)
-                    active = task_svc.find_active(media.id, language.code, "subtitles")
-                    if active is not None:
-                        await TaskPlanner(self.db).plan(active.id)
+                    planner = TaskPlanner(self.db)
+                    for task in task_svc.list_unresolved_for_media(
+                        media.id, language.code, "subtitles"
+                    ):
+                        await planner.plan(task.id)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Target-exists reconcile failed: %s", exc)
             observed.last_outcome = "none"
@@ -569,7 +571,7 @@ class FallbackPlanner:
             planner = TaskPlanner(self.db)
             media_svc = MediaItemService(self.db)
             task_svc = LocalizationTaskService(self.db)
-            for task in task_svc.list_active():
+            for task in task_svc.list_unresolved():
                 media = media_svc.get(task.media_item_id)
                 if media is None:
                     continue

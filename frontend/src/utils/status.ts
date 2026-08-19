@@ -1,3 +1,5 @@
+import type { LocalizationTask } from '../types'
+
 const TASK_STATUS_LABELS: Record<string, string> = {
   requested: 'Requested',
   planning: 'Planning',
@@ -22,6 +24,35 @@ const ACTIVE_TASK_STATUSES = new Set([
 
 export function isActiveTaskStatus(status: string) {
   return ACTIVE_TASK_STATUSES.has(status)
+}
+
+type LocalizationTarget = Pick<
+  LocalizationTask,
+  'id' | 'media_item_id' | 'target_language_code' | 'capability' | 'status'
+>
+
+export function latestTasksByLanguage<T extends { id: number; target_language_code: string }>(
+  tasks: T[],
+): Map<string, T> {
+  const map = new Map<string, T>()
+  for (const task of tasks) {
+    const prev = map.get(task.target_language_code)
+    if (!prev || task.id > prev.id) map.set(task.target_language_code, task)
+  }
+  return map
+}
+
+/** True when this failed task is still the latest attempt for that media + language. */
+export function isUnresolvedFailedTask(task: LocalizationTarget, allTasks: LocalizationTarget[]) {
+  if (task.status !== 'failed') return false
+  const same = allTasks.filter(
+    (other) =>
+      other.media_item_id === task.media_item_id &&
+      other.target_language_code === task.target_language_code &&
+      (other.capability || 'subtitles') === (task.capability || 'subtitles'),
+  )
+  const latest = same.reduce((best, other) => (other.id > best.id ? other : best))
+  return latest.id === task.id
 }
 
 export function taskStatusLabel(status: string, substate?: string | null) {

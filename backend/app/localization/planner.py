@@ -73,13 +73,23 @@ class TaskPlanner:
         task = self.tasks.get(task_id)
         if task is None:
             return None
+        if task.status == "awaiting_approval":
+            return task
         if task.status not in ACTIVE_STATUSES and task.status != "planning":
             if task.status in {"failed", "blocked"}:
-                return task
-            return task
-        if task.status == "cancelled":
-            return task
-        if task.status == "awaiting_approval":
+                media = self.media.get(task.media_item_id)
+                if media is None or not await self._target_satisfied(
+                    media, task.target_language_code
+                ):
+                    return task
+                self._clear_verify_failure(task.id)
+                self.tasks.update_checkpoints(task.id, **mark_existing_target_complete())
+                return self.tasks.transition(
+                    task,
+                    "completed",
+                    substate=None,
+                    clear_error=True,
+                )
             return task
 
         media = self.media.get(task.media_item_id)

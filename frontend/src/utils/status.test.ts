@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canRetryTask, isActiveTaskStatus, taskStatusLabel } from './status'
+import { canRetryTask, isActiveTaskStatus, isUnresolvedFailedTask, latestTasksByLanguage, taskStatusLabel } from './status'
 import { latestActiveJob, taskProgressPct } from './taskProgress'
 import type { LocalizationTask } from '../types'
 
@@ -37,6 +37,26 @@ describe('task status helpers', () => {
     expect(taskStatusLabel('awaiting_approval')).toBe('Awaiting approval')
     expect(isActiveTaskStatus('awaiting_approval')).toBe(true)
     expect(canRetryTask('awaiting_approval')).toBe(true)
+  })
+
+  it('hides a failed task after a later successful localization', () => {
+    const failed = task({ id: 1, status: 'failed', media_item_id: 27 })
+    const completed = task({ id: 2, status: 'completed', media_item_id: 27 })
+    expect(isUnresolvedFailedTask(failed, [failed, completed])).toBe(false)
+    expect(isUnresolvedFailedTask(completed, [failed, completed])).toBe(false)
+  })
+
+  it('keeps a failed task when it is still the latest attempt', () => {
+    const completed = task({ id: 1, status: 'completed', media_item_id: 27 })
+    const failed = task({ id: 2, status: 'failed', media_item_id: 27 })
+    expect(isUnresolvedFailedTask(failed, [completed, failed])).toBe(true)
+  })
+
+  it('prefers the latest task per language', () => {
+    const older = task({ id: 1, status: 'failed', target_language_code: 'pt-PT' })
+    const newer = task({ id: 2, status: 'completed', target_language_code: 'pt-PT' })
+    const map = latestTasksByLanguage([newer, older])
+    expect(map.get('pt-PT')?.id).toBe(2)
   })
 })
 

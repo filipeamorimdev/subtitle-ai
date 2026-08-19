@@ -149,18 +149,6 @@ const detailJob = computed<Job | null>(() => {
   return newest(translate.length ? translate : jobs)
 })
 
-const detailKind = computed(() => {
-  if (detailJob.value) {
-    const kind = detailJob.value.job_kind || 'translate'
-    const trigger = detailJob.value.trigger_type === 'automatic' ? 'automatic' : 'manual'
-    return `${kind} (${trigger})`
-  }
-  if (selectedTask.value) {
-    return `${selectedTask.value.capability} (${selectedTask.value.origin})`
-  }
-  return null
-})
-
 const sourceSubtitlePath = computed(
   () =>
     detailJob.value?.source_subtitle_path ||
@@ -469,12 +457,8 @@ onUnmounted(() => {
           <dd class="mt-1 break-all">{{ media.path || '—' }}</dd>
         </div>
         <div>
-          <dt class="text-ink-500">Kind</dt>
-          <dd class="mt-1 capitalize">{{ detailKind || '—' }}</dd>
-        </div>
-        <div>
-          <dt class="text-ink-500">Type</dt>
-          <dd class="mt-1 capitalize">{{ media.media_type }}</dd>
+          <dt class="text-ink-500">Model</dt>
+          <dd class="mt-1">{{ detailModel || '—' }}</dd>
         </div>
         <div>
           <dt class="text-ink-500">Source subtitle</dt>
@@ -483,10 +467,6 @@ onUnmounted(() => {
         <div>
           <dt class="text-ink-500">Target subtitle</dt>
           <dd class="mt-1 break-all">{{ targetSubtitlePath || '—' }}</dd>
-        </div>
-        <div>
-          <dt class="text-ink-500">Model</dt>
-          <dd class="mt-1">{{ detailModel || '—' }}</dd>
         </div>
         <div v-if="detailReason" class="sm:col-span-2">
           <dt class="text-ink-500">Reason</dt>

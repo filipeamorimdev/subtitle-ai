@@ -302,6 +302,34 @@ class LocalizationTaskService:
             ).all()
         )
 
+    def list_unresolved(self, capability: str = "subtitles") -> list[LocalizationTaskRow]:
+        """Active, failed, and blocked tasks that may still need reconcile or retry."""
+        return list(
+            self.db.scalars(
+                select(LocalizationTaskRow).where(
+                    LocalizationTaskRow.capability == capability,
+                    LocalizationTaskRow.status.in_([*ACTIVE_STATUSES, "failed", "blocked"]),
+                )
+            ).all()
+        )
+
+    def list_unresolved_for_media(
+        self,
+        media_item_id: int,
+        language_code: str,
+        capability: str = "subtitles",
+    ) -> list[LocalizationTaskRow]:
+        return list(
+            self.db.scalars(
+                select(LocalizationTaskRow).where(
+                    LocalizationTaskRow.media_item_id == media_item_id,
+                    LocalizationTaskRow.target_language_code == language_code,
+                    LocalizationTaskRow.capability == capability,
+                    LocalizationTaskRow.status.in_([*ACTIVE_STATUSES, "failed", "blocked"]),
+                )
+            ).all()
+        )
+
     def jobs_for_task(self, task_id: int) -> list[JobRow]:
         return list(
             self.db.scalars(

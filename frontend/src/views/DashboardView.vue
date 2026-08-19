@@ -14,7 +14,7 @@ import type {
 } from '../types'
 import { formatDateTime, formatElapsedClock } from '../utils/datetime'
 import { localizationTaskTitle, mediaHref } from '../utils/mediaNav'
-import { isActiveTaskStatus, taskStatusIcon, taskStatusLabel } from '../utils/status'
+import { isActiveTaskStatus, isUnresolvedFailedTask, taskStatusIcon, taskStatusLabel } from '../utils/status'
 import { latestActiveJob, taskProgressPct } from '../utils/taskProgress'
 
 const store = useAppStore()
@@ -68,7 +68,9 @@ function taskElapsed(task: LocalizationTask) {
 }
 
 const failedTasks = computed(() =>
-  tasks.value.filter((t) => t.status === 'failed').slice(0, LIST_LIMIT),
+  tasks.value
+    .filter((t) => isUnresolvedFailedTask(t, tasks.value))
+    .slice(0, LIST_LIMIT),
 )
 
 const completedToday = computed(() => {
@@ -398,7 +400,7 @@ onUnmounted(() => {
           </li>
           <li v-for="task in failedTasks" :key="`fail-${task.id}`" class="py-3 first:pt-0">
             <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(task.media_item_id)">
-              {{ task.media_title || `Media #${task.media_item_id}` }}
+              {{ localizationTaskTitle(task) }}
             </RouterLink>
             <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
               <span>{{ task.target_language_name }}</span>
