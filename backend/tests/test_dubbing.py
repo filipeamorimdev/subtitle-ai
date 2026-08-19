@@ -22,6 +22,14 @@ from app.localization.service import LocalizationTaskService
 from app.media.service import MediaItemService
 from app.services.settings import SettingsService
 from app.subtitles.filenames import build_dub_preview_path
+from app.dubbing.dub import _piper_voice_download_urls
+
+
+def test_piper_voice_download_urls_encode_unicode():
+    _voice_code, model_url, config_url = _piper_voice_download_urls("pt_PT-tugão-medium")
+    assert "tug%C3%A3o" in model_url
+    assert model_url.endswith(".onnx?download=true")
+    assert config_url.endswith(".onnx.json?download=true")
 
 
 @pytest.fixture

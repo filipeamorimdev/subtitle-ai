@@ -14,9 +14,11 @@ import math
 import re
 import shutil
 import tempfile
-import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
+
+import httpx
 
 from app.core.logging import get_logger
 from app.jobs.event_log import JobEventLog
@@ -27,10 +29,64 @@ from app.subtitles.parsers.srt import parse_srt
 logger = get_logger("dubbing")
 
 TAG_RE = re.compile(r"</?(?:i|b|u)>", flags=re.IGNORECASE)
+PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+VOICE_PATTERN = re.compile(
+    r"^(?P<lang_family>[^-]+)_(?P<lang_region>[^-]+)-(?P<voice_name>[^-]+)-(?P<voice_quality>.+)$"
+)
 
 
 class DubError(Exception):
     pass
+
+
+def _piper_voice_download_urls(voice_model: str) -> tuple[str, str, str]:
+    """Build HuggingFace URLs for a Piper voice (.onnx + .onnx.json)."""
+    match = VOICE_PATTERN.match(voice_model.strip())
+    if not match:
+        raise DubError(
+            f"Invalid Piper voice model: {voice_model} "
+            "(expected format like en_US-lessac-medium)"
+        )
+
+    lang_family = match.group("lang_family")
+    lang_code = f"{lang_family}_{match.group('lang_region')}"
+    voice_name = match.group("voice_name")
+    voice_quality = match.group("voice_quality")
+    voice_code = f"{lang_code}-{voice_name}-{voice_quality}"
+
+    def build_url(extension: str) -> str:
+        filename = f"{voice_code}{extension}"
+        segments = [lang_family, lang_code, voice_name, voice_quality, filename]
+        path = "/".join(quote(segment, safe="") for segment in segments)
+        return f"{PIPER_VOICES_BASE}/{path}?download=true"
+
+    return voice_code, build_url(".onnx"), build_url(".onnx.json")
+
+
+async def _download_piper_file(
+    url: str,
+    dest: Path,
+    *,
+    is_cancelled: Callable[[], bool],
+) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = dest.with_suffix(dest.suffix + ".partial")
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(1800.0)) as client:
+            async with client.stream("GET", url) as response:
+                response.raise_for_status()
+                with temp.open("wb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        if is_cancelled():
+                            raise DubError("Dub cancelled")
+                        handle.write(chunk)
+        temp.replace(dest)
+    finally:
+        if temp.exists():
+            try:
+                temp.unlink()
+            except OSError:
+                pass
 
 
 async def ensure_piper_voice_available(
@@ -41,27 +97,23 @@ async def ensure_piper_voice_available(
 ) -> None:
     """Ensure Piper voice files exist under `voices_dir`.
 
-    `piper-tts` does not automatically download voices when you pass
-    `--model <voice_name>`. When Piper cannot find a voice it recommends
-    running `piper.download_voices`.
+    We download directly from HuggingFace with URL-encoded path segments.
+    Piper's bundled `download_voices` helper uses stdlib `urlopen`, which
+    fails on non-ASCII voice names such as ``pt_PT-tugão-medium``.
     """
     voices_dir.mkdir(parents=True, exist_ok=True)
+    voice_code, model_url, config_url = _piper_voice_download_urls(voice_model)
+    model_path = voices_dir / f"{voice_code}.onnx"
+    config_path = voices_dir / f"{voice_code}.onnx.json"
 
-    # Quick presence check: voice files are typically named like
-    # "<lang>-<voice>-<quality>.onnx" (same identifier we pass to piper).
-    try:
-        if any(voices_dir.glob(f"{voice_model}*")):
-            return
-    except OSError:
-        # If glob fails for some reason, fall back to downloader.
-        pass
+    if model_path.is_file() and model_path.stat().st_size > 0 and config_path.is_file():
+        return
 
     logger.info("Downloading Piper voice model=%s into %s", voice_model, voices_dir)
-    await run_process_checked(
-        [sys.executable, "-m", "piper.download_voices", "--download-dir", str(voices_dir), voice_model],
-        timeout_s=1800.0,
-        is_cancelled=is_cancelled,
-    )
+    if not model_path.is_file() or model_path.stat().st_size <= 0:
+        await _download_piper_file(model_url, model_path, is_cancelled=is_cancelled)
+    if not config_path.is_file() or config_path.stat().st_size <= 0:
+        await _download_piper_file(config_url, config_path, is_cancelled=is_cancelled)
 
 
 def clean_text_for_tts(text: str) -> str:
