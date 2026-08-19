@@ -62,7 +62,7 @@ export const api = {
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
   clearJobs: (opts?: {
-    job_kind?: 'translate' | 'extract' | 'request' | 'transcribe'
+    job_kind?: 'translate' | 'extract' | 'request' | 'transcribe' | 'dub'
     status?: 'failed' | 'skipped' | 'cancelled'
   }) =>
     request<ClearDataResult>('/api/settings/clear/jobs', {
@@ -82,6 +82,8 @@ export const api = {
   getJobUsage: (id: number) => request<JobUsage>(`/api/jobs/${id}/usage`),
   retryJob: (id: number) => request<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),
   cancelJob: (id: number) => request<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
+  pauseJob: (id: number) => request<Job>(`/api/jobs/${id}/pause`, { method: 'POST' }),
+  resumeJob: (id: number) => request<Job>(`/api/jobs/${id}/resume`, { method: 'POST' }),
   retryBazarrSync: (id: number) =>
     request<Job>(`/api/jobs/${id}/retry-bazarr-sync`, { method: 'POST' }),
   getAutomationStatus: () => request<AutomationStatus>('/api/automation/status'),
@@ -183,6 +185,11 @@ export const api = {
     request<MediaLocalization>(`/api/media/${id}/localization`),
   transcribeMedia: (id: number, payload?: { target_language?: string }) =>
     request<Job>(`/api/media/${id}/transcribe`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? {}),
+    }),
+  dubMedia: (id: number, payload?: { target_language?: string }) =>
+    request<Job>(`/api/media/${id}/dub`, {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),
     }),

@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.db import release_session_connection
 from app.db.models import JobRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
@@ -104,16 +105,19 @@ class BazarrVerificationService:
     async def rescan_and_verify_job(self, row: JobRow) -> VerificationResult:
         """Job-row variant for the jobs UI / legacy non-task-backed retry."""
         media_like = _JobMediaAdapter(row)
-        ensure_canonical_sidecar(row.target_subtitle_path, row.target_language)
+        job_id = row.id
+        target_language = row.target_language
+        ensure_canonical_sidecar(row.target_subtitle_path, target_language)
         try:
             from app.jobs.bazarr_sync import register_or_rescan
 
             url, key = self.settings.get_bazarr_credentials()
             if not url:
                 raise BazarrError("Bazarr URL is not configured")
-            await register_or_rescan(BazarrClient(url, key), row)
+            release_session_connection(self.db)
+            await register_or_rescan(BazarrClient(url, key), media_like)
         except BazarrError as exc:
-            logger.warning("Bazarr rescan failed job=%s error=%s", row.id, exc)
+            logger.warning("Bazarr rescan failed job=%s error=%s", job_id, exc)
             return VerificationResult(
                 ok=False,
                 present=False,
@@ -127,7 +131,7 @@ class BazarrVerificationService:
                 reason_code="bazarr_verify_failed",
                 message=USER_VERIFY_FAILED,
             )
-        present = await self._bazarr_present(media_like, row.target_language)
+        present = await self._bazarr_present(media_like, target_language)
         if not present:
             return VerificationResult(
                 ok=False,
@@ -181,11 +185,12 @@ class BazarrVerificationService:
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if not bazarr_url:
             raise BazarrError(USER_NOT_CONFIGURED)
-        client = BazarrClient(bazarr_url, bazarr_key)
         media_type = getattr(media, "media_type", None)
         movie_id = getattr(media, "bazarr_movie_id", None)
         episode_id = getattr(media, "bazarr_episode_id", None)
         series_id = getattr(media, "bazarr_series_id", None)
+        release_session_connection(self.db)
+        client = BazarrClient(bazarr_url, bazarr_key)
         if media_type == "movie" and movie_id is not None:
             await client.rescan_movie(movie_id)
         elif episode_id is not None:
@@ -201,11 +206,12 @@ class BazarrVerificationService:
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if not bazarr_url:
             return False
+        media_type = getattr(media, "media_type", None)
+        movie_id = getattr(media, "bazarr_movie_id", None)
+        episode_id = getattr(media, "bazarr_episode_id", None)
+        release_session_connection(self.db)
         client = BazarrClient(bazarr_url, bazarr_key)
         try:
-            media_type = getattr(media, "media_type", None)
-            movie_id = getattr(media, "bazarr_movie_id", None)
-            episode_id = getattr(media, "bazarr_episode_id", None)
             if media_type == "movie" and movie_id is not None:
                 detail = await client.get_movie(movie_id)
             elif episode_id is not None:
@@ -228,3 +234,5 @@ class _JobMediaAdapter:
         self.bazarr_episode_id = row.bazarr_episode_id
         self.bazarr_series_id = row.bazarr_series_id
         self.id = row.id
+        self.target_subtitle_path = row.target_subtitle_path
+        self.target_language = row.target_language

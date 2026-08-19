@@ -21,6 +21,7 @@ from app.api.schemas import (
     MediaRefOut,
     TaskAiSummaryOut,
     TranscribeCreate,
+    DubCreate,
     GlossaryEntryIn,
     GlossaryOut,
     GlossaryEntryOut,
@@ -84,7 +85,7 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
         return progress_steps(read_checkpoints(task.metadata_json))
 
     kinds_done = {j.job_kind for j in jobs if j.status == "completed"}
-    kinds_active = {j.job_kind for j in jobs if j.status in {"pending", "processing"}}
+    kinds_active = {j.job_kind for j in jobs if j.status in {"pending", "processing", "paused"}}
     kinds_failed = {j.job_kind for j in jobs if j.status == "failed"}
 
     def state(kind: str) -> str:
@@ -278,6 +279,7 @@ async def ensure_media(payload: MediaEnsureIn, db: Session = Depends(get_db)) ->
     ref: MediaRef | None = None
     try:
         provider = _bazarr_provider(db)
+        release_session_connection(db)
         ref = await provider.get_media(external_id)
     except (BazarrError, HTTPException):
         ref = None
@@ -380,12 +382,18 @@ async def get_media_localization(
         seen_codes.add(task.target_language_code)
 
     gate = await JobService(db).transcribe_gate_for_media(row)
+    dub_gate = await JobService(db).dub_gate_for_media(
+        row,
+        target_language=SettingsService(db).get_public().target_language.code,
+    )
     return MediaLocalizationOut(
         media_id=media_id,
         capability="subtitles",
         languages=languages,
         can_transcribe=gate.can_transcribe,
         transcribe_reason=gate.reason,
+        can_dub=dub_gate.can_dub,
+        dub_reason=dub_gate.reason,
     )
 
 
@@ -409,6 +417,25 @@ async def transcribe_media(
     body = payload or TranscribeCreate()
     try:
         return await JobService(db).start_manual_transcribe(
+            media,
+            target_language=body.target_language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/media/{media_id}/dub", response_model=JobOut)
+async def dub_media(
+    media_id: int,
+    payload: DubCreate | None = None,
+    db: Session = Depends(get_db),
+) -> JobOut:
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    body = payload or DubCreate()
+    try:
+        return await JobService(db).start_manual_dub(
             media,
             target_language=body.target_language,
         )

@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import ExtractCreate, JobCreate
 from app.core.logging import get_logger
+from app.db import release_session_connection
 from app.db.models import JobRow, LocalizationTaskRow, MediaItemRow
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
+from app.jobs.queue import OPEN_JOB_STATUSES
 from app.jobs.service import JobService
 from app.localization.checkpoints import (
     mark_existing_target_complete,
@@ -30,6 +32,7 @@ from app.services.candidates import CandidateService, candidate_key
 from app.services.settings import SettingsService
 from app.subtitles.embedded import pick_extractable_track, probe_subtitle_tracks
 from app.subtitles.filenames import (
+    build_dub_preview_path,
     find_existing_sidecar,
     find_source_srt_beside_media,
     language_matches,
@@ -49,6 +52,8 @@ MSG_NO_MEDIA_REF = "No usable media reference is available."
 MSG_EXTRACT_FAILED = "Source extraction failed."
 MSG_TRANSCRIBE_FAILED = "Audio transcription failed."
 MSG_TRANSLATE_FAILED = "Translation failed."
+MSG_DUB_FAILED = "Dubbing failed."
+MSG_WAITING_SUBTITLES = "Localize subtitles first."
 
 
 class TaskPlanner:
@@ -78,12 +83,26 @@ class TaskPlanner:
         if task.status not in ACTIVE_STATUSES and task.status != "planning":
             if task.status in {"failed", "blocked"}:
                 media = self.media.get(task.media_item_id)
-                if media is None or not await self._target_satisfied(
-                    media, task.target_language_code
-                ):
+                if media is None:
                     return task
-                self._clear_verify_failure(task.id)
-                self.tasks.update_checkpoints(task.id, **mark_existing_target_complete())
+                if task.capability == "audio":
+                    if not self._audio_target_satisfied(media, task.target_language_code):
+                        return task
+                    self.tasks.update_checkpoints(
+                        task.id,
+                        source="done",
+                        extract="skipped",
+                        translate="skipped",
+                        validate="skipped",
+                        write="done",
+                        sync="skipped",
+                        verify="done",
+                    )
+                elif not await self._target_satisfied(media, task.target_language_code):
+                    return task
+                else:
+                    self._clear_verify_failure(task.id)
+                    self.tasks.update_checkpoints(task.id, **mark_existing_target_complete())
                 return self.tasks.transition(
                     task,
                     "completed",
@@ -100,6 +119,9 @@ class TaskPlanner:
                 error_code="media_missing",
                 error_message=MSG_MEDIA_MISSING,
             )
+
+        if task.capability == "audio":
+            return await self._plan_audio(task, media)
 
         if task.capability != "subtitles":
             return self.tasks.transition(
@@ -239,7 +261,7 @@ class TaskPlanner:
             orphan = self.db.scalar(
                 select(JobRow).where(
                     JobRow.candidate_key == ckey,
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                     JobRow.task_id.is_(None),
                 )
             )
@@ -387,6 +409,8 @@ class TaskPlanner:
                 count += 1
             except Exception as exc:  # noqa: BLE001
                 logger.warning("plan_all_active task=%s error=%s", task.id, exc)
+            finally:
+                release_session_connection(self.db)
         return count
 
     async def on_job_finished(self, job_id: int) -> None:
@@ -530,12 +554,90 @@ class TaskPlanner:
                 exc,
             )
 
+    async def _plan_audio(
+        self,
+        task: LocalizationTaskRow,
+        media: MediaItemRow,
+    ) -> LocalizationTaskRow:
+        """Audio localization: dub preview sidecar only (no Bazarr verify)."""
+        if task.status == "requested":
+            self.tasks.transition(task, "planning", substate="dubbing", clear_error=True)
+            task = self.tasks.get(task.id)  # type: ignore[assignment]
+        assert task is not None
+
+        active = self._active_job_for_task(task.id)
+        if active is not None:
+            return self._sync_status_from_job(task, active)
+
+        if self._audio_target_satisfied(media, task.target_language_code):
+            self.tasks.update_checkpoints(
+                task.id,
+                source="done",
+                extract="skipped",
+                translate="skipped",
+                validate="skipped",
+                write="done",
+                sync="skipped",
+                verify="done",
+            )
+            return self.tasks.transition(task, "completed", substate=None, clear_error=True)
+
+        latest_dub = self._latest_job(task.id, "dub")
+        if latest_dub and latest_dub.status == "failed":
+            if task.status != "planning":
+                self.tasks.update_checkpoints(task.id, write="failed")
+                return self.tasks.transition(
+                    task,
+                    "failed",
+                    error_code=latest_dub.reason_code or "dub_failed",
+                    error_message=MSG_DUB_FAILED,
+                )
+
+        if not self._subtitle_source_for_dub(media, task.target_language_code):
+            return self.tasks.transition(
+                task,
+                "blocked",
+                substate="awaiting_subtitles",
+                error_code="subtitle_missing",
+                error_message=MSG_WAITING_SUBTITLES,
+            )
+
+        # Manual dub jobs are created by POST /media/{id}/dub; planner waits for work.
+        if task.status in {"planning", "requested"}:
+            return self.tasks.transition(
+                task,
+                "processing",
+                substate="dubbing",
+                clear_error=True,
+            )
+        return task
+
+    def _local_media_path(self, media: MediaItemRow) -> Path | None:
+        if not media.path:
+            return None
+        public = self.settings.get_public()
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        return Path(apply_path_mapping(media.path, mappings))
+
+    def _subtitle_source_for_dub(self, media: MediaItemRow, target_language: str) -> bool:
+        media_path = self._local_media_path(media)
+        if media_path is None or not media_path.exists():
+            return False
+        return find_existing_sidecar(media_path, target_language) is not None
+
+    def _audio_target_satisfied(self, media: MediaItemRow, target_language: str) -> bool:
+        media_path = self._local_media_path(media)
+        if media_path is None or not media_path.exists():
+            return False
+        output = build_dub_preview_path(media_path, target_language)
+        return output.is_file() and output.stat().st_size > 0
+
     def _active_job_for_task(self, task_id: int) -> JobRow | None:
         return self.db.scalar(
             select(JobRow)
             .where(
                 JobRow.task_id == task_id,
-                JobRow.status.in_(["pending", "processing"]),
+                JobRow.status.in_(OPEN_JOB_STATUSES),
             )
             .order_by(JobRow.created_at.desc())
             .limit(1)
@@ -604,6 +706,8 @@ class TaskPlanner:
             sub = "discovering_source"
         elif kind == "transcribe":
             sub = "transcribing_source"
+        elif kind == "dub":
+            sub = "dubbing"
         else:
             sub = kind
         if task.status in ACTIVE_STATUSES or task.status == "planning":
@@ -633,12 +737,16 @@ class TaskPlanner:
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if not bazarr_url:
             return False
+        media_type = media.media_type
+        movie_id = media.bazarr_movie_id
+        episode_id = media.bazarr_episode_id
+        release_session_connection(self.db)
         client = BazarrClient(bazarr_url, bazarr_key)
         try:
-            if media.media_type == "movie" and media.bazarr_movie_id is not None:
-                detail = await client.get_movie(media.bazarr_movie_id)
-            elif media.bazarr_episode_id is not None:
-                detail = await client.get_episode(media.bazarr_episode_id)
+            if media_type == "movie" and movie_id is not None:
+                detail = await client.get_movie(movie_id)
+            elif episode_id is not None:
+                detail = await client.get_episode(episode_id)
             else:
                 return False
             return BazarrClient.target_subtitle_present(detail, target_language)
@@ -719,28 +827,35 @@ class TaskPlanner:
                 return result
 
             if media_path.is_file():
-                tracks = await probe_subtitle_tracks(str(media_path))
+                probe_path = str(media_path)
+                release_session_connection(self.db)
+                tracks = await probe_subtitle_tracks(probe_path)
                 pick = pick_extractable_track(tracks, source_langs)
                 if pick is not None:
                     result["can_extract"] = True
                     result["extract_stream_index"] = pick.stream_index
                     result["source_language"] = pick.language
 
+        media_type = media.media_type
+        movie_id = media.bazarr_movie_id
+        episode_id = media.bazarr_episode_id
+        series_id = media.bazarr_series_id
         # Bazarr request if IDs exist
-        if media.media_type == "movie" and media.bazarr_movie_id is not None:
+        if media_type == "movie" and movie_id is not None:
             result["can_request"] = True
-        elif media.bazarr_episode_id is not None and media.bazarr_series_id is not None:
+        elif episode_id is not None and series_id is not None:
             result["can_request"] = True
 
         # Enrich from Bazarr subtitle metadata
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if bazarr_url and not result["can_translate"]:
+            release_session_connection(self.db)
             client = BazarrClient(bazarr_url, bazarr_key)
             try:
-                if media.media_type == "movie" and media.bazarr_movie_id is not None:
-                    detail = await client.get_movie(media.bazarr_movie_id)
-                elif media.bazarr_episode_id is not None:
-                    detail = await client.get_episode(media.bazarr_episode_id)
+                if media_type == "movie" and movie_id is not None:
+                    detail = await client.get_movie(movie_id)
+                elif episode_id is not None:
+                    detail = await client.get_episode(episode_id)
                 else:
                     detail = None
                 if detail:

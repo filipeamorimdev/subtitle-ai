@@ -211,7 +211,7 @@ def test_unsupported_capability(loc_env):
     )
     svc = LocalizationTaskService(db)
     with pytest.raises(UnsupportedCapabilityError):
-        svc.create_manual_task(media_item=media, target_language="pt-PT", capability="audio")
+        svc.create_manual_task(media_item=media, target_language="pt-PT", capability="metadata")
 
 
 @pytest.mark.asyncio
@@ -252,6 +252,49 @@ async def test_cancel_and_retry(loc_env):
 
     retried = svc.prepare_retry(cancelled.id)
     assert retried.status == "planning"
+
+
+def test_pause_pending_job_is_not_claimed(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="translating")
+
+    job = JobRow(
+        task_id=task.id,
+        job_kind="translate",
+        media_type="movie",
+        media_path=media.path or "",
+        source_subtitle_path=media.path or "",
+        target_subtitle_path=(media.path or "") + ".pt-PT.srt",
+        model="test",
+        status="pending",
+    )
+    db.add(job)
+    db.commit()
+
+    from app.jobs.queue import claim_next_job, pause_job_row, resume_job_row
+
+    paused = pause_job_row(db, job.id)
+    assert paused.status == "paused"
+    assert claim_next_job(db, "translate") is None
+
+    resumed = resume_job_row(db, job.id)
+    assert resumed.status == "pending"
+    claimed = claim_next_job(db, "translate")
+    assert claimed is not None
+    assert claimed.id == job.id
+    assert claimed.status == "processing"
 
 
 @pytest.mark.asyncio
@@ -636,7 +679,14 @@ async def test_api_languages_and_tasks(loc_env, monkeypatch):
         f"/api/media/{media_id}/localization-tasks",
         json={"target_language": "pt-PT", "capability": "audio"},
     )
-    assert audio.status_code == 422
+    assert audio.status_code == 200
+    assert audio.json()["capability"] == "audio"
+
+    metadata = client.post(
+        f"/api/media/{media_id}/localization-tasks",
+        json={"target_language": "pt-PT", "capability": "metadata"},
+    )
+    assert metadata.status_code == 422
 
     detail = client.get(f"/api/localization-tasks/{task_id}")
     assert detail.status_code == 200

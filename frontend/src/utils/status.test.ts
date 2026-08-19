@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canRetryTask, isActiveTaskStatus, isUnresolvedFailedTask, latestTasksByLanguage, taskStatusLabel } from './status'
+import { canPauseJob, canResumeJob, canRetryTask, isActiveTaskStatus, isUnresolvedFailedTask, latestTasksByLanguage, taskStatusLabel } from './status'
 import { latestActiveJob, taskElapsedStart, taskProgressPct } from './taskProgress'
 import type { LocalizationTask } from '../types'
 
@@ -34,9 +34,17 @@ function task(partial: Partial<LocalizationTask>): LocalizationTask {
 describe('task status helpers', () => {
   it('labels processing substates', () => {
     expect(taskStatusLabel('processing', 'extracting_source')).toBe('Extracting')
+    expect(taskStatusLabel('processing', 'dubbing')).toBe('Dubbing')
     expect(taskStatusLabel('awaiting_approval')).toBe('Awaiting approval')
     expect(isActiveTaskStatus('awaiting_approval')).toBe(true)
     expect(canRetryTask('awaiting_approval')).toBe(true)
+  })
+
+  it('pauses pending jobs and resumes paused jobs', () => {
+    expect(canPauseJob('pending')).toBe(true)
+    expect(canPauseJob('processing')).toBe(false)
+    expect(canResumeJob('paused')).toBe(true)
+    expect(canResumeJob('pending')).toBe(false)
   })
 
   it('hides a failed task after a later successful localization', () => {
@@ -70,6 +78,16 @@ describe('task progress helpers', () => {
     })
     expect(latestActiveJob(row)?.id).toBe(2)
     expect(taskProgressPct(row)).toBe(40)
+  })
+
+  it('keeps a paused job as the active execution', () => {
+    const row = task({
+      executions: [
+        { id: 2, status: 'paused', progress: 0, job_kind: 'translate' } as never,
+      ],
+    })
+    expect(latestActiveJob(row)?.id).toBe(2)
+    expect(taskProgressPct(row)).toBe(0)
   })
 })
 

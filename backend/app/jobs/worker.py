@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 logger = get_logger("worker")
 
-JOB_KINDS = ("translate", "extract", "request", "transcribe")
+JOB_KINDS = ("translate", "extract", "request", "transcribe", "dub")
 TASK_REPLAN_INTERVAL_SECONDS = 30.0
 
 

@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import JobRow, LocalizationTaskRow, MediaItemRow
+from app.jobs.queue import OPEN_JOB_STATUSES
 from app.languages import Language, LanguageNormalizationError, normalize_language
 from app.localization.checkpoints import default_checkpoints
 from app.localization.state import (
@@ -20,7 +21,7 @@ from app.services.ai_cost import effective_cost_micro, micro_to_usd
 from app.db.models import AiUsageRecordRow
 
 
-EXECUTABLE_CAPABILITIES = frozenset({"subtitles"})
+EXECUTABLE_CAPABILITIES = frozenset({"subtitles", "audio"})
 
 
 class UnsupportedCapabilityError(ValueError):
@@ -364,7 +365,7 @@ class LocalizationTaskService:
         self.db.commit()
 
     def _cancel_open_jobs(self, task_id: int) -> list[int]:
-        """Mark pending and processing jobs cancelled so they appear in history."""
+        """Mark pending, processing, and paused jobs cancelled so they appear in history."""
         task = self.get(task_id)
         clauses = [JobRow.task_id == task_id]
         if task is not None:
@@ -391,7 +392,7 @@ class LocalizationTaskService:
         jobs = self.db.scalars(
             select(JobRow).where(
                 or_(*clauses),
-                JobRow.status.in_(["pending", "processing"]),
+                JobRow.status.in_(OPEN_JOB_STATUSES),
             )
         ).all()
         now = utcnow()

@@ -33,6 +33,9 @@ const backHref = computed(() => returnTo.value || mediaHref.value || '/media')
 const statsHref = computed(() => withReturnTo(`/jobs/${props.id}/stats`, returnTo.value))
 
 const isTranslateJob = computed(() => (job.value?.job_kind || 'translate') === 'translate')
+const isDubJob = computed(() => (job.value?.job_kind || '').toLowerCase() === 'dub')
+const canShowJobLog = computed(() => isTranslateJob.value || isDubJob.value)
+const jobLogTitle = computed(() => (isTranslateJob.value ? 'OpenRouter log' : 'Job log'))
 
 const ACTION_LABELS: Record<string, string> = {
   translate: 'Translate',
@@ -324,7 +327,7 @@ async function viewRequestLog(row: JobUsageExchange) {
           Retry
         </button>
         <button
-          v-if="['pending', 'processing'].includes(job.status)"
+          v-if="['pending', 'processing', 'paused'].includes(job.status)"
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
           type="button"
           :disabled="busy"
@@ -342,7 +345,7 @@ async function viewRequestLog(row: JobUsageExchange) {
           Retry Bazarr sync
         </button>
         <button
-          v-if="isTranslateJob"
+          v-if="canShowJobLog"
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
           type="button"
           :disabled="logBusy"
@@ -370,7 +373,7 @@ async function viewRequestLog(row: JobUsageExchange) {
     >
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 class="font-display text-lg font-bold">OpenRouter log</h2>
+          <h2 class="font-display text-lg font-bold">{{ jobLogTitle }}</h2>
           <p v-if="jobLog" class="mt-1 break-all text-sm text-ink-500">{{ jobLog.path }}</p>
         </div>
         <p v-if="jobLog?.exists" class="text-sm text-ink-500">{{ jobLog.entry_count }} entries</p>
@@ -380,7 +383,7 @@ async function viewRequestLog(row: JobUsageExchange) {
         v-else-if="jobLog && !jobLog.exists"
         class="mt-3 text-sm text-ink-600 dark:text-ink-300"
       >
-        No OpenRouter log file for this job yet. Logs are written when translation API calls run.
+        {{ isTranslateJob ? 'No OpenRouter log file for this job yet. Logs are written when translation API calls run.' : 'No job event log file for this job yet.' }}
       </p>
       <pre
         v-else-if="formattedLog"
@@ -411,7 +414,10 @@ async function viewRequestLog(row: JobUsageExchange) {
       </div>
     </dl>
 
-    <div class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+    <div
+      v-if="isTranslateJob"
+      class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
+    >
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="font-display text-lg font-bold">Requests</h2>

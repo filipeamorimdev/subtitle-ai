@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
@@ -32,6 +33,7 @@ from app.api.schemas import (
 )
 from app.core.config import get_app_config
 from app.core.logging import get_logger
+from app.db import release_session_connection
 from app.db.models import (
     AiRoutingEventRow,
     AiUsageRecordRow,
@@ -40,6 +42,7 @@ from app.db.models import (
     MediaItemRow,
     TranslationCacheRow,
 )
+from app.jobs.queue import OPEN_JOB_STATUSES
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import (
     PathMapping,
@@ -77,9 +80,11 @@ from app.subtitles.transcribe import (
 from app.subtitles.filenames import (
     LANG_SUFFIX_RE,
     build_external_subtitle_path,
+    build_dub_preview_path,
     build_target_subtitle_path,
     ensure_canonical_sidecar,
     find_source_srt_beside_media,
+    find_existing_sidecar,
     language_matches,
     normalize_language_code,
 )
@@ -88,6 +93,8 @@ from app.subtitles.validation import validate_source
 from app.subtitles.writer.srt import write_srt_atomic
 from app.jobs.usage import aggregate_usage, parse_exchanges
 from app.services.ai_cost import effective_cost_micro, micro_price_to_per_million, micro_to_usd
+from app.jobs.event_log import JobEventLog, job_event_log_path
+from app.dubbing.dub import DubError, dub_media_from_srt_to_mkv, resolve_voice_model_for_language
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.service import (
     RetryableTranslationError,
@@ -107,6 +114,49 @@ REQUEST_POLL_SECONDS = 5.0
 REQUEST_TIMEOUT_SECONDS = 60.0
 REQUEST_HI_RETRY_AFTER_SECONDS = 20.0
 REQUEST_NOT_FOUND_COOLDOWN_HOURS = 24
+
+
+@dataclass(frozen=True)
+class DubGate:
+    can_dub: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _JobIoSnapshot:
+    """Detached job fields for Bazarr/ffmpeg/LLM work after releasing the DB."""
+
+    id: int
+    media_type: str
+    media_path: str
+    source_subtitle_path: str
+    target_subtitle_path: str
+    source_language: str | None
+    target_language: str | None
+    bazarr_movie_id: int | None
+    bazarr_episode_id: int | None
+    bazarr_series_id: int | None
+    extract_stream_index: int | None
+    model: str | None
+    task_id: int | None
+
+
+def _job_io_snapshot(row: JobRow) -> _JobIoSnapshot:
+    return _JobIoSnapshot(
+        id=row.id,
+        media_type=row.media_type,
+        media_path=row.media_path,
+        source_subtitle_path=row.source_subtitle_path,
+        target_subtitle_path=row.target_subtitle_path,
+        source_language=row.source_language,
+        target_language=row.target_language,
+        bazarr_movie_id=row.bazarr_movie_id,
+        bazarr_episode_id=row.bazarr_episode_id,
+        bazarr_series_id=row.bazarr_series_id,
+        extract_stream_index=getattr(row, "extract_stream_index", None),
+        model=row.model,
+        task_id=getattr(row, "task_id", None),
+    )
 
 
 def utcnow() -> datetime:
@@ -206,7 +256,7 @@ def _action_duration_seconds(row: JobRow, *, now: datetime | None = None) -> flo
         return None
     if row.completed_at is not None:
         end = _as_utc(row.completed_at)
-    elif row.status in {"pending", "processing"}:
+    elif row.status in OPEN_JOB_STATUSES:
         end = now or datetime.now(timezone.utc)
     else:
         # Cancelled/failed/skipped without completed_at — fall back to created/start only if both exist
@@ -253,7 +303,7 @@ def _job_row_to_action(
 ) -> JobActionOut:
     message = item.error
     if not message and item.progress_detail:
-        if item.status in {"pending", "processing", "skipped", "cancelled"}:
+        if item.status in {"pending", "processing", "paused", "skipped", "cancelled"}:
             message = item.progress_detail
     return JobActionOut(
         id=item.id,
@@ -380,9 +430,30 @@ class JobService:
         row = self.db.get(JobRow, job_id)
         if not row:
             return None
-        path = job_openrouter_log_path(get_app_config().config_dir, job_id)
+
+        config_dir = get_app_config().config_dir
+        job_kind = getattr(row, "job_kind", None) or "translate"
+
+        # Prefer OpenRouter JSONL for translate jobs (legacy + rich usage breakdown).
+        # For other jobs, prefer the generic job event log.
+        preferred_path = (
+            job_openrouter_log_path(config_dir, job_id)
+            if job_kind == "translate"
+            else job_event_log_path(config_dir, job_id)
+        )
+        fallback_path = (
+            job_event_log_path(config_dir, job_id)
+            if job_kind == "translate"
+            else job_openrouter_log_path(config_dir, job_id)
+        )
+
+        path = preferred_path
+        if not path.is_file() and fallback_path.is_file():
+            path = fallback_path
+
         if not path.is_file():
-            return JobLogOut(job_id=job_id, exists=False, path=str(path))
+            return JobLogOut(job_id=job_id, exists=False, path=str(preferred_path))
+
         content = path.read_text(encoding="utf-8")
         entries: list[dict] = []
         for line in content.splitlines():
@@ -769,13 +840,21 @@ class JobService:
         config_dir = get_app_config().config_dir
         logs_deleted = 0
         for job_id in job_ids:
-            path = job_openrouter_log_path(config_dir, job_id)
-            if path.is_file():
+            openrouter_path = job_openrouter_log_path(config_dir, job_id)
+            if openrouter_path.is_file():
                 try:
-                    path.unlink()
+                    openrouter_path.unlink()
                     logs_deleted += 1
                 except OSError as exc:
-                    logger.warning("Could not delete job log %s: %s", path, exc)
+                    logger.warning("Could not delete job log %s: %s", openrouter_path, exc)
+
+            # Best-effort deletion for non-OpenRouter job event logs.
+            event_path = job_event_log_path(config_dir, job_id)
+            if event_path.is_file():
+                try:
+                    event_path.unlink()
+                except OSError as exc:
+                    logger.warning("Could not delete job event log %s: %s", event_path, exc)
 
         cache_result = self.db.execute(
             delete(TranslationCacheRow).where(TranslationCacheRow.job_id.in_(job_ids))
@@ -956,7 +1035,7 @@ class JobService:
                 select(JobRow).where(
                     JobRow.job_kind == "translate",
                     JobRow.candidate_key == candidate_key,
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                 )
             )
         if existing is None:
@@ -964,7 +1043,7 @@ class JobService:
                 select(JobRow).where(
                     JobRow.job_kind == "translate",
                     JobRow.target_subtitle_path == str(target),
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                 )
             )
         if existing:
@@ -1110,7 +1189,7 @@ class JobService:
             select(JobRow).where(
                 JobRow.job_kind == "extract",
                 JobRow.candidate_key == match.key,
-                JobRow.status.in_(["pending", "processing"]),
+                JobRow.status.in_(OPEN_JOB_STATUSES),
             )
         )
         if existing is None:
@@ -1118,7 +1197,7 @@ class JobService:
                 select(JobRow).where(
                     JobRow.job_kind == "extract",
                     JobRow.target_subtitle_path == str(output),
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                 )
             )
         if existing:
@@ -1172,7 +1251,7 @@ class JobService:
     def _active_transcribe_for_media(self, media: MediaItemRow) -> JobRow | None:
         clauses = [
             JobRow.job_kind == "transcribe",
-            JobRow.status.in_(["pending", "processing"]),
+            JobRow.status.in_(OPEN_JOB_STATUSES),
         ]
         path_clauses = []
         if media.path:
@@ -1190,6 +1269,184 @@ class JobService:
         return self.db.scalar(
             select(JobRow).where(*clauses, or_(*path_clauses)).order_by(JobRow.id.desc()).limit(1)
         )
+
+    def _active_dub_for_media(self, media: MediaItemRow, *, target_language: str | None) -> JobRow | None:
+        clauses = [
+            JobRow.job_kind == "dub",
+            JobRow.status.in_(OPEN_JOB_STATUSES),
+        ]
+        if target_language:
+            clauses.append(JobRow.target_language == target_language)
+
+        path_clauses = []
+        if media.path:
+            path_clauses.append(JobRow.media_path == media.path)
+        if media.media_type == "movie" and media.bazarr_movie_id is not None:
+            path_clauses.append(
+                (JobRow.media_type == "movie") & (JobRow.bazarr_movie_id == media.bazarr_movie_id)
+            )
+        elif media.bazarr_episode_id is not None:
+            path_clauses.append(
+                (JobRow.media_type == "episode") & (JobRow.bazarr_episode_id == media.bazarr_episode_id)
+            )
+        if not path_clauses:
+            return None
+        return self.db.scalar(
+            select(JobRow).where(*clauses, or_(*path_clauses)).order_by(JobRow.id.desc()).limit(1)
+        )
+
+    async def dub_gate_for_media(self, media: MediaItemRow, target_language: str) -> DubGate:
+        """Check that we have input subtitles and don't have an existing dub output."""
+        public = self.settings.get_public()
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        if not media.path:
+            return DubGate(can_dub=False, reason="Media file path missing")
+
+        local_video_path = Path(apply_path_mapping(media.path, mappings))
+        if not is_under_roots(str(local_video_path), public.media_roots):
+            return DubGate(can_dub=False, reason="Media file path outside configured roots")
+
+        if not local_video_path.exists():
+            return DubGate(can_dub=False, reason="Media file missing on disk")
+
+        source_srt = find_existing_sidecar(local_video_path, target_language)
+        if not source_srt:
+            return DubGate(can_dub=False, reason="Localize subtitles first")
+
+        output_dub = build_dub_preview_path(local_video_path, target_language)
+        if output_dub.exists() and output_dub.stat().st_size > 0:
+            return DubGate(can_dub=False, reason="Dub already exists")
+
+        active = self._active_dub_for_media(media, target_language=target_language)
+        if active is not None:
+            return DubGate(can_dub=False, reason="Dub already in progress")
+
+        return DubGate(can_dub=True)
+
+    async def start_manual_dub(
+        self,
+        media: MediaItemRow,
+        *,
+        target_language: str | None = None,
+    ) -> JobOut:
+        from app.languages import LanguageNormalizationError, normalize_language
+        from app.localization.service import LocalizationTaskService
+
+        public = self.settings.get_public()
+        raw_language = (target_language or public.target_language.code or "pt-PT").strip()
+        try:
+            language = normalize_language(raw_language)
+        except LanguageNormalizationError as exc:
+            raise ValueError(str(exc)) from exc
+
+        # Gate: require a ready target SRT on disk.
+        gate = await self.dub_gate_for_media(media, target_language=language.code)
+        if not gate.can_dub:
+            raise ValueError(gate.reason or "Dub is not available for this media.")
+
+        existing_dub_job = self._active_dub_for_media(media, target_language=language.code)
+        if existing_dub_job is not None:
+            return job_to_out(existing_dub_job)
+
+        tasks = LocalizationTaskService(self.db)
+        task, _created = tasks.ensure_task(
+            media_item=media,
+            language=language,
+            capability="audio",
+            origin="manual",
+            requested_by="user",
+        )
+        if task.status == "verifying":
+            raise ValueError("This title is already being verified.")
+
+        active_job = self.db.scalar(
+            select(JobRow)
+            .where(
+                JobRow.task_id == task.id,
+                JobRow.status.in_(OPEN_JOB_STATUSES),
+                JobRow.job_kind == "dub",
+            )
+            .order_by(JobRow.created_at.desc())
+            .limit(1)
+        )
+        if active_job is not None:
+            return job_to_out(active_job)
+
+        # Create the execution job.
+        job = await self.create_dub_job(
+            media,
+            target_language=language.code,
+            trigger_type="manual",
+            task_id=task.id,
+        )
+        tasks.update_checkpoints(task.id, write="active")
+        if task.status in {"requested", "planning", "waiting_for_source", "processing"}:
+            tasks.transition(task, "processing", substate="dubbing", clear_error=True)
+        return job
+
+    async def create_dub_job(
+        self,
+        media: MediaItemRow,
+        *,
+        target_language: str,
+        trigger_type: str = "manual",
+        task_id: int | None = None,
+    ) -> JobOut:
+        public = self.settings.get_public()
+        trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        path = apply_path_mapping(media.path, mappings) if media.path else ""
+        if not path:
+            raise ValueError("Media file path is missing.")
+        if not is_under_roots(path, public.media_roots):
+            raise ValueError("Media path is outside configured media roots.")
+
+        media_file = Path(path)
+        if not media_file.exists():
+            raise ValueError("Media file is not readable on disk.")
+
+        if self._active_dub_for_media(media, target_language=target_language) is not None:
+            raise ValueError("A dubbing job is already running for this title.")
+
+        source_srt = find_existing_sidecar(media_file, target_language)
+        if not source_srt:
+            raise ValueError("Target subtitle SRT is missing for dubbing.")
+
+        output_dub = build_dub_preview_path(media_file, target_language)
+        if output_dub.exists() and output_dub.stat().st_size > 0:
+            raise ValueError("Dub output already exists.")
+
+        media_type = media.media_type if media.media_type in {"movie", "episode"} else "movie"
+        ckey = candidate_key(media_type, path, target_language) if path else None
+        model = resolve_voice_model_for_language(target_language)
+        dkey = hashlib.sha256(f"dub|{path}|{target_language}".encode()).hexdigest()
+
+        row = JobRow(
+            candidate_key=ckey,
+            job_kind="dub",
+            trigger_type=trigger,
+            media_type=media_type,
+            media_path=path,
+            media_title=media.title,
+            bazarr_movie_id=media.bazarr_movie_id,
+            bazarr_episode_id=media.bazarr_episode_id,
+            bazarr_series_id=media.bazarr_series_id,
+            source_subtitle_path=str(source_srt),
+            target_subtitle_path=str(output_dub),
+            source_language=target_language,
+            target_language=target_language,
+            model=model,
+            status="pending",
+            progress=0,
+            progress_detail="Queued for dubbing",
+            dedupe_key=dkey,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+
+        row = _bind_task_id(self.db, row, task_id)
+        return job_to_out(row)
 
     async def transcribe_gate_for_media(self, media: MediaItemRow) -> TranscribeGate:
         public = self.settings.get_public()
@@ -1241,7 +1498,7 @@ class JobService:
             select(JobRow)
             .where(
                 JobRow.task_id == task.id,
-                JobRow.status.in_(["pending", "processing"]),
+                JobRow.status.in_(OPEN_JOB_STATUSES),
             )
             .order_by(JobRow.created_at.desc())
             .limit(1)
@@ -1361,7 +1618,7 @@ class JobService:
             select(JobRow).where(
                 JobRow.job_kind == "request",
                 JobRow.candidate_key == match.key,
-                JobRow.status.in_(["pending", "processing"]),
+                JobRow.status.in_(OPEN_JOB_STATUSES),
             )
         )
         if existing:
@@ -1427,7 +1684,7 @@ class JobService:
             select(JobRow).where(
                 JobRow.job_kind == "request",
                 JobRow.candidate_key == ckey,
-                JobRow.status.in_(["pending", "processing"]),
+                JobRow.status.in_(OPEN_JOB_STATUSES),
             )
         )
         if existing:
@@ -1515,7 +1772,7 @@ class JobService:
                     select(JobRow).where(
                         JobRow.job_kind == "request",
                         JobRow.candidate_key == match.key,
-                        JobRow.status.in_(["pending", "processing"]),
+                        JobRow.status.in_(OPEN_JOB_STATUSES),
                     )
                 )
                 job = await self.create_request_subtitle_job(
@@ -1561,7 +1818,7 @@ class JobService:
                     select(JobRow).where(
                         JobRow.job_kind == "extract",
                         JobRow.candidate_key == match.key,
-                        JobRow.status.in_(["pending", "processing"]),
+                        JobRow.status.in_(OPEN_JOB_STATUSES),
                     )
                 )
                 job = await self.create_extract_job(
@@ -1606,7 +1863,7 @@ class JobService:
                     select(JobRow).where(
                         JobRow.job_kind == "translate",
                         JobRow.candidate_key == match.key,
-                        JobRow.status.in_(["pending", "processing"]),
+                        JobRow.status.in_(OPEN_JOB_STATUSES),
                     )
                 )
                 job = await self.create_job(
@@ -1637,6 +1894,10 @@ class JobService:
             self.db.rollback()
         except Exception:  # noqa: BLE001
             pass
+
+    def _release_db(self) -> None:
+        """Drop the current SQLite transaction before a long await."""
+        release_session_connection(self.db)
 
     def _fresh_job(self, job_id: int) -> JobRow | None:
         """Reload job from DB so a cancel committed by another session is visible."""
@@ -1676,6 +1937,16 @@ class JobService:
         from app.jobs.queue import cancel_job_row
 
         return job_to_out(cancel_job_row(self.db, job_id))
+
+    def pause_job(self, job_id: int) -> JobOut:
+        from app.jobs.queue import pause_job_row
+
+        return job_to_out(pause_job_row(self.db, job_id))
+
+    def resume_job(self, job_id: int) -> JobOut:
+        from app.jobs.queue import resume_job_row
+
+        return job_to_out(resume_job_row(self.db, job_id))
 
     async def retry_job(self, job_id: int) -> JobOut:
         row = self.db.get(JobRow, job_id)
@@ -1756,6 +2027,7 @@ class JobService:
             client = BazarrClient(bazarr_url, bazarr_key)
             mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
             code2 = to_bazarr_code2(row.source_language or "en")
+            self._release_db()
 
             # Fast path: subtitle may already be on disk (including .en.hi.srt).
             found_path = await self._lookup_requested_subtitle(client, row, code2, mappings)
@@ -1767,7 +2039,7 @@ class JobService:
             row.progress = 5
             row.progress_detail = f"Asking Bazarr to search for {label}"
             self.db.add(row)
-            self.db.commit()
+            self._release_db()
 
             await self._trigger_bazarr_download(client, row, code2, hi=False)
 
@@ -1777,7 +2049,7 @@ class JobService:
             row.progress = 15
             row.progress_detail = f"Waiting for Bazarr to finish searching for {label}"
             self.db.add(row)
-            self.db.commit()
+            self._release_db()
 
             deadline = monotonic() + REQUEST_TIMEOUT_SECONDS
             hi_requested = False
@@ -1801,7 +2073,7 @@ class JobService:
                     hi_requested = True
                     row.progress_detail = f"Also searching Bazarr for {label} (HI)"
                     self.db.add(row)
-                    self.db.commit()
+                    self._release_db()
                     try:
                         await self._trigger_bazarr_download(client, row, code2, hi=True)
                     except BazarrError as exc:
@@ -1818,7 +2090,7 @@ class JobService:
                 row.progress = pct
                 row.progress_detail = f"Still searching for {label} via Bazarr…"
                 self.db.add(row)
-                self.db.commit()
+                self._release_db()
                 await asyncio.sleep(REQUEST_POLL_SECONDS)
 
             row = self.db.get(JobRow, job_id)
@@ -1919,29 +2191,33 @@ class JobService:
         *,
         hi: bool,
     ) -> None:
-        if row.media_type == "movie":
-            if row.bazarr_movie_id is None:
+        snapshot = _job_io_snapshot(row)
+        self._release_db()
+        if snapshot.media_type == "movie":
+            if snapshot.bazarr_movie_id is None:
                 raise ValueError("Missing Bazarr movie ID")
-            await client.download_movie_subtitle(row.bazarr_movie_id, code2, hi=hi)
+            await client.download_movie_subtitle(snapshot.bazarr_movie_id, code2, hi=hi)
             return
-        if row.bazarr_episode_id is None or row.bazarr_series_id is None:
+        if snapshot.bazarr_episode_id is None or snapshot.bazarr_series_id is None:
             raise ValueError("Missing Bazarr series/episode IDs")
         await client.download_episode_subtitle(
-            row.bazarr_series_id,
-            row.bazarr_episode_id,
+            snapshot.bazarr_series_id,
+            snapshot.bazarr_episode_id,
             code2,
             hi=hi,
         )
 
     async def _extract_fallback_for_request(self, row: JobRow, code2: str) -> tuple[str | None, bool]:
-        media = Path(row.media_path)
+        snapshot = _job_io_snapshot(row)
+        self._release_db()
+        media = Path(snapshot.media_path)
         if not media.is_file():
             return None, False
         try:
             tracks = await probe_subtitle_tracks(media)
         except EmbeddedError:
             return None, False
-        track = pick_extractable_track(tracks, [code2, row.source_language or code2])
+        track = pick_extractable_track(tracks, [code2, snapshot.source_language or code2])
         if track is None or track.stream_index is None:
             return None, False
         output = build_external_subtitle_path(media, code2)
@@ -1952,7 +2228,7 @@ class JobService:
         except EmbeddedError as exc:
             get_logger("jobs").warning(
                 "Extract fallback failed job_id=%s error=%s",
-                row.id,
+                snapshot.id,
                 exc,
             )
             return None, False
@@ -1965,11 +2241,13 @@ class JobService:
         language: str,
         mappings: list[PathMapping],
     ) -> str | None:
+        snapshot = _job_io_snapshot(row)
+        self._release_db()
         detail = None
-        if row.media_type == "movie" and row.bazarr_movie_id is not None:
-            detail = await client.get_movie(row.bazarr_movie_id)
-        elif row.media_type == "episode" and row.bazarr_episode_id is not None:
-            detail = await client.get_episode(row.bazarr_episode_id)
+        if snapshot.media_type == "movie" and snapshot.bazarr_movie_id is not None:
+            detail = await client.get_movie(snapshot.bazarr_movie_id)
+        elif snapshot.media_type == "episode" and snapshot.bazarr_episode_id is not None:
+            detail = await client.get_episode(snapshot.bazarr_episode_id)
 
         candidates: list[str] = []
         if detail:
@@ -1980,12 +2258,12 @@ class JobService:
                 if code and language_matches(code, [language]):
                     candidates.append(apply_path_mapping(sub.path, mappings))
 
-        expected = Path(row.target_subtitle_path)
+        expected = Path(snapshot.target_subtitle_path)
         if expected.exists() and expected.stat().st_size > 0:
             return str(expected)
 
         # Accept HI/SDH sidecars beside the media even when Bazarr metadata lags.
-        media = Path(row.media_path)
+        media = Path(snapshot.media_path)
         found_local = find_source_srt_beside_media(media, [language])
         if found_local:
             path, _lang = found_local
@@ -2017,17 +2295,18 @@ class JobService:
             return
         log = get_logger("jobs")
         try:
+            media_path = row.media_path
+            public = self.settings.get_public()
+            openai_key = self.settings.get_openai_api_key()
             row.progress = 8
             row.progress_detail = "Extracting audio"
             self.db.add(row)
-            self.db.commit()
-
-            public = self.settings.get_public()
-            openai_key = self.settings.get_openai_api_key()
+            self._release_db()
 
             async def on_progress(done: float, total: float) -> None:
                 current = self._fresh_job(job_id)
                 if current is None or current.status == "cancelled":
+                    self._release_db()
                     return
                 ratio = 0.0 if total <= 0 else min(1.0, max(0.0, done / total))
                 current.progress = 15 + int(75 * ratio)
@@ -2042,14 +2321,16 @@ class JobService:
                 else:
                     current.progress_detail = "Transcribing audio"
                 self.db.add(current)
-                self.db.commit()
+                self._release_db()
 
             def is_cancelled() -> bool:
                 current = self._fresh_job(job_id)
-                return current is None or current.status == "cancelled"
+                cancelled = current is None or current.status == "cancelled"
+                self._release_db()
+                return cancelled
 
             path, result = await transcribe_media_to_srt(
-                row.media_path,
+                media_path,
                 provider=public.asr_provider,
                 local_model=public.asr_local_model,
                 openai_key=openai_key,
@@ -2111,28 +2392,135 @@ class JobService:
                 self.db.commit()
                 self._set_task_checkpoints(getattr(current, "task_id", None), source="failed")
 
+    async def _process_dub_job(self, job_id: int) -> None:
+        row = self.db.get(JobRow, job_id)
+        if not row or row.status != "processing":
+            return
+
+        log = get_logger("jobs")
+        config_dir = get_app_config().config_dir
+        event_log = JobEventLog(job_event_log_path(config_dir, job_id), job_id=job_id)
+
+        try:
+            snapshot = _job_io_snapshot(row)
+            task_id = snapshot.task_id
+            voice_model = snapshot.model or resolve_voice_model_for_language(snapshot.target_language)
+            row.progress = 5
+            row.progress_detail = "Starting dub"
+            self.db.add(row)
+            self._release_db()
+
+            async def on_progress(done: int, total: int) -> None:
+                current = self._fresh_job(job_id)
+                if current is None or current.status == "cancelled":
+                    self._release_db()
+                    return
+                progress = 0 if total <= 0 else int(min(90, (90 * done) / total))
+                current.progress = max(5, progress)
+                current.progress_detail = f"Synthesizing cue {done}/{total}"
+                self.db.add(current)
+                self.db.commit()
+                from app.core.events import publish_job
+
+                publish_job(
+                    job_id=job_id,
+                    task_id=getattr(current, "task_id", None),
+                    status=current.status,
+                    progress=current.progress,
+                    job_kind=current.job_kind,
+                    detail=current.progress_detail,
+                )
+                self._release_db()
+
+            def is_cancelled() -> bool:
+                current = self._fresh_job(job_id)
+                cancelled = current is None or current.status == "cancelled"
+                self._release_db()
+                return cancelled
+
+            await dub_media_from_srt_to_mkv(
+                media_path=snapshot.media_path,
+                source_srt_path=snapshot.source_subtitle_path,
+                target_language=snapshot.target_language,
+                output_path=snapshot.target_subtitle_path,
+                event_log=event_log,
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+                voice_model=voice_model,
+            )
+
+            current = self._fresh_job(job_id)
+            if not current or current.status == "cancelled":
+                return
+            current.progress = 100
+            current.progress_detail = "Done"
+            current.status = "completed"
+            current.completed_at = utcnow()
+            self.db.add(current)
+            self.db.commit()
+
+            # Minimal checkpoints for UI progress steps. TaskPlanner still owns
+            # the final completion transition for task-backed orchestration.
+            self._set_task_checkpoints(
+                task_id,
+                source="done",
+                extract="skipped",
+                translate="skipped",
+                validate="skipped",
+                write="done",
+                sync="skipped",
+                verify="done",
+            )
+            log.info("Dub job completed job_id=%s output=%s", job_id, current.target_subtitle_path)
+        except asyncio.CancelledError:
+            try:
+                event_log.record(event="cancelled")
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.error("Dub job failed job_id=%s error=%s", job_id, exc)
+            self._rollback_quietly()
+            current = self.db.get(JobRow, job_id)
+            if current and current.status == "cancelled":
+                return
+            try:
+                event_log.record(event="failed", error=str(exc))
+            except Exception:  # noqa: BLE001
+                pass
+            if current:
+                current.status = "failed"
+                current.error = _public_error(exc)
+                current.reason_code = _reason_code(exc)
+                current.completed_at = utcnow()
+                current.progress_detail = "Dub failed"
+                self.db.add(current)
+                self.db.commit()
+                self._set_task_checkpoints(task_id, write="failed")
+
     async def _process_extract_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)
         if not row or row.status != "processing":
             return
         log = get_logger("jobs")
         try:
-            if row.extract_stream_index is None:
+            snapshot = _job_io_snapshot(row)
+            if snapshot.extract_stream_index is None:
                 raise EmbeddedError("Missing embedded stream index for extraction.")
             row.progress = 10
             row.progress_detail = (
                 "OCR embedded PGS subtitles (this can take several minutes)"
-                if (row.model or "").startswith("tesseract")
+                if (snapshot.model or "").startswith("tesseract")
                 else "Extracting embedded text track"
             )
             self.db.add(row)
-            self.db.commit()
+            self._release_db()
 
             await extract_embedded_track(
-                row.media_path,
-                row.extract_stream_index,
-                row.target_subtitle_path,
-                language=row.source_language or "en",
+                snapshot.media_path,
+                snapshot.extract_stream_index,
+                snapshot.target_subtitle_path,
+                language=snapshot.source_language or "en",
             )
 
             current = self.db.get(JobRow, job_id)
@@ -2385,7 +2773,7 @@ class JobService:
             current.model = resolved_model
             current.provider_id = resolved_provider
             self.db.add(current)
-            self.db.commit()
+            self._release_db()
             self._set_task_checkpoints(task_id, translate="active")
 
             checkpoint = TranslationCheckpoint()
@@ -2450,8 +2838,9 @@ class JobService:
                 current.model = candidate.model_id
                 current.provider_id = candidate.provider_id
                 current.progress_detail = f"Using {candidate.provider_id}/{candidate.model_id}"
+                target_language_code = current.target_language
                 self.db.add(current)
-                self.db.commit()
+                self._release_db()
 
                 try:
                     async def on_progress(done: int, total: int) -> None:
@@ -2459,11 +2848,12 @@ class JobService:
 
                         current = self._fresh_job(job_id)
                         if not current or current.status == "cancelled":
+                            self._release_db()
                             raise RuntimeError("Job cancelled")
                         current.progress = round(5 + (done / total) * 95, 2)
                         current.progress_detail = f"{done} / {total} batches"
                         self.db.add(current)
-                        self.db.commit()
+                        self._release_db()
                         publish_job(
                             job_id=job_id,
                             task_id=getattr(current, "task_id", None),
@@ -2476,7 +2866,7 @@ class JobService:
                     outcome = await service.translate_document(
                         document,
                         model=candidate.model_id,
-                        target_language_code=row.target_language,
+                        target_language_code=target_language_code,
                         target_language_name=target_language_name,
                         batch_size=public.batch_size,
                         progress_callback=on_progress,
@@ -2712,29 +3102,33 @@ class JobService:
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if not bazarr_url:
             raise BazarrError("Bazarr URL is not configured")
+        snapshot = _job_io_snapshot(row)
+        self._release_db()
         client = BazarrClient(bazarr_url, bazarr_key)
-        await register_or_rescan(client, row)
+        await register_or_rescan(client, snapshot)
 
     async def _verify_target_present(self, row: JobRow) -> bool:
         """Check disk + Bazarr metadata for the target subtitle."""
-        target = Path(row.target_subtitle_path)
+        snapshot = _job_io_snapshot(row)
+        bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
+        self._release_db()
+        target = Path(snapshot.target_subtitle_path)
         if not target.is_file() or target.stat().st_size <= 0:
             return False
-
-        bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
         if not bazarr_url:
             return False
         client = BazarrClient(bazarr_url, bazarr_key)
         detail = None
-        if row.media_type == "movie" and row.bazarr_movie_id is not None:
-            detail = await client.get_movie(row.bazarr_movie_id)
-        elif row.media_type == "episode" and row.bazarr_episode_id is not None:
-            detail = await client.get_episode(row.bazarr_episode_id)
-        return BazarrClient.target_subtitle_present(detail, row.target_language)
+        if snapshot.media_type == "movie" and snapshot.bazarr_movie_id is not None:
+            detail = await client.get_movie(snapshot.bazarr_movie_id)
+        elif snapshot.media_type == "episode" and snapshot.bazarr_episode_id is not None:
+            detail = await client.get_episode(snapshot.bazarr_episode_id)
+        return BazarrClient.target_subtitle_present(detail, snapshot.target_language)
 
     async def _verify_target_with_backoff(self, row: JobRow) -> bool:
         delays = (2.0, 5.0, 10.0)
         for delay in delays:
+            self._release_db()
             await asyncio.sleep(delay)
             try:
                 if await self._verify_target_present(row):
@@ -2804,6 +3198,8 @@ def _reason_code(exc: Exception) -> str:
         return "extract_failed"
     if isinstance(exc, TranscribeError):
         return "transcribe_failed"
+    if isinstance(exc, DubError):
+        return "dub_failed"
     message = str(exc)
     if "database is locked" in message.lower() or "pendingrollback" in type(exc).__name__.lower():
         return "database_locked"

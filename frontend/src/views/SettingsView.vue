@@ -20,6 +20,7 @@ const form = reactive({
   max_concurrent_extract: 1,
   max_concurrent_request: 1,
   max_concurrent_transcribe: 1,
+  max_concurrent_dub: 1,
   automatic_fallback_enabled: false,
   automatic_scan_interval_minutes: 5,
   bazarr_grace_period_minutes: 10,
@@ -44,6 +45,7 @@ onMounted(async () => {
   form.max_concurrent_extract = s.max_concurrent_extract
   form.max_concurrent_request = s.max_concurrent_request
   form.max_concurrent_transcribe = s.max_concurrent_transcribe ?? 1
+  form.max_concurrent_dub = s.max_concurrent_dub ?? 1
   form.automatic_fallback_enabled = s.automatic_fallback_enabled ?? false
   form.automatic_scan_interval_minutes = s.automatic_scan_interval_minutes ?? 5
   form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
@@ -63,6 +65,7 @@ async function save() {
       max_concurrent_extract: Number(form.max_concurrent_extract) || 1,
       max_concurrent_request: Number(form.max_concurrent_request) || 1,
       max_concurrent_transcribe: Number(form.max_concurrent_transcribe) || 1,
+      max_concurrent_dub: Number(form.max_concurrent_dub) || 1,
       automatic_fallback_enabled: form.automatic_fallback_enabled,
       automatic_scan_interval_minutes: Number(form.automatic_scan_interval_minutes) || 5,
       bazarr_grace_period_minutes: Number(form.bazarr_grace_period_minutes) || 0,
@@ -131,7 +134,7 @@ async function runClear(action: () => Promise<{ message: string }>, confirmText:
 }
 
 function clearJobs(opts?: {
-  job_kind?: 'translate' | 'extract' | 'request' | 'transcribe'
+  job_kind?: 'translate' | 'extract' | 'request' | 'transcribe' | 'dub'
   status?: 'failed' | 'skipped' | 'cancelled'
 }) {
   let label = 'ALL jobs'
@@ -290,6 +293,16 @@ function clearUsageStats() {
               class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
             />
           </label>
+          <label class="block text-sm">
+            <span class="text-ink-500">Dub</span>
+            <input
+              v-model.number="form.max_concurrent_dub"
+              type="number"
+              min="1"
+              max="20"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+            />
+          </label>
         </div>
         <span class="block text-xs text-ink-500">Each limit accepts 1–20. Changes apply on the next worker poll.</span>
       </fieldset>
@@ -336,6 +349,14 @@ function clearUsageStats() {
             @click="clearJobs({ job_kind: 'transcribe' })"
           >
             Clear transcribe
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:opacity-50 dark:border-ink-600"
+            :disabled="clearing"
+            @click="clearJobs({ job_kind: 'dub' })"
+          >
+            Clear dub
           </button>
           <button
             type="button"

@@ -30,6 +30,7 @@ class SettingsRow(Base):
     max_concurrent_extract: Mapped[int] = mapped_column(Integer, default=1)
     max_concurrent_request: Mapped[int] = mapped_column(Integer, default=1)
     max_concurrent_transcribe: Mapped[int] = mapped_column(Integer, default=1)
+    max_concurrent_dub: Mapped[int] = mapped_column(Integer, default=1)
     asr_provider: Mapped[str] = mapped_column(String(32), default="local_then_openai")
     asr_local_model: Mapped[str] = mapped_column(String(32), default="small")
     openai_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)

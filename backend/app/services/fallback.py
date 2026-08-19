@@ -18,6 +18,7 @@ from app.api.schemas import (
 )
 from app.core.logging import get_logger
 from app.db.models import JobRow, ObservedCandidateRow
+from app.jobs.queue import OPEN_JOB_STATUSES
 from app.integrations.bazarr.client import BazarrError
 from app.ai.errors import AIProviderError
 from app.services.candidates import CandidateService
@@ -135,7 +136,7 @@ class FallbackPlanner:
     def _active_job(self, candidate_key: str, job_kind: str | None = None) -> JobRow | None:
         query = select(JobRow).where(
             JobRow.candidate_key == candidate_key,
-            JobRow.status.in_(["pending", "processing"]),
+            JobRow.status.in_(OPEN_JOB_STATUSES),
         )
         if job_kind:
             query = query.where(JobRow.job_kind == job_kind)
@@ -178,7 +179,7 @@ class FallbackPlanner:
         latest = self._latest_job(candidate.key, "translate")
         if latest is None:
             return True
-        if latest.status in {"pending", "processing"}:
+        if latest.status in OPEN_JOB_STATUSES:
             return False
         if latest.status == "completed":
             # Completed with verify warning may get a verify-only retry from scanner.
@@ -437,7 +438,7 @@ class FallbackPlanner:
                 LocalizationTaskService(self.db).attach_job(row, task_id)
             try:
                 current = LocalizationTaskService(self.db).get(task_id)
-                if current and job.status in {"pending", "processing"}:
+                if current and job.status in OPEN_JOB_STATUSES:
                     if current.status in {"requested", "planning", "waiting_for_source"}:
                         LocalizationTaskService(self.db).transition(
                             current,
@@ -454,7 +455,7 @@ class FallbackPlanner:
             except Exception:  # noqa: BLE001
                 pass
 
-        if job.status in {"pending", "processing"} and not reused:
+        if job.status in OPEN_JOB_STATUSES and not reused:
             observed.automatic_attempts = int(observed.automatic_attempts or 0) + 1
             observed.last_automatic_attempt_at = now
         observed.last_outcome = action

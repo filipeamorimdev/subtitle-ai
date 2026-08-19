@@ -61,11 +61,17 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def release_session_connection(session: Session) -> None:
-    """Commit so the current connection can return to the pool during awaits.
+    """End the current transaction so SQLite is not pinned across awaits.
 
-    ORM objects stay attached (expired). Copy values needed during I/O first.
+    WAL checkpoints cannot finish while any session holds a transaction.
+    Copy ORM attribute values needed during I/O *before* calling this —
+    accessing expired attributes afterwards starts a new transaction.
     """
-    session.commit()
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 
 def _ensure_jobs_provider_id_nullable(conn) -> None:
@@ -180,6 +186,7 @@ def init_db() -> None:
             ("max_concurrent_extract", "ALTER TABLE settings ADD COLUMN max_concurrent_extract INTEGER NOT NULL DEFAULT 1"),
             ("max_concurrent_request", "ALTER TABLE settings ADD COLUMN max_concurrent_request INTEGER NOT NULL DEFAULT 1"),
             ("max_concurrent_transcribe", "ALTER TABLE settings ADD COLUMN max_concurrent_transcribe INTEGER NOT NULL DEFAULT 1"),
+            ("max_concurrent_dub", "ALTER TABLE settings ADD COLUMN max_concurrent_dub INTEGER NOT NULL DEFAULT 1"),
             ("asr_provider", "ALTER TABLE settings ADD COLUMN asr_provider VARCHAR(32) NOT NULL DEFAULT 'local_then_openai'"),
             ("asr_local_model", "ALTER TABLE settings ADD COLUMN asr_local_model VARCHAR(32) NOT NULL DEFAULT 'small'"),
             ("openai_api_key_encrypted", "ALTER TABLE settings ADD COLUMN openai_api_key_encrypted TEXT"),

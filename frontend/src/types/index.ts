@@ -24,6 +24,7 @@ export interface Settings {
   max_concurrent_extract: number
   max_concurrent_request: number
   max_concurrent_transcribe: number
+  max_concurrent_dub: number
   asr_provider: 'local' | 'openai' | 'local_then_openai' | string
   asr_local_model: string
   openai_api_key_masked: string | null
@@ -62,6 +63,7 @@ export interface SettingsUpdate {
   max_concurrent_extract?: number
   max_concurrent_request?: number
   max_concurrent_transcribe?: number
+  max_concurrent_dub?: number
   asr_provider?: 'local' | 'openai' | 'local_then_openai' | string
   asr_local_model?: string
   openai_api_key?: string | null
@@ -219,6 +221,8 @@ export interface MediaLocalization {
   languages: LanguageAvailability[]
   can_transcribe?: boolean
   transcribe_reason?: string | null
+  can_dub?: boolean
+  dub_reason?: string | null
 }
 
 export interface TaskAiSummary {

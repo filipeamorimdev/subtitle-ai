@@ -115,6 +115,10 @@ Off by default. When enabled:
 
 When Bazarr has no source subtitle and embedded extract is not possible, the media page can start a **transcribe** job. Local `faster-whisper` is the default engine (models cached under `/config/whisper-models`); OpenAI Whisper API is an optional fallback. The resulting sidecar SRT is then translated (if needed) and verified through the existing localization task pipeline. Transcription is **not** auto-enqueued by TaskPlanner or automatic fallback.
 
+## Manual TTS dub preview
+
+When a target-language SRT already exists beside the media file, the media page can start a **dub** job. Local [Piper](https://github.com/rhasspy/piper) synthesizes speech per cue (models cached under `/config/piper-voices`), fits clips to cue timing, and ffmpeg muxes a new sidecar `{stem}.{lang}.dub.mkv` next to the original. The source video is never overwritten. Completion is verified by disk presence only (no Bazarr rescan). Dubbing is **not** auto-enqueued by TaskPlanner or automatic fallback.
+
 ## Upgrade from v0.1 / v0.2.1
 
 On startup `init_db()` adds missing tables/columns, seeds legacy preferences when pools are empty, and runs an idempotent `migrate_legacy_openrouter()` that copies credentials, preferences, catalog cache, and backfills `provider_id='openrouter'` on usage/routing/jobs/cache. Existing jobs and settings are preserved. Paid fallback stays off. Historical cost rows are not rewritten.
@@ -124,4 +128,4 @@ On startup `init_db()` adds missing tables/columns, seeds legacy preferences whe
 - Additional concrete translation providers beyond OpenRouter (OpenAI/Anthropic SDKs, etc.)
 - Adaptive **routing** (ranking is display-only)
 - Non-SRT formats
-- TTS / dubbing / media muxing
+- In-place dub mux / replacing original audio tracks

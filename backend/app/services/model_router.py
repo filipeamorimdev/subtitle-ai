@@ -164,6 +164,7 @@ class ModelRouter:
         estimated_output_tokens: int = 0,
         trigger_type: str = "manual",
         char_count: int | None = None,
+        record_events: bool = True,
     ) -> RoutingResult:
         settings = self.db.get(SettingsRow, 1)
         if settings is None:
@@ -323,25 +324,26 @@ class ModelRouter:
             selected.model_id if selected else None,
             blocked,
         )
-        if selected:
-            self.record_event(
-                job_id=job_id,
-                event="selected",
-                strategy=strategy,
-                provider_id=selected.provider_id,
-                model_id=selected.model_id,
-                detail=f"candidates={[f'{c.provider_id}/{c.model_id}' for c in candidates]}",
-            )
-        elif blocked:
-            self.record_event(
-                job_id=job_id,
-                event="blocked",
-                strategy=strategy,
-                failure_category=FAILURE_BUDGET
-                if blocked == "blocked_by_cost_policy"
-                else FAILURE_INCOMPATIBLE,
-                detail=blocked,
-            )
+        if record_events:
+            if selected:
+                self.record_event(
+                    job_id=job_id,
+                    event="selected",
+                    strategy=strategy,
+                    provider_id=selected.provider_id,
+                    model_id=selected.model_id,
+                    detail=f"candidates={[f'{c.provider_id}/{c.model_id}' for c in candidates]}",
+                )
+            elif blocked:
+                self.record_event(
+                    job_id=job_id,
+                    event="blocked",
+                    strategy=strategy,
+                    failure_category=FAILURE_BUDGET
+                    if blocked == "blocked_by_cost_policy"
+                    else FAILURE_INCOMPATIBLE,
+                    detail=blocked,
+                )
         return result
 
     def record_event(
@@ -402,3 +404,21 @@ class ModelRouter:
             next_model_id=next_model_id,
             failure_category=failure_category,
         )
+
+
+PING_INPUT_TOKENS = 32
+PING_OUTPUT_TOKENS = 16
+NO_ELIGIBLE_PING_MODEL = (
+    "Cannot connect to the AI service. No eligible model for current routing."
+)
+
+
+def first_eligible_ping_model(db: Session) -> AIModelCandidate | None:
+    """First model a translation job would start with under current routing."""
+    result = ModelRouter(db).select_models(
+        estimated_input_tokens=PING_INPUT_TOKENS,
+        estimated_output_tokens=PING_OUTPUT_TOKENS,
+        trigger_type="manual",
+        record_events=False,
+    )
+    return result.candidates[0] if result.candidates else None

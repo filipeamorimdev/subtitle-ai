@@ -258,7 +258,26 @@ class OpenRouterProvider(AIProvider):
         *,
         force: bool = False,
     ) -> ProviderHealth:
-        cache_key = model_id or "__default__"
+        if not self.is_configured():
+            return ProviderHealth(
+                status=ProviderStatus.UNAVAILABLE,
+                provider_id=PROVIDER_ID,
+                message="OpenRouter API key is not configured",
+                configured=False,
+                cached=False,
+                tested_at=utcnow(),
+                model_id=model_id,
+            )
+
+        ping_model = model_id
+        if not ping_model and self.db is not None:
+            from app.services.model_router import first_eligible_ping_model
+
+            candidate = first_eligible_ping_model(self.db)
+            if candidate is not None:
+                ping_model = candidate.model_id
+
+        cache_key = ping_model or "__none__"
         if not force:
             cached = self._health_cache.get(cache_key)
             if cached is not None:
@@ -274,19 +293,21 @@ class OpenRouterProvider(AIProvider):
                         model_id=health.model_id,
                     )
 
-        if not self.is_configured():
+        if not ping_model:
+            from app.services.model_router import NO_ELIGIBLE_PING_MODEL
+
             health = ProviderHealth(
-                status=ProviderStatus.UNAVAILABLE,
+                status=ProviderStatus.ERROR,
                 provider_id=PROVIDER_ID,
-                message="OpenRouter API key is not configured",
-                configured=False,
+                message=NO_ELIGIBLE_PING_MODEL,
+                configured=True,
                 cached=False,
                 tested_at=utcnow(),
-                model_id=model_id,
+                model_id=None,
             )
+            self._health_cache[cache_key] = (utcnow(), health)
             return health
 
-        ping_model = model_id or "openai/gpt-4o-mini"
         try:
             client = self._build_client()
             result = await client.test_connection(ping_model)
@@ -300,19 +321,15 @@ class OpenRouterProvider(AIProvider):
                 model_id=model_id or str(result.get("model") or ping_model),
             )
         except OpenRouterError as exc:
-            mapped = openrouter_error_to_provider_error(exc, model_id=model_id)
-            if isinstance(mapped, AuthenticationError):
-                status = ProviderStatus.ERROR
-            else:
-                status = ProviderStatus.ERROR
+            mapped = openrouter_error_to_provider_error(exc, model_id=ping_model)
             health = ProviderHealth(
-                status=status,
+                status=ProviderStatus.ERROR,
                 provider_id=PROVIDER_ID,
                 message=str(mapped),
                 configured=True,
                 cached=False,
                 tested_at=utcnow(),
-                model_id=model_id,
+                model_id=ping_model,
             )
         except Exception as exc:  # noqa: BLE001
             health = ProviderHealth(
@@ -322,7 +339,7 @@ class OpenRouterProvider(AIProvider):
                 configured=True,
                 cached=False,
                 tested_at=utcnow(),
-                model_id=model_id,
+                model_id=ping_model,
             )
 
         self._health_cache[cache_key] = (utcnow(), health)

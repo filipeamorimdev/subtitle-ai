@@ -129,13 +129,10 @@ class ProviderAccountService:
         self.db.commit()
         self.db.refresh(account)
 
-        # Invalidate provider health cache after credential rotation.
         try:
-            from app.ai.providers.registry import get_provider_registry
+            from app.core.health import invalidate_ai_connection_health
 
-            provider = get_provider_registry().get_optional(provider_id)
-            if provider is not None:
-                provider.invalidate_health_cache()
+            invalidate_ai_connection_health(provider_id)
         except Exception:  # noqa: BLE001
             pass
 

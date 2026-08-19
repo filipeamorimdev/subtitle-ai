@@ -60,6 +60,7 @@ export function taskStatusLabel(status: string, substate?: string | null) {
     if (substate === 'extracting_source') return 'Extracting'
     if (substate === 'discovering_source') return 'Finding source'
     if (substate === 'transcribing_source') return 'Transcribing'
+    if (substate === 'dubbing') return 'Dubbing'
     return 'Translating'
   }
   return TASK_STATUS_LABELS[status] || status.replaceAll('_', ' ')
@@ -120,6 +121,14 @@ export function canCancelTask(status: string) {
   return isActiveTaskStatus(status)
 }
 
+export function canPauseJob(status?: string | null) {
+  return status === 'pending'
+}
+
+export function canResumeJob(status?: string | null) {
+  return status === 'paused'
+}
+
 export function canRetryJob(status: string) {
   return status === 'failed' || status === 'skipped' || status === 'cancelled'
 }
@@ -131,10 +140,23 @@ export function jobHasAiArtifacts(jobKind?: string | null) {
   return AI_JOB_KINDS.has((jobKind || 'translate').toLowerCase())
 }
 
+export function jobKindLabel(jobKind?: string | null) {
+  const kind = (jobKind || 'translate').toLowerCase()
+  const labels: Record<string, string> = {
+    translate: 'Translate',
+    extract: 'Extract',
+    request: 'Request',
+    transcribe: 'Transcribe',
+    dub: 'Dub',
+  }
+  return labels[kind] || kind
+}
+
 export function jobStatusClass(status: string) {
   if (status === 'completed') return 'text-emerald-700 dark:text-emerald-300'
   if (status === 'failed') return 'text-red-700 dark:text-red-300'
   if (status === 'cancelled') return 'text-orange-800 dark:text-orange-300'
+  if (status === 'paused') return 'text-accent'
   if (status === 'skipped' || status === 'blocked') {
     return 'text-amber-700 dark:text-amber-300'
   }
@@ -171,7 +193,8 @@ export function jobStatusBadgeClass(status: string) {
     status === 'requested' ||
     status === 'verifying' ||
     status === 'awaiting_approval' ||
-    status === 'pending'
+    status === 'pending' ||
+    status === 'paused'
   ) {
     return 'inline-flex rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs font-semibold capitalize text-accent'
   }

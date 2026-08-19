@@ -147,11 +147,16 @@ async def test_bazarr(db: Session = Depends(get_db)) -> ConnectionTestResult:
 @router.post("/settings/test/openrouter", response_model=ConnectionTestResult)
 async def test_openrouter(db: Session = Depends(get_db)) -> ConnectionTestResult:
     service = SettingsService(db)
-    key, model = service.get_openrouter_credentials()
+    key, _legacy_model = service.get_openrouter_credentials()
     if not key:
         return ConnectionTestResult(ok=False, message="OpenRouter API key is not configured.")
+    from app.services.model_router import NO_ELIGIBLE_PING_MODEL, first_eligible_ping_model
+
+    candidate = first_eligible_ping_model(db)
+    if candidate is None:
+        return ConnectionTestResult(ok=False, message=NO_ELIGIBLE_PING_MODEL)
     try:
-        details = await OpenRouterClient(key).test_connection(model)
+        details = await OpenRouterClient(key).test_connection(candidate.model_id)
         return ConnectionTestResult(
             ok=True,
             message="Connected to OpenRouter.",
@@ -353,6 +358,22 @@ def cancel_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
         result = JobService(db).cancel_job(job_id)
         worker.cancel_job(job_id)
         return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/pause", response_model=JobOut)
+def pause_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
+    try:
+        return JobService(db).pause_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/resume", response_model=JobOut)
+def resume_job(job_id: int, db: Session = Depends(get_db)) -> JobOut:
+    try:
+        return JobService(db).resume_job(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -6,7 +6,7 @@ import type { Job, JobLog, LocalizationTask } from '../types'
 import { formatElapsed } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
 import { withReturnTo } from '../utils/mediaNav'
-import { jobHasAiArtifacts, jobStatusClass, taskStatusLabel } from '../utils/status'
+import { jobHasAiArtifacts, jobKindLabel, jobStatusClass, taskStatusLabel } from '../utils/status'
 import { latestActiveJob } from '../utils/taskProgress'
 
 const props = defineProps<{
@@ -171,7 +171,7 @@ function statsHref(jobId: number) {
         <div v-if="job" class="mt-3 text-sm">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <RouterLink class="capitalize text-accent hover:underline" :to="jobHref(job.id)">
-              {{ job.job_kind }} #{{ job.id }}
+              {{ jobKindLabel(job.job_kind) }} #{{ job.id }}
               <span :class="jobStatusClass(job.status)"> · {{ job.status }}</span>
               <span v-if="job.model" class="normal-case text-ink-500"> · {{ job.model }}</span>
             </RouterLink>

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.ai.providers.registry import reset_provider_registry
 from app.db import Base
-from app.db.models import OpenRouterCatalogCacheRow, OpenRouterModelPreferenceRow, SettingsRow
+from app.db.models import (
+    AiRoutingEventRow,
+    OpenRouterCatalogCacheRow,
+    OpenRouterModelPreferenceRow,
+    SettingsRow,
+)
 from app.services.ai_cost import estimate_request_cost_micro
-from app.services.model_router import ModelRouter, RoutingPolicy
+from app.services.model_router import ModelRouter, RoutingPolicy, first_eligible_ping_model
 from app.translation.openrouter.client import OpenRouterModelInfo
 
 
@@ -170,3 +175,26 @@ def test_catalog_miss_keeps_configured_paid_model(tmp_path):
     db.commit()
     result = ModelRouter(db).select_models(policy=RoutingPolicy(strategy="paid_only"))
     assert ids(result) == ["openai/gpt-4o-mini"]
+
+
+def test_record_events_false_skips_routing_rows(tmp_path):
+    db = setup_db(tmp_path, [("free/a", "free", True)], strategy="free_only")
+    ModelRouter(db).select_models(policy=RoutingPolicy(strategy="free_only"), record_events=False)
+    assert db.scalars(select(AiRoutingEventRow)).all() == []
+
+
+def test_first_eligible_ping_model_follows_strategy(tmp_path):
+    db = setup_db(
+        tmp_path,
+        [("free/a", "free", True), ("free/b", "free", True), ("paid/a", "paid", True)],
+        strategy="free_only",
+    )
+    picked = first_eligible_ping_model(db)
+    assert picked is not None
+    assert picked.model_id == "free/a"
+    assert db.scalars(select(AiRoutingEventRow)).all() == []
+
+
+def test_first_eligible_ping_model_empty_pool(tmp_path):
+    db = setup_db(tmp_path, [("paid/a", "paid", True)], strategy="free_only")
+    assert first_eligible_ping_model(db) is None

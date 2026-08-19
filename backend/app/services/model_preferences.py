@@ -17,6 +17,15 @@ from app.translation.openrouter.client import batch_base_model
 logger = get_logger("model_preferences")
 
 
+def _invalidate_ai_health() -> None:
+    try:
+        from app.core.health import invalidate_ai_connection_health
+
+        invalidate_ai_connection_health()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _classify_tier_from_cache(db: Session, model_id: str, *, provider_id: str = OPENROUTER_PROVIDER_ID) -> str:
     """Best-effort tier from catalog cache; unknown if unavailable."""
     try:
@@ -255,6 +264,7 @@ class ModelPreferenceService:
         sync_legacy_openrouter_model(self.db)
         self.db.commit()
         self.db.refresh(row)
+        _invalidate_ai_health()
         return row
 
     def update(
@@ -295,6 +305,7 @@ class ModelPreferenceService:
         sync_legacy_openrouter_model(self.db)
         self.db.commit()
         self.db.refresh(row)
+        _invalidate_ai_health()
         return row
 
     def delete(self, pref_id: int) -> None:
@@ -308,6 +319,7 @@ class ModelPreferenceService:
         _delete_legacy(self.db, model_id, provider_id)
         sync_legacy_openrouter_model(self.db)
         self.db.commit()
+        _invalidate_ai_health()
 
     def reorder(self, *, tier: str, ordered_ids: list[int], provider_id: str | None = None) -> list[AiModelPreferenceRow]:
         if tier not in ("free", "paid"):
@@ -323,4 +335,5 @@ class ModelPreferenceService:
             _mirror_to_legacy(self.db, row)
         sync_legacy_openrouter_model(self.db)
         self.db.commit()
+        _invalidate_ai_health()
         return list_preferences(self.db, tier=tier, provider_id=provider_id)

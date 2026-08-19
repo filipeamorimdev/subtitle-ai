@@ -92,6 +92,13 @@ const openRouterOk = computed(() => {
   return Boolean(store.settings?.openrouter_api_key_configured)
 })
 
+const openRouterAttention = computed(() => {
+  if (health.value?.openrouter === 'unreachable') {
+    return 'Cannot connect to the AI service.'
+  }
+  return 'OpenRouter is not configured.'
+})
+
 const monthCost = computed(
   () => aiOverview.value?.ai_summary?.this_month_cost_usd ?? aiOverview.value?.cards?.month?.cost_usd,
 )
@@ -114,7 +121,7 @@ const attentionReasons = computed(() => {
     )
   }
   if (health.value?.planner_error) reasons.push('Localization planner failed to resume after restart.')
-  if (!openRouterOk.value) reasons.push('OpenRouter is not configured.')
+  if (!openRouterOk.value) reasons.push(openRouterAttention.value)
   if (aiOverview.value?.status === 'attention') {
     const aiReasons = aiOverview.value.status_reasons?.filter(Boolean) || []
     if (aiReasons.length) reasons.push(...aiReasons)
@@ -393,7 +400,7 @@ onUnmounted(() => {
             </RouterLink>
           </li>
           <li v-if="!openRouterOk" class="py-3 text-sm first:pt-0">
-            🔌 OpenRouter is not configured.
+            🔌 {{ openRouterAttention }}
             <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/providers">
               Open settings
             </RouterLink>

@@ -38,6 +38,8 @@ async def process_claimed_job(svc: JobService, job_id: int) -> None:
             await svc._process_request_subtitle_job(job_id)
         elif kind == "transcribe":
             await svc._process_transcribe_job(job_id)
+        elif kind == "dub":
+            await svc._process_dub_job(job_id)
         else:
             await svc._process_translate_job(job_id)
     finally:

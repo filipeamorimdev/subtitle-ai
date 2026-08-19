@@ -164,6 +164,12 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 - Local `faster-whisper` (default model `small`, cached under `/config/whisper-models`) with optional OpenAI Whisper API fallback
 - First run downloads the model (~500MB for `small`); CPU transcription is slow and there is no GPU in the default image
 
+### TTS dub preview
+
+- Manual **Dub preview** on a media page when a target-language SRT already exists beside the file
+- Local Piper TTS (voices cached under `/config/piper-voices`); writes `{stem}.{lang}.dub.mkv` next to the original (video + original audio + TTS track)
+- The source video is never overwritten; first run downloads the voice model; CPU synthesis is slow in the default image
+
 ### Translation
 
 - Source language (default English / `en`)

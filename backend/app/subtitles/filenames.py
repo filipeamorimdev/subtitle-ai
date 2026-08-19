@@ -147,6 +147,16 @@ def build_external_subtitle_path(media_path: str | Path, language: str) -> Path:
     return media.with_name(f"{media.stem}.{lang}.srt")
 
 
+def build_dub_preview_path(media_path: str | Path, language: str) -> Path:
+    """Build preview dub filename next to a media file.
+
+    Example: ``Movie (2026).mkv`` + ``pt-PT`` -> ``Movie (2026).pt.dub.mkv``.
+    """
+    media = Path(media_path)
+    lang = sidecar_language_tag(language)
+    return media.with_name(f"{media.stem}.{lang}.dub.mkv")
+
+
 def _sidecar_dir_and_stem(path: Path) -> tuple[Path, str]:
     path = Path(path)
     if path.suffix.lower() == ".srt":

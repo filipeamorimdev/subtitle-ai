@@ -2,15 +2,15 @@
 
 v0.3 introduces a **media-centric** localization model on top of the existing job/worker stack.
 
-> **Scope:** subtitle localization tasks and on-demand subtitle requests.  
-> **Audio localization / dubbing is not implemented** in this version (the capability enum is reserved for later).
+> **Scope:** subtitle localization tasks, on-demand subtitle requests, and manual TTS dub preview.  
+> **Audio localization** uses `capability=audio` for dub preview sidecar MKV files (manual only; not on the automatic scanner).
 
 ## Mental model
 
 ```text
 MediaItem
     └── LocalizationTask   (user-facing goal)
-            └── Job / execution   (translate | extract | request | transcribe)
+            └── Job / execution   (translate | extract | request | transcribe | dub)
 ```
 
 Users ask for an outcome (“The Matrix → Portuguese (Portugal) subtitles”).  
@@ -36,6 +36,10 @@ Historical jobs without `task_id` remain valid legacy execution history.
 6. Otherwise creates the next necessary job (request / extract / translate)
 7. If no source exists and extract is impossible, the media page offers **Transcribe audio** (manual Whisper ASR). That job writes a source (or target) SRT; the planner then translates if needed and verifies as usual.
 8. Worker processes the job; planner continues until verified
+
+## Manual dub preview
+
+When a target-language SRT already exists, the media page offers **Dub preview** (manual Piper TTS + ffmpeg mux). This creates `{stem}.{lang}.dub.mkv` beside the original video; the source file is never overwritten. Completion is disk-only (no Bazarr verify). Use `capability=audio` on localization tasks; jobs use `job_kind=dub`.
 
 ## Automatic fallback
 
@@ -82,12 +86,13 @@ Task cost is the sum of authoritative `ai_usage_records` for the task’s jobs (
 | GET | `/api/media/{id}/localization` |
 | GET | `/api/media/{id}/actions` |
 | POST | `/api/media/{id}/localization-tasks` |
+| POST | `/api/media/{id}/transcribe` |
+| POST | `/api/media/{id}/dub` |
 | GET | `/api/localization-tasks`, `/api/localization-tasks/{id}` |
 | POST | `/api/localization-tasks/{id}/retry`, `.../cancel` |
 
-Duplicate active tasks return **409** with `task_id`. Unsupported capability (e.g. audio) returns **422**.
+Duplicate active tasks return **409** with `task_id`. Unsupported capability (e.g. `metadata`) returns **422**.
 
 ## Future
 
 - v0.4 SourceResolver can replace internal source selection without changing task UX
-- `capability=audio` can be implemented later without changing the media/task model

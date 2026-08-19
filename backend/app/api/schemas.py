@@ -35,6 +35,7 @@ class SettingsUpdate(BaseModel):
     max_concurrent_extract: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_request: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_transcribe: int | None = Field(default=None, ge=1, le=20)
+    max_concurrent_dub: int | None = Field(default=None, ge=1, le=20)
     asr_provider: Literal["local", "openai", "local_then_openai"] | None = None
     asr_local_model: Literal["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"] | None = None
     openai_api_key: str | None = None
@@ -75,6 +76,7 @@ class SettingsOut(BaseModel):
     max_concurrent_extract: int
     max_concurrent_request: int
     max_concurrent_transcribe: int = 1
+    max_concurrent_dub: int = 1
     asr_provider: str = "local_then_openai"
     asr_local_model: str = "small"
     openai_api_key_masked: str | None = None
@@ -110,7 +112,7 @@ class ClearDataResult(BaseModel):
 
 
 class ClearJobsRequest(BaseModel):
-    job_kind: Literal["translate", "extract", "request", "transcribe"] | None = None
+    job_kind: Literal["translate", "extract", "request", "transcribe", "dub"] | None = None
     status: Literal["failed", "skipped", "cancelled"] | None = None
 
 
@@ -193,6 +195,10 @@ class ExtractCreate(BaseModel):
 
 
 class TranscribeCreate(BaseModel):
+    target_language: str | None = None
+
+
+class DubCreate(BaseModel):
     target_language: str | None = None
 
 
@@ -520,6 +526,8 @@ class MediaLocalizationOut(BaseModel):
     languages: list[LanguageAvailabilityOut] = Field(default_factory=list)
     can_transcribe: bool = False
     transcribe_reason: str | None = None
+    can_dub: bool = False
+    dub_reason: str | None = None
 
 
 class LocalizationTaskCreate(BaseModel):

@@ -40,6 +40,8 @@ const busy = ref(false)
 const retryingId = ref<number | null>(null)
 const canTranscribe = ref(false)
 const transcribeReason = ref<string | null>(null)
+const canDub = ref(false)
+const dubReason = ref<string | null>(null)
 let timer: number | undefined
 let stopLive: (() => void) | undefined
 
@@ -206,6 +208,8 @@ async function load() {
     localization.value = loc.languages
     canTranscribe.value = Boolean(loc.can_transcribe)
     transcribeReason.value = loc.transcribe_reason || null
+    canDub.value = Boolean(loc.can_dub)
+    dubReason.value = loc.dub_reason || null
     tasks.value = taskList
     actions.value = history
     error.value = null
@@ -284,6 +288,27 @@ async function transcribeAudio() {
   actionError.value = null
   try {
     await api.transcribeMedia(mediaId.value, {
+      target_language:
+        selectedTask.value?.target_language_code || store.settings?.target_language.code,
+    })
+    await load()
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function dubPreview() {
+  if (!media.value || busy.value) return
+  const ok = window.confirm(
+    'Create a dub preview (.dub.mkv) beside this file? The original video is kept unchanged. This can use significant disk space and CPU; the first run downloads a Piper voice model.',
+  )
+  if (!ok) return
+  busy.value = true
+  actionError.value = null
+  try {
+    await api.dubMedia(mediaId.value, {
       target_language:
         selectedTask.value?.target_language_code || store.settings?.target_language.code,
     })
@@ -412,6 +437,17 @@ onUnmounted(() => {
             @click="transcribeAudio"
           >
             Transcribe audio
+          </button>
+          <button
+            v-if="canDub"
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            :title="dubReason || 'Create a TTS dub preview from the target subtitles'"
+            aria-label="Dub preview"
+            :disabled="busy || anyActive"
+            @click="dubPreview"
+          >
+            Dub preview
           </button>
           <button
             type="button"

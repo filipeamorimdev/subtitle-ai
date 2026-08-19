@@ -80,6 +80,7 @@ class SettingsService:
                 max_concurrent_extract=1,
                 max_concurrent_request=1,
                 max_concurrent_transcribe=1,
+                max_concurrent_dub=1,
                 asr_provider=DEFAULT_ASR_PROVIDER,
                 asr_local_model=DEFAULT_ASR_LOCAL_MODEL,
                 automatic_fallback_enabled=False,
@@ -139,6 +140,9 @@ class SettingsService:
             max_concurrent_request=row.max_concurrent_request,
             max_concurrent_transcribe=_int(
                 getattr(row, "max_concurrent_transcribe", 1), 1, minimum=1, maximum=20
+            ),
+            max_concurrent_dub=_int(
+                getattr(row, "max_concurrent_dub", 1), 1, minimum=1, maximum=20
             ),
             asr_provider=normalize_asr_provider(getattr(row, "asr_provider", None)),
             asr_local_model=normalize_asr_local_model(getattr(row, "asr_local_model", None)),
@@ -200,6 +204,7 @@ class SettingsService:
             "extract": max(1, int(row.max_concurrent_extract or 1)),
             "request": max(1, int(row.max_concurrent_request or 1)),
             "transcribe": max(1, int(getattr(row, "max_concurrent_transcribe", None) or 1)),
+            "dub": max(1, int(getattr(row, "max_concurrent_dub", None) or 1)),
         }
 
     def is_automatic_fallback_enabled(self) -> bool:
@@ -239,6 +244,8 @@ class SettingsService:
             row.max_concurrent_request = payload.max_concurrent_request
         if payload.max_concurrent_transcribe is not None:
             row.max_concurrent_transcribe = payload.max_concurrent_transcribe
+        if payload.max_concurrent_dub is not None:
+            row.max_concurrent_dub = payload.max_concurrent_dub
         if payload.asr_provider is not None:
             row.asr_provider = normalize_asr_provider(payload.asr_provider)
         if payload.asr_local_model is not None:
@@ -306,22 +313,21 @@ class SettingsService:
         if payload.clear_openrouter_api_key or payload.openrouter_api_key:
             try:
                 from app.ai.credentials import ProviderAccountService
-                from app.ai.providers.registry import get_provider_registry
 
                 accounts = ProviderAccountService(self.db, self.fernet)
                 account = accounts.ensure_account("openrouter")
                 account.api_key_encrypted = row.openrouter_api_key_encrypted
                 self.db.add(account)
                 self.db.commit()
-                provider = get_provider_registry().get_optional("openrouter")
-                if provider is not None:
-                    provider.invalidate_health_cache()
             except Exception:  # noqa: BLE001
                 self.db.rollback()
         from app.services.model_preferences import seed_legacy_model_preference
 
         seed_legacy_model_preference(self.db)
         self.db.commit()
+        from app.core.health import invalidate_ai_connection_health
+
+        invalidate_ai_connection_health()
         return self.get_public()
 
     def get_bazarr_credentials(self) -> tuple[str | None, str | None]:

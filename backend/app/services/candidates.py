@@ -12,7 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.schemas import CandidateOut, EmbeddedSubtitleOut
+from app.db import release_session_connection
 from app.db.models import JobRow
+from app.jobs.queue import OPEN_JOB_STATUSES
 from app.integrations.bazarr.client import BazarrClient, BazarrError, BazarrSubtitle, BazarrWantedItem
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
 from app.services.settings import SettingsService
@@ -163,6 +165,7 @@ class CandidateService:
         mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
         target = public.target_language.code
         source_langs = public.source_languages
+        release_session_connection(self.db)
 
         movies = await client.get_wanted_movies()
         episodes = await client.get_wanted_episodes()
@@ -205,7 +208,7 @@ class CandidateService:
             for row in self.db.scalars(
                 select(JobRow).where(
                     JobRow.job_kind == "extract",
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                     JobRow.candidate_key.is_not(None),
                 )
             ).all()
@@ -216,7 +219,7 @@ class CandidateService:
             for row in self.db.scalars(
                 select(JobRow).where(
                     JobRow.job_kind == "request",
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                     JobRow.candidate_key.is_not(None),
                 )
             ).all()
@@ -227,7 +230,7 @@ class CandidateService:
             for row in self.db.scalars(
                 select(JobRow).where(
                     JobRow.job_kind == "translate",
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                     JobRow.candidate_key.is_not(None),
                 )
             ).all()
@@ -238,7 +241,7 @@ class CandidateService:
             for row in self.db.scalars(
                 select(JobRow).where(
                     JobRow.job_kind == "transcribe",
-                    JobRow.status.in_(["pending", "processing"]),
+                    JobRow.status.in_(OPEN_JOB_STATUSES),
                     JobRow.candidate_key.is_not(None),
                 )
             ).all()
@@ -262,6 +265,7 @@ class CandidateService:
                 if item.path and Path(apply_path_mapping(item.path, mappings)).is_file()
             }
         )
+        release_session_connection(self.db)
         probed = await self._probe_many(paths_to_probe)
 
         candidates: list[CandidateOut] = []

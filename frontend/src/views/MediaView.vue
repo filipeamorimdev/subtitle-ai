@@ -13,8 +13,8 @@ import {
   candidateToMediaRef,
   mediaHref,
 } from '../utils/mediaNav'
-import { isActiveTaskStatus, languageChipClass, latestTasksByLanguage, taskStatusLabel } from '../utils/status'
-import { latestActiveJob, taskElapsedStart, taskProgressPct } from '../utils/taskProgress'
+import { canPauseJob, canResumeJob, isActiveTaskStatus, languageChipClass, latestTasksByLanguage, taskStatusLabel } from '../utils/status'
+import { isOpenJobStatus, latestActiveJob, taskElapsedStart, taskProgressPct } from '../utils/taskProgress'
 
 type MediaFilter = 'all' | 'needs-work' | 'in-progress' | 'failed' | 'completed'
 type RowKind = 'in-progress' | 'needs-work' | 'failed' | 'completed' | 'idle'
@@ -26,6 +26,9 @@ interface LanguageChip {
   name: string
   status: string | null
   available: boolean
+  substate: string | null
+  jobId: number | null
+  jobStatus: string | null
 }
 
 interface MediaRow {
@@ -59,6 +62,7 @@ const requestLanguage = ref<string | null>(null)
 const selectedKeys = ref<Set<string>>(new Set())
 const localizing = ref(false)
 const openingKey = ref<string | null>(null)
+const jobActionId = ref<number | null>(null)
 const now = ref(Date.now())
 const activeTasksDetailed = ref<LocalizationTask[]>([])
 let timer: number | undefined
@@ -217,11 +221,15 @@ function rowLanguages(row: MediaRow): LanguageChip[] {
       task.status === 'completed' ||
       (row.candidate?.reason_code === 'target_exists' &&
         task.target_language_code === row.candidate.target_language)
+    const job = latestActiveJob(task)
     map.set(task.target_language_code, {
       code: task.target_language_code,
       name: task.target_language_name,
       status: available && task.status === 'failed' ? 'completed' : task.status,
       available,
+      substate: task.substate,
+      jobId: job?.id ?? null,
+      jobStatus: job?.status ?? null,
     })
   }
   if (row.candidate && !map.has(row.candidate.target_language)) {
@@ -230,6 +238,9 @@ function rowLanguages(row: MediaRow): LanguageChip[] {
       name: row.candidate.target_language,
       status: row.candidate.reason_code === 'target_exists' ? 'completed' : null,
       available: row.candidate.reason_code === 'target_exists',
+      substate: null,
+      jobId: null,
+      jobStatus: null,
     })
   }
   return [...map.values()]
@@ -253,7 +264,7 @@ function runningTask(row: MediaRow): LocalizationTask | null {
   return (
     active.find((task) => {
       const job = latestActiveJob(task)
-      return job?.status === 'pending' || job?.status === 'processing'
+      return isOpenJobStatus(job?.status)
     }) || active[0]
   )
 }
@@ -382,6 +393,34 @@ function openRequest(row?: MediaRow) {
   requestMedia.value = row?.ref ?? null
   requestLanguage.value = row?.candidate?.target_language ?? null
   modalOpen.value = true
+}
+
+async function pauseQueuedJob(jobId: number) {
+  if (jobActionId.value != null) return
+  jobActionId.value = jobId
+  actionError.value = null
+  try {
+    await api.pauseJob(jobId)
+    await load(false, true)
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    jobActionId.value = null
+  }
+}
+
+async function resumeQueuedJob(jobId: number) {
+  if (jobActionId.value != null) return
+  jobActionId.value = jobId
+  actionError.value = null
+  try {
+    await api.resumeJob(jobId)
+    await load(false, true)
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    jobActionId.value = null
+  }
 }
 
 function targetLanguageFor(row: MediaRow) {
@@ -628,13 +667,40 @@ onUnmounted(() => {
               <span
                 v-for="lang in rowLanguages(row)"
                 :key="`${row.key}-${lang.code}`"
-                class="rounded-full border px-2.5 py-0.5 text-xs font-semibold"
+                class="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold"
                 :class="languageChipClass(lang.status, lang.available)"
               >
                 {{ lang.name }}
                 <span v-if="lang.status" class="font-normal opacity-80">
-                  {{ taskStatusLabel(lang.status) }}
+                  {{ taskStatusLabel(lang.status, lang.substate) }}
                 </span>
+                <button
+                  v-if="lang.jobId && canPauseJob(lang.jobStatus)"
+                  type="button"
+                  class="inline-flex h-4 w-4 items-center justify-center rounded-full text-accent hover:bg-accent/20 disabled:opacity-50"
+                  title="Pause queued job"
+                  aria-label="Pause queued job"
+                  :disabled="jobActionId === lang.jobId"
+                  @click.stop="lang.jobId && pauseQueuedJob(lang.jobId)"
+                >
+                  <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="6" y="4" width="4" height="16" rx="1" />
+                    <rect x="14" y="4" width="4" height="16" rx="1" />
+                  </svg>
+                </button>
+                <button
+                  v-else-if="lang.jobId && canResumeJob(lang.jobStatus)"
+                  type="button"
+                  class="inline-flex h-4 w-4 items-center justify-center rounded-full text-accent hover:bg-accent/20 disabled:opacity-50"
+                  title="Resume queued job"
+                  aria-label="Resume queued job"
+                  :disabled="jobActionId === lang.jobId"
+                  @click.stop="lang.jobId && resumeQueuedJob(lang.jobId)"
+                >
+                  <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <polygon points="7,4 20,12 7,20" />
+                  </svg>
+                </button>
               </span>
             </div>
           </div>

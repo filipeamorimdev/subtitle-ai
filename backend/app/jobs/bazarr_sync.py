@@ -14,33 +14,43 @@ logger = get_logger("jobs.bazarr_sync")
 async def register_or_rescan(client: BazarrClient, row: JobRow) -> None:
     """Prefer uploading the sidecar so Bazarr indexes it; fall back to Scan Disk."""
     target = Path(row.target_subtitle_path)
+    media_type = row.media_type
+    language = row.target_language
+    movie_id = row.bazarr_movie_id
+    episode_id = row.bazarr_episode_id
+    series_id = row.bazarr_series_id
+    job_id = row.id
     uploaded = False
     if target.is_file():
         try:
             uploaded = await client.upload_subtitle(
-                media_type=row.media_type,
-                language=row.target_language,
+                media_type=media_type,
+                language=language,
                 path=target,
-                movie_id=row.bazarr_movie_id,
-                episode_id=row.bazarr_episode_id,
-                series_id=row.bazarr_series_id,
+                movie_id=movie_id,
+                episode_id=episode_id,
+                series_id=series_id,
             )
         except BazarrError as exc:
             logger.info(
                 "Bazarr upload skipped job_id=%s error=%s",
-                row.id,
+                job_id,
                 exc,
             )
     if uploaded:
-        logger.info("Bazarr accepted uploaded subtitle job_id=%s path=%s", row.id, target)
+        logger.info("Bazarr accepted uploaded subtitle job_id=%s path=%s", job_id, target)
         return
     await rescan(client, row)
 
 
 async def rescan(client: BazarrClient, row: JobRow) -> None:
-    if row.media_type == "movie" and row.bazarr_movie_id is not None:
-        await client.rescan_movie(row.bazarr_movie_id)
-    elif row.media_type == "episode" and row.bazarr_episode_id is not None:
-        await client.rescan_episode(row.bazarr_episode_id, row.bazarr_series_id)
+    media_type = row.media_type
+    movie_id = row.bazarr_movie_id
+    episode_id = row.bazarr_episode_id
+    series_id = row.bazarr_series_id
+    if media_type == "movie" and movie_id is not None:
+        await client.rescan_movie(movie_id)
+    elif episode_id is not None:
+        await client.rescan_episode(episode_id, series_id)
     else:
         raise BazarrError("Missing Bazarr media identifiers for rescan")
