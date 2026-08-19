@@ -193,6 +193,24 @@ async def test_gate_true_with_target_srt(dub_env):
 
 
 @pytest.mark.asyncio
+async def test_start_manual_dub_replace_existing_deletes_old_dub(dub_env):
+    db, _tmp_path, video, _target_srt = dub_env
+    media = _media(db, video)
+    dub_path = build_dub_preview_path(video, "pt-PT")
+    dub_path.write_bytes(b"old-dub")
+
+    created = await JobService(db).start_manual_dub(
+        media,
+        target_language="pt-PT",
+        replace_existing=True,
+    )
+    row = db.get(JobRow, created.id)
+    assert row is not None
+    assert row.job_kind == "dub"
+    assert not dub_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_start_manual_dub_creates_job(dub_env):
     db, _tmp_path, video, _target_srt = dub_env
     media = _media(db, video)

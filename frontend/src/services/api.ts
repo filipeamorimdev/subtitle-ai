@@ -188,7 +188,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),
     }),
-  dubMedia: (id: number, payload?: { target_language?: string }) =>
+  dubMedia: (id: number, payload?: { target_language?: string; replace_existing?: boolean }) =>
     request<Job>(`/api/media/${id}/dub`, {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),

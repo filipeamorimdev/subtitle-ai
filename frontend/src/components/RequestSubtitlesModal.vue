@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import LanguageSelect from './LanguageSelect.vue'
 import { api } from '../services/api'
@@ -26,16 +26,9 @@ const results = ref<MediaRef[]>([])
 const selected = ref<MediaRef | null>(null)
 const languages = ref<LanguageCatalogItem[]>([])
 const languageChoice = ref('')
-const customLanguage = ref('')
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
 const existingTaskId = ref<number | null>(null)
-
-const targetLanguage = computed(() => {
-  const custom = customLanguage.value.trim()
-  if (custom) return custom
-  return languageChoice.value
-})
 
 watch(
   () => props.open,
@@ -46,7 +39,6 @@ watch(
     existingTaskId.value = null
     results.value = []
     query.value = ''
-    customLanguage.value = ''
     selected.value = props.initialMedia ?? null
     if (!languages.value.length) {
       try {
@@ -115,7 +107,7 @@ function mediaLabel(item: MediaRef) {
 }
 
 async function submit() {
-  if (!selected.value || !targetLanguage.value || submitting.value) return
+  if (!selected.value || !languageChoice.value || submitting.value) return
   submitting.value = true
   submitError.value = null
   try {
@@ -136,7 +128,7 @@ async function submit() {
     })
     try {
       const task = await api.createLocalizationTask(media.id, {
-        target_language: targetLanguage.value,
+        target_language: languageChoice.value,
         capability: 'subtitles',
       })
       emit('created', task.id)
@@ -265,15 +257,8 @@ onMounted(() => {
             :languages="languages"
             placeholder="Select target language"
           />
-          <p class="mt-2 text-xs font-medium text-ink-500">or type:</p>
-          <input
-            v-model="customLanguage"
-            type="text"
-            class="mt-1.5 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
-            placeholder="ja-JP"
-          />
           <p v-if="!languages.length" class="mt-1 text-xs text-ink-500">
-            No recognized languages. You can type a language name or code.
+            No recognized languages loaded.
           </p>
         </div>
 
@@ -304,7 +289,7 @@ onMounted(() => {
             class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
             title="Request subtitles"
             aria-label="Request subtitles"
-            :disabled="!selected || !targetLanguage || submitting"
+            :disabled="!selected || !languageChoice || submitting"
             @click="submit"
           >
             {{ submitting ? 'Requesting…' : 'Request subtitles' }}

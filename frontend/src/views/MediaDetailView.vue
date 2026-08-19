@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import JobHistoryTable from '../components/JobHistoryTable.vue'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
+import RequestDubModal from '../components/RequestDubModal.vue'
 import RunningJobsPanel from '../components/RunningJobsPanel.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
@@ -36,12 +37,11 @@ const actions = ref<JobAction[]>([])
 const error = ref<string | null>(null)
 const actionError = ref<string | null>(null)
 const modalOpen = ref(false)
+const dubModalOpen = ref(false)
 const busy = ref(false)
 const retryingId = ref<number | null>(null)
 const canTranscribe = ref(false)
 const transcribeReason = ref<string | null>(null)
-const canDub = ref(false)
-const dubReason = ref<string | null>(null)
 let timer: number | undefined
 let stopLive: (() => void) | undefined
 
@@ -208,8 +208,6 @@ async function load() {
     localization.value = loc.languages
     canTranscribe.value = Boolean(loc.can_transcribe)
     transcribeReason.value = loc.transcribe_reason || null
-    canDub.value = Boolean(loc.can_dub)
-    dubReason.value = loc.dub_reason || null
     tasks.value = taskList
     actions.value = history
     error.value = null
@@ -288,27 +286,6 @@ async function transcribeAudio() {
   actionError.value = null
   try {
     await api.transcribeMedia(mediaId.value, {
-      target_language:
-        selectedTask.value?.target_language_code || store.settings?.target_language.code,
-    })
-    await load()
-  } catch (err) {
-    actionError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    busy.value = false
-  }
-}
-
-async function dubPreview() {
-  if (!media.value || busy.value) return
-  const ok = window.confirm(
-    'Create a dub preview (.dub.mkv) beside this file? The original video is kept unchanged. This can use significant disk space and CPU; the first run downloads a Piper voice model.',
-  )
-  if (!ok) return
-  busy.value = true
-  actionError.value = null
-  try {
-    await api.dubMedia(mediaId.value, {
       target_language:
         selectedTask.value?.target_language_code || store.settings?.target_language.code,
     })
@@ -439,17 +416,6 @@ onUnmounted(() => {
             Transcribe audio
           </button>
           <button
-            v-if="canDub"
-            type="button"
-            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-            :title="dubReason || 'Create a TTS dub preview from the target subtitles'"
-            aria-label="Dub preview"
-            :disabled="busy || anyActive"
-            @click="dubPreview"
-          >
-            Dub preview
-          </button>
-          <button
             type="button"
             class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white"
             title="Request subtitles"
@@ -457,6 +423,16 @@ onUnmounted(() => {
             @click="modalOpen = true"
           >
             Request subtitles
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            title="Create or replace a TTS dub preview"
+            aria-label="Request dub"
+            :disabled="busy || anyActive"
+            @click="dubModalOpen = true"
+          >
+            Request dub
           </button>
         </div>
       </div>
@@ -559,6 +535,13 @@ onUnmounted(() => {
       :open="modalOpen"
       :initial-media="modalMedia"
       @close="modalOpen = false"
+      @created="load"
+    />
+    <RequestDubModal
+      :open="dubModalOpen"
+      :initial-media="modalMedia"
+      :initial-language="selectedTask?.target_language_code || store.settings?.target_language.code"
+      @close="dubModalOpen = false"
       @created="load"
     />
   </section>

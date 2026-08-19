@@ -1295,7 +1295,13 @@ class JobService:
             select(JobRow).where(*clauses, or_(*path_clauses)).order_by(JobRow.id.desc()).limit(1)
         )
 
-    async def dub_gate_for_media(self, media: MediaItemRow, target_language: str) -> DubGate:
+    async def dub_gate_for_media(
+        self,
+        media: MediaItemRow,
+        target_language: str,
+        *,
+        replace_existing: bool = False,
+    ) -> DubGate:
         """Check that we have input subtitles and don't have an existing dub output."""
         public = self.settings.get_public()
         mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
@@ -1314,7 +1320,11 @@ class JobService:
             return DubGate(can_dub=False, reason="Localize subtitles first")
 
         output_dub = build_dub_preview_path(local_video_path, target_language)
-        if output_dub.exists() and output_dub.stat().st_size > 0:
+        if (
+            not replace_existing
+            and output_dub.exists()
+            and output_dub.stat().st_size > 0
+        ):
             return DubGate(can_dub=False, reason="Dub already exists")
 
         active = self._active_dub_for_media(media, target_language=target_language)
@@ -1328,6 +1338,7 @@ class JobService:
         media: MediaItemRow,
         *,
         target_language: str | None = None,
+        replace_existing: bool = False,
     ) -> JobOut:
         from app.languages import LanguageNormalizationError, normalize_language
         from app.localization.service import LocalizationTaskService
@@ -1340,7 +1351,11 @@ class JobService:
             raise ValueError(str(exc)) from exc
 
         # Gate: require a ready target SRT on disk.
-        gate = await self.dub_gate_for_media(media, target_language=language.code)
+        gate = await self.dub_gate_for_media(
+            media,
+            target_language=language.code,
+            replace_existing=replace_existing,
+        )
         if not gate.can_dub:
             raise ValueError(gate.reason or "Dub is not available for this media.")
 
@@ -1378,6 +1393,7 @@ class JobService:
             target_language=language.code,
             trigger_type="manual",
             task_id=task.id,
+            replace_existing=replace_existing,
         )
         tasks.update_checkpoints(task.id, write="active")
         if task.status in {"requested", "planning", "waiting_for_source", "processing"}:
@@ -1391,6 +1407,7 @@ class JobService:
         target_language: str,
         trigger_type: str = "manual",
         task_id: int | None = None,
+        replace_existing: bool = False,
     ) -> JobOut:
         public = self.settings.get_public()
         trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
@@ -1413,7 +1430,15 @@ class JobService:
             raise ValueError("Target subtitle SRT is missing for dubbing.")
 
         output_dub = build_dub_preview_path(media_file, target_language)
-        if output_dub.exists() and output_dub.stat().st_size > 0:
+        if replace_existing:
+            staging = output_dub.with_name(f".{output_dub.name}.tmp")
+            for existing_path in (output_dub, staging):
+                if existing_path.exists():
+                    try:
+                        existing_path.unlink()
+                    except OSError as exc:
+                        raise ValueError(f"Could not remove existing dub: {existing_path.name}") from exc
+        elif output_dub.exists() and output_dub.stat().st_size > 0:
             raise ValueError("Dub output already exists.")
 
         media_type = media.media_type if media.media_type in {"movie", "episode"} else "movie"
@@ -1979,6 +2004,7 @@ class JobService:
                 target_language=row.target_language,
                 trigger_type=getattr(row, "trigger_type", "manual") or "manual",
                 task_id=getattr(row, "task_id", None),
+                replace_existing=True,
             )
         if kind == "extract":
             if not row.candidate_key:

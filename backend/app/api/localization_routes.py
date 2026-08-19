@@ -438,6 +438,7 @@ async def dub_media(
         return await JobService(db).start_manual_dub(
             media,
             target_language=body.target_language,
+            replace_existing=body.replace_existing,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

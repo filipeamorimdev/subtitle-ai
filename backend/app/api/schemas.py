@@ -200,6 +200,7 @@ class TranscribeCreate(BaseModel):
 
 class DubCreate(BaseModel):
     target_language: str | None = None
+    replace_existing: bool = False
 
 
 class RequestSubtitleCreate(BaseModel):
