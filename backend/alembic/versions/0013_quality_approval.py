@@ -55,33 +55,35 @@ def upgrade() -> None:
             sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         )
 
-    settings_cols = {
-        row[1] for row in conn.execute(sa.text("PRAGMA table_info(settings)")).fetchall()
-    }
-    if "require_translation_approval" not in settings_cols:
-        with op.batch_alter_table("settings") as batch:
-            batch.add_column(
-                sa.Column(
-                    "require_translation_approval",
-                    sa.Boolean(),
-                    nullable=False,
-                    server_default=sa.false(),
+    if "settings" in tables:
+        settings_cols = {
+            row[1] for row in conn.execute(sa.text("PRAGMA table_info(settings)")).fetchall()
+        }
+        if "require_translation_approval" not in settings_cols:
+            with op.batch_alter_table("settings") as batch:
+                batch.add_column(
+                    sa.Column(
+                        "require_translation_approval",
+                        sa.Boolean(),
+                        nullable=False,
+                        server_default=sa.false(),
+                    )
                 )
-            )
 
-    conn.execute(sa.text("DROP INDEX IF EXISTS uq_localization_tasks_active"))
-    conn.execute(
-        sa.text(
-            """
-            CREATE UNIQUE INDEX uq_localization_tasks_active
-            ON localization_tasks (media_item_id, target_language_code, capability)
-            WHERE status IN (
-                'requested', 'planning', 'waiting_for_source', 'processing',
-                'verifying', 'awaiting_approval'
+    if "localization_tasks" in tables:
+        conn.execute(sa.text("DROP INDEX IF EXISTS uq_localization_tasks_active"))
+        conn.execute(
+            sa.text(
+                """
+                CREATE UNIQUE INDEX uq_localization_tasks_active
+                ON localization_tasks (media_item_id, target_language_code, capability)
+                WHERE status IN (
+                    'requested', 'planning', 'waiting_for_source', 'processing',
+                    'verifying', 'awaiting_approval'
+                )
+                """
             )
-            """
         )
-    )
 
 
 def downgrade() -> None:

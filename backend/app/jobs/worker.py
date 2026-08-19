@@ -38,7 +38,7 @@ class JobWorker:
                 logger.info("Recovered %s interrupted job(s) after restart", recovered)
         finally:
             session.close()
-        self._stop.clear()
+        self._stop = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="job-worker")
         logger.info("Job worker started")
 

@@ -34,7 +34,7 @@ class AutomaticScanner:
     async def start(self) -> None:
         if self.running:
             return
-        self._stop.clear()
+        self._stop = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="automatic-scanner")
         logger.info("Automatic scanner started")
 

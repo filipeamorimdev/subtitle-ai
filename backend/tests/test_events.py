@@ -32,5 +32,5 @@ def test_health_and_openapi_include_events(tmp_path, monkeypatch):
     with TestClient(app) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        assert "events" in client.get("/openapi.json").json()["paths"]
+        assert "/api/events" in client.get("/openapi.json").json()["paths"]
         assert client.get("/api/nope").status_code == 404

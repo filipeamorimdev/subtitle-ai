@@ -32,7 +32,7 @@ def _alembic_config():
 
 
 def run_schema_migrations() -> None:
-    """Stamp legacy DBs, then ``alembic upgrade head``."""
+    """Stamp legacy DBs, then ``alembic upgrade head`` on the app engine."""
     from alembic import command
 
     from app.db import get_engine
@@ -43,15 +43,15 @@ def run_schema_migrations() -> None:
     cfg = _alembic_config()
     cfg.set_main_option("sqlalchemy.url", str(engine.url))
 
-    if "alembic_version" not in tables and tables.intersection({"settings", "jobs"}):
-        logger.info(
-            "Stamping pre-Alembic database at %s before upgrade",
-            LEGACY_STAMP_REVISION,
-        )
-        command.stamp(cfg, LEGACY_STAMP_REVISION)
-
-    command.upgrade(cfg, "head")
-    with engine.connect() as conn:
-        row = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
+    with engine.connect() as connection:
+        cfg.attributes["connection"] = connection
+        if "alembic_version" not in tables and tables.intersection({"settings", "jobs"}):
+            logger.info(
+                "Stamping pre-Alembic database at %s before upgrade",
+                LEGACY_STAMP_REVISION,
+            )
+            command.stamp(cfg, LEGACY_STAMP_REVISION)
+        command.upgrade(cfg, "head")
+        row = connection.execute(text("SELECT version_num FROM alembic_version")).fetchone()
         version = row[0] if row else None
     logger.info("Schema at Alembic revision %s", version)
