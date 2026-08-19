@@ -14,13 +14,12 @@ import math
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.core.logging import get_logger
 from app.jobs.event_log import JobEventLog
-from app.subtitles.filenames import build_dub_preview_path, sidecar_language_tag
+from app.subtitles.filenames import sidecar_language_tag
 from app.subtitles.reading import parse_srt_timestamp
 from app.subtitles.parsers.srt import parse_srt
 
@@ -316,7 +315,6 @@ async def dub_media_from_srt_to_mkv(
             end_ms = parse_srt_timestamp(block.end) or 0
             target_ms = max(0, end_ms - start_ms)
             target_s = target_ms / 1000.0
-            start_s = start_ms / 1000.0
 
             text = clean_text_for_tts(block.text)
             chars = len(text)
