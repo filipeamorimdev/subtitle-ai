@@ -831,3 +831,212 @@ async def test_localization_state_pt_sidecar_does_not_light_up_brazil():
     assert by_code["pt"].available is False
     assert by_code["pt-PT"].available is True
     assert by_code["pt-BR"].available is False
+
+
+def test_can_request_source_skipped_when_extractable():
+    from app.api.schemas import CandidateOut
+    from app.jobs.service import JobService
+
+    extractable = CandidateOut(
+        key="k",
+        media_type="movie",
+        title="Film",
+        media_path="/media/Film.mkv",
+        bazarr_movie_id=1,
+        target_language="pt-PT",
+        can_translate=False,
+        reason_code="no_source",
+        can_extract=True,
+        extract_stream_index=2,
+        extract_language="fr",
+    )
+    assert JobService._can_request_source(extractable) is False
+    missing = extractable.model_copy(
+        update={"can_extract": False, "extract_stream_index": None, "extract_language": None}
+    )
+    assert JobService._can_request_source(missing) is True
+
+
+@pytest.mark.asyncio
+async def test_candidate_uses_non_english_sidecar(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path))
+    get_app_config.cache_clear()
+
+    media_dir = tmp_path / "French"
+    media_dir.mkdir()
+    (media_dir / "French.mkv").write_text("x")
+    (media_dir / "French.fr.srt").write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nBonjour\n",
+        encoding="utf-8",
+    )
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    fernet = load_or_create_fernet(config_dir / "secret.key")
+    SettingsService(db, fernet=fernet).update(
+        SettingsUpdate(
+            bazarr_url="http://bazarr:6767",
+            bazarr_api_key="k",
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            source_languages=["en"],
+            path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
+        )
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/movies/wanted"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "French Movie",
+                            "radarrId": 40,
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/episodes/wanted"):
+            return httpx.Response(200, json={"data": [], "total": 0})
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "French Movie",
+                            "path": "/movies/French/French.mkv",
+                            "radarrId": 40,
+                            "subtitles": [
+                                {"code2": "fr", "path": "/movies/French/French.fr.srt"}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    candidates = await CandidateService(db).list_candidates()
+    assert len(candidates) == 1
+    assert candidates[0].can_translate is True
+    assert candidates[0].source_language == "fr"
+    assert candidates[0].source_subtitle_path.endswith("French.fr.srt")
+    assert candidates[0].can_extract is False
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_candidate_extracts_non_english_embedded(tmp_path, monkeypatch):
+    from app.jobs.service import JobService
+    from app.subtitles.embedded import EmbeddedTrack
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path))
+    get_app_config.cache_clear()
+
+    media_dir = tmp_path / "EmbeddedFr"
+    media_dir.mkdir()
+    (media_dir / "EmbeddedFr.mkv").write_text("x")
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    fernet = load_or_create_fernet(config_dir / "secret.key")
+    SettingsService(db, fernet=fernet).update(
+        SettingsUpdate(
+            bazarr_url="http://bazarr:6767",
+            bazarr_api_key="k",
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            source_languages=["en"],
+            path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
+        )
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/movies/wanted"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Embedded French",
+                            "radarrId": 41,
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/episodes/wanted"):
+            return httpx.Response(200, json={"data": [], "total": 0})
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "Embedded French",
+                            "path": "/movies/EmbeddedFr/EmbeddedFr.mkv",
+                            "radarrId": 41,
+                            "subtitles": [],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    async def fake_probe(_path):
+        return [
+            EmbeddedTrack(
+                stream_index=2,
+                language="fr",
+                codec="subrip",
+                kind="text",
+                extractable=True,
+            )
+        ]
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    monkeypatch.setattr("app.services.candidates.probe_subtitle_tracks", fake_probe)
+    candidates = await CandidateService(db).list_candidates()
+    assert len(candidates) == 1
+    cand = candidates[0]
+    assert cand.can_extract is True
+    assert cand.extract_language == "fr"
+    assert cand.can_translate is False
+    assert JobService._can_request_source(cand) is False
+    db.close()
+

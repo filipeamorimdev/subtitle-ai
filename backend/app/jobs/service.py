@@ -1482,6 +1482,7 @@ class JobService:
             path,
             media_roots=public.media_roots,
             source_languages=public.source_languages or ["en"],
+            target_language=public.target_language.code,
             has_active_transcribe=active is not None,
         )
 
@@ -1749,6 +1750,8 @@ class JobService:
         if candidate.reason_code == "target_exists":
             return False
         if candidate.source_subtitle_path:
+            return False
+        if candidate.can_extract:
             return False
         if candidate.media_type == "movie":
             return candidate.bazarr_movie_id is not None
@@ -2262,6 +2265,13 @@ class JobService:
 
     async def _extract_fallback_for_request(self, row: JobRow, code2: str) -> tuple[str | None, bool]:
         snapshot = _job_io_snapshot(row)
+        public = self.settings.get_public()
+        preferred = public.source_languages or [code2]
+        loc_target = public.target_language.code
+        if snapshot.task_id:
+            task = self.db.get(LocalizationTaskRow, snapshot.task_id)
+            if task and task.target_language_code:
+                loc_target = task.target_language_code
         self._release_db()
         media = Path(snapshot.media_path)
         if not media.is_file():
@@ -2270,14 +2280,19 @@ class JobService:
             tracks = await probe_subtitle_tracks(media)
         except EmbeddedError:
             return None, False
-        track = pick_extractable_track(tracks, [code2, snapshot.source_language or code2])
+        track = pick_extractable_track(
+            tracks, preferred, target_language=loc_target
+        )
         if track is None or track.stream_index is None:
             return None, False
-        output = build_external_subtitle_path(media, code2)
+        out_lang = normalize_language_code(track.language) or code2
+        output = build_external_subtitle_path(media, out_lang)
         if output.exists() and output.stat().st_size > 0:
             return str(output), False
         try:
-            await extract_embedded_track(media, track.stream_index, output, language=code2)
+            await extract_embedded_track(
+                media, track.stream_index, output, language=out_lang
+            )
         except EmbeddedError as exc:
             get_logger("jobs").warning(
                 "Extract fallback failed job_id=%s error=%s",
@@ -2317,7 +2332,9 @@ class JobService:
 
         # Accept HI/SDH sidecars beside the media even when Bazarr metadata lags.
         media = Path(snapshot.media_path)
-        found_local = find_source_srt_beside_media(media, [language])
+        found_local = find_source_srt_beside_media(
+            media, [language], allow_other_languages=False
+        )
         if found_local:
             path, _lang = found_local
             if path.exists() and path.stat().st_size > 0:

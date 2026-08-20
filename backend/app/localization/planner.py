@@ -35,8 +35,9 @@ from app.subtitles.filenames import (
     build_dub_preview_path,
     find_existing_sidecar,
     find_source_srt_beside_media,
-    language_matches,
+    is_origin_language,
     languages_compatible,
+    origin_language_rank,
     normalize_language_code,
     subtitle_belongs_to_media,
 )
@@ -724,13 +725,17 @@ class TaskPlanner:
         snapshot["source_path"] = str(output)
         snapshot["source_language"] = detected or snapshot.get("source_language")
 
-    def _overlay_disk_source(self, result: dict, path: str, source_langs: list[str]) -> None:
+    def _overlay_disk_source(
+        self, result: dict, path: str, source_langs: list[str], target_language: str
+    ) -> None:
         """Prefer a sidecar SRT on disk over a stale Bazarr wanted-list snapshot."""
         if result.get("can_translate") and result.get("source_path"):
             return
         if not path:
             return
-        found = find_source_srt_beside_media(Path(path), source_langs)
+        found = find_source_srt_beside_media(
+            Path(path), source_langs, target_language=target_language
+        )
         if not found:
             return
         result["can_translate"] = True
@@ -845,7 +850,7 @@ class TaskPlanner:
                     "extract_stream_index": cand.extract_stream_index,
                     "target_exists": cand.reason_code == "target_exists",
                 }
-                self._overlay_disk_source(result, path, source_langs)
+                self._overlay_disk_source(result, path, source_langs, target_language)
                 return result
         except BazarrError:
             pass
@@ -868,7 +873,9 @@ class TaskPlanner:
                 result["target_exists"] = True
                 return result
 
-            found = find_source_srt_beside_media(media_path, source_langs)
+            found = find_source_srt_beside_media(
+                media_path, source_langs, target_language=target_language
+            )
             if found:
                 result["can_translate"] = True
                 result["source_path"] = str(found[0])
@@ -879,7 +886,9 @@ class TaskPlanner:
                 probe_path = str(media_path)
                 release_session_connection(self.db)
                 tracks = await probe_subtitle_tracks(probe_path)
-                pick = pick_extractable_track(tracks, source_langs)
+                pick = pick_extractable_track(
+                    tracks, source_langs, target_language=target_language
+                )
                 if pick is not None:
                     result["can_extract"] = True
                     result["extract_stream_index"] = pick.stream_index
@@ -889,11 +898,12 @@ class TaskPlanner:
         movie_id = media.bazarr_movie_id
         episode_id = media.bazarr_episode_id
         series_id = media.bazarr_series_id
-        # Bazarr request if IDs exist
-        if media_type == "movie" and movie_id is not None:
-            result["can_request"] = True
-        elif episode_id is not None and series_id is not None:
-            result["can_request"] = True
+        # Bazarr request only when nothing local can be used as origin.
+        if not result["can_extract"]:
+            if media_type == "movie" and movie_id is not None:
+                result["can_request"] = True
+            elif episode_id is not None and series_id is not None:
+                result["can_request"] = True
 
         # Enrich from Bazarr subtitle metadata
         bazarr_url, bazarr_key = self.settings.get_bazarr_credentials()
@@ -911,20 +921,35 @@ class TaskPlanner:
                     if BazarrClient.target_subtitle_present(detail, target_language):
                         result["target_exists"] = True
                         return result
+                    bazarr_origins: list[tuple[int, str, str]] = []
                     for sub in BazarrClient.parse_subtitles(detail):
                         if not sub.path:
                             continue
                         lang = normalize_language_code(sub.language_code)
-                        if lang and language_matches(lang, source_langs):
-                            mapped = apply_path_mapping(sub.path, mappings)
-                            if mapped.lower().endswith(".srt") and (
-                                not path or subtitle_belongs_to_media(mapped, path)
-                            ):
-                                if Path(mapped).is_file():
-                                    result["can_translate"] = True
-                                    result["source_path"] = mapped
-                                    result["source_language"] = lang
-                                    break
+                        if not is_origin_language(
+                            lang,
+                            preferred_languages=source_langs,
+                            target_language=target_language,
+                            allow_unlabeled=False,
+                        ):
+                            continue
+                        mapped = apply_path_mapping(sub.path, mappings)
+                        if mapped.lower().endswith(".srt") and (
+                            not path or subtitle_belongs_to_media(mapped, path)
+                        ):
+                            if Path(mapped).is_file():
+                                bazarr_origins.append(
+                                    (
+                                        origin_language_rank(lang, source_langs),
+                                        mapped,
+                                        lang or "und",
+                                    )
+                                )
+                    if bazarr_origins:
+                        bazarr_origins.sort(key=lambda item: (item[0], item[1]))
+                        result["can_translate"] = True
+                        result["source_path"] = bazarr_origins[0][1]
+                        result["source_language"] = bazarr_origins[0][2]
             except BazarrError:
                 pass
 

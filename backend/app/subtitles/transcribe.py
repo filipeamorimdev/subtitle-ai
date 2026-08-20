@@ -635,6 +635,7 @@ async def assess_transcribe_gate(
     has_active_transcribe: bool,
     can_translate: bool | None = None,
     can_extract: bool | None = None,
+    target_language: str | None = None,
 ) -> TranscribeGate:
     if has_active_transcribe:
         return TranscribeGate(
@@ -671,7 +672,9 @@ async def assess_transcribe_gate(
     translate = can_translate
     extract = can_extract
     if translate is None:
-        found = find_source_srt_beside_media(path, source_languages or ["en"])
+        found = find_source_srt_beside_media(
+            path, source_languages or ["en"], target_language=target_language
+        )
         translate = found is not None
     if translate:
         return TranscribeGate(
@@ -686,7 +689,12 @@ async def assess_transcribe_gate(
         from app.subtitles.embedded import pick_extractable_track, probe_subtitle_tracks
 
         tracks = await probe_subtitle_tracks(path)
-        extract = pick_extractable_track(tracks, source_languages or ["en"]) is not None
+        extract = (
+            pick_extractable_track(
+                tracks, source_languages or ["en"], target_language=target_language
+            )
+            is not None
+        )
     if extract:
         return TranscribeGate(
             can_transcribe=False,

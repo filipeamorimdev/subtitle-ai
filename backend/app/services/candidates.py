@@ -29,8 +29,9 @@ from app.subtitles.filenames import (
     detect_language_from_filename,
     find_existing_sidecar,
     find_source_srt_beside_media,
-    language_matches,
+    is_origin_language,
     languages_compatible,
+    origin_language_rank,
     normalize_language_code,
     subtitle_belongs_to_media,
 )
@@ -98,22 +99,15 @@ def _track_to_out(track: EmbeddedTrack) -> EmbeddedSubtitleOut:
     )
 
 
-def _bazarr_embedded_tracks(
-    subtitles: list[BazarrSubtitle],
-    source_languages: list[str],
-) -> list[EmbeddedTrack]:
+def _bazarr_embedded_tracks(subtitles: list[BazarrSubtitle]) -> list[EmbeddedTrack]:
     tracks: list[EmbeddedTrack] = []
     for sub in subtitles:
         if sub.path:
             continue
-        lang = normalize_language_code(sub.language_code)
-        if lang and not language_matches(lang, source_languages):
-            # Still show non-source embedded langs as informational badges
-            pass
         tracks.append(
             EmbeddedTrack(
                 stream_index=None,
-                language=lang,
+                language=normalize_language_code(sub.language_code),
                 codec=None,
                 kind="unknown",
                 extractable=False,
@@ -283,42 +277,53 @@ class CandidateService:
             source_path: str | None = None
             source_lang: str | None = None
 
-            # Prefer Bazarr subtitle metadata (non-forced, then non-HI, then path order)
-            bazarr_sources: list[tuple[int, int, str, str]] = []
+            # Prefer Bazarr subtitle metadata (preferred lang, non-forced, then non-HI)
+            bazarr_sources: list[tuple[int, int, int, str, str]] = []
             for sub in item.subtitles:
                 if not sub.path:
                     continue
                 lang = normalize_language_code(sub.language_code) or detect_language_from_filename(
                     sub.path
                 )
-                if lang and language_matches(lang, source_langs):
-                    mapped = apply_path_mapping(sub.path, mappings)
-                    if mapped.lower().endswith(".srt") and subtitle_belongs_to_media(
-                        mapped, local_media
-                    ):
-                        bazarr_sources.append(
-                            (
-                                1 if sub.forced else 0,
-                                1 if sub.hi else 0,
-                                mapped,
-                                lang,
-                            )
+                if not is_origin_language(
+                    lang,
+                    preferred_languages=source_langs,
+                    target_language=target,
+                    allow_unlabeled=False,
+                ):
+                    continue
+                mapped = apply_path_mapping(sub.path, mappings)
+                if mapped.lower().endswith(".srt") and subtitle_belongs_to_media(
+                    mapped, local_media
+                ):
+                    bazarr_sources.append(
+                        (
+                            origin_language_rank(lang, source_langs),
+                            1 if sub.forced else 0,
+                            1 if sub.hi else 0,
+                            mapped,
+                            lang or "und",
                         )
+                    )
             if bazarr_sources:
-                bazarr_sources.sort(key=lambda item: (item[0], item[1], item[2]))
-                source_path = bazarr_sources[0][2]
-                source_lang = bazarr_sources[0][3]
+                bazarr_sources.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+                source_path = bazarr_sources[0][3]
+                source_lang = bazarr_sources[0][4]
 
             if source_path is None:
-                found = find_source_srt_beside_media(local_media, source_langs)
+                found = find_source_srt_beside_media(
+                    local_media, source_langs, target_language=target
+                )
                 if found:
                     path, lang = found
                     source_path = str(path)
                     source_lang = lang
 
-            bazarr_embedded = _bazarr_embedded_tracks(item.subtitles, source_langs)
+            bazarr_embedded = _bazarr_embedded_tracks(item.subtitles)
             embedded_tracks = _merge_embedded(bazarr_embedded, probed.get(local_media, []))
-            extract_track = pick_extractable_track(embedded_tracks, source_langs)
+            extract_track = pick_extractable_track(
+                embedded_tracks, source_langs, target_language=target
+            )
             can_extract = extract_track is not None and source_path is None
             # If external source already exists, extraction is unnecessary
             if source_path:

@@ -66,6 +66,26 @@ def test_pick_extractable_track_uses_pgs_when_only_image():
     assert picked.kind == "image"
 
 
+def test_pick_extractable_track_uses_other_language_when_preferred_missing():
+    tracks = [
+        EmbeddedTrack(1, "fr", "subrip", "text", True),
+        EmbeddedTrack(2, "pt", "subrip", "text", True),
+    ]
+    picked = pick_extractable_track(tracks, ["en"], target_language="pt-PT")
+    assert picked is not None
+    assert picked.language == "fr"
+    assert picked.stream_index == 1
+
+
+def test_pick_extractable_track_skips_target_only():
+    tracks = [
+        EmbeddedTrack(1, "pt", "subrip", "text", True),
+        EmbeddedTrack(2, "pt-PT", "subrip", "text", True),
+    ]
+    picked = pick_extractable_track(tracks, ["en"], target_language="pt-PT")
+    assert picked is None
+
+
 def test_build_external_subtitle_path(tmp_path):
     media = tmp_path / "Show - S01E01.mkv"
     assert build_external_subtitle_path(media, "en") == tmp_path / "Show - S01E01.en.srt"

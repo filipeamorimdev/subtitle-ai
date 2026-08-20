@@ -104,7 +104,7 @@ async function save() {
             placeholder="Select source language"
           />
           <span class="mt-1 block text-xs text-ink-500">
-            Preferred language for source subtitles when requesting, extracting, and matching. Defaults to English.
+            Language Bazarr should search when no local subtitle file or extractable embedded track exists. Defaults to English.
           </span>
         </div>
         <div class="block text-sm">

@@ -235,6 +235,65 @@ def test_find_source_does_not_borrow_sibling_episode(tmp_path):
     assert found[0] == own
 
 
+def test_find_source_accepts_other_language_when_preferred_missing(tmp_path):
+    from app.subtitles.filenames import find_source_srt_beside_media
+
+    media = tmp_path / "Show - S01E01.mkv"
+    media.write_bytes(b"x")
+    fr = tmp_path / "Show - S01E01.fr.srt"
+    fr.write_text("1\n00:00:01,000 --> 00:00:02,000\nBonjour\n", encoding="utf-8")
+    found = find_source_srt_beside_media(media, ["en"], target_language="pt-PT")
+    assert found is not None
+    assert found[0] == fr
+    assert found[1] == "fr"
+
+
+def test_find_source_prefers_configured_language_over_other(tmp_path):
+    from app.subtitles.filenames import find_source_srt_beside_media
+
+    media = tmp_path / "Show - S01E01.mkv"
+    media.write_bytes(b"x")
+    fr = tmp_path / "Show - S01E01.fr.srt"
+    en = tmp_path / "Show - S01E01.en.srt"
+    fr.write_text("fr\n", encoding="utf-8")
+    en.write_text("en\n", encoding="utf-8")
+    found = find_source_srt_beside_media(media, ["en"], target_language="pt-PT")
+    assert found is not None
+    assert found[0] == en
+    assert found[1] == "en"
+
+
+def test_find_source_skips_target_language_sidecar(tmp_path):
+    from app.subtitles.filenames import find_source_srt_beside_media
+
+    media = tmp_path / "Show - S01E01.mkv"
+    media.write_bytes(b"x")
+    pt = tmp_path / "Show - S01E01.pt.srt"
+    pt.write_text("pt\n", encoding="utf-8")
+    assert find_source_srt_beside_media(media, ["en"], target_language="pt-PT") is None
+
+    fr = tmp_path / "Show - S01E01.fr.srt"
+    fr.write_text("fr\n", encoding="utf-8")
+    found = find_source_srt_beside_media(media, ["en"], target_language="pt-PT")
+    assert found is not None
+    assert found[0] == fr
+
+
+def test_find_source_strict_preferred_ignores_other_languages(tmp_path):
+    from app.subtitles.filenames import find_source_srt_beside_media
+
+    media = tmp_path / "Show - S01E01.mkv"
+    media.write_bytes(b"x")
+    fr = tmp_path / "Show - S01E01.fr.srt"
+    fr.write_text("fr\n", encoding="utf-8")
+    assert (
+        find_source_srt_beside_media(
+            media, ["en"], allow_other_languages=False
+        )
+        is None
+    )
+
+
 def test_subtitle_belongs_to_media_rejects_prefix_collisions(tmp_path):
     from app.subtitles.filenames import subtitle_belongs_to_media
 

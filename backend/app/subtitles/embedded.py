@@ -10,7 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.logging import get_logger
-from app.subtitles.filenames import language_matches, normalize_language_code
+from app.subtitles.filenames import (
+    is_origin_language,
+    origin_language_rank,
+    normalize_language_code,
+)
 from app.subtitles.ocr import OcrError, ocr_available, pgs_sup_to_srt
 
 logger = get_logger("embedded")
@@ -181,23 +185,29 @@ async def probe_subtitle_tracks(media_path: str | Path, *, timeout: float = 12.0
 def pick_extractable_track(
     tracks: list[EmbeddedTrack],
     source_languages: list[str],
+    *,
+    target_language: str | None = None,
+    allow_other_languages: bool = True,
 ) -> EmbeddedTrack | None:
     preferred: list[EmbeddedTrack] = []
     for track in tracks:
         if not track.extractable or track.stream_index is None:
             continue
-        if track.language and language_matches(track.language, source_languages):
-            preferred.append(track)
-        elif track.language is None and source_languages:
-            # Undetermined language — allow as last resort
-            preferred.append(track)
+        if not is_origin_language(
+            track.language,
+            preferred_languages=source_languages,
+            target_language=target_language,
+            allow_other_languages=allow_other_languages,
+        ):
+            continue
+        preferred.append(track)
     if not preferred:
         return None
-    # Prefer text over PGS OCR, then matching language, non-forced, non-HI.
+    # Prefer text over PGS OCR, then preferred language, non-forced, non-HI.
     preferred.sort(
         key=lambda t: (
             0 if t.kind == "text" else 1,
-            0 if t.language and language_matches(t.language, source_languages) else 1,
+            origin_language_rank(t.language, source_languages),
             1 if t.forced else 0,
             0 if not t.hi else 1,
             t.stream_index or 999,

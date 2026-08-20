@@ -296,6 +296,39 @@ def language_matches(candidate: str | None, preferred: list[str]) -> bool:
     return any(languages_compatible(candidate, pref) for pref in preferred)
 
 
+def is_origin_language(
+    language: str | None,
+    *,
+    preferred_languages: list[str] | None = None,
+    target_language: str | None = None,
+    allow_other_languages: bool = True,
+    allow_unlabeled: bool = True,
+) -> bool:
+    """True when a sidecar/track can be used as a translation origin.
+
+    Preferred languages are a ranking hint, not a hard filter, unless
+    ``allow_other_languages`` is false (Bazarr search for a specific code).
+    The localization target is never treated as an origin.
+    """
+    if language and target_language and languages_compatible(language, target_language):
+        return False
+    if not language:
+        return allow_unlabeled
+    if preferred_languages and language_matches(language, preferred_languages):
+        return True
+    return allow_other_languages
+
+
+def origin_language_rank(language: str | None, preferred_languages: list[str] | None) -> int:
+    """Lower is better: preferred, then any other labeled language, then unlabeled."""
+    preferred = preferred_languages or []
+    if language and language_matches(language, preferred):
+        return 0
+    if language:
+        return 1
+    return 2
+
+
 def subtitle_stem(path: str | Path) -> str | None:
     """Return the media stem embedded in an SRT filename, or None if not an SRT."""
     name = Path(path).name
@@ -318,6 +351,9 @@ def subtitle_belongs_to_media(subtitle_path: str | Path, media_path: str | Path)
 def find_source_srt_beside_media(
     media_path: str | Path,
     source_languages: list[str],
+    *,
+    target_language: str | None = None,
+    allow_other_languages: bool = True,
 ) -> tuple[Path, str] | None:
     media = Path(media_path)
     directory = media.parent
@@ -325,25 +361,45 @@ def find_source_srt_beside_media(
         return None
 
     stem = media.stem
-    candidates: list[tuple[int, Path, str]] = []
+    candidates: list[tuple[int, int, Path, str]] = []
     for path in directory.glob("*.srt"):
         # Only sidecars for THIS media — never borrow another episode/movie's SRT
         # from the same folder (e.g. Season 1/*.en.srt).
         if subtitle_stem(path) != stem:
             continue
         lang = detect_language_from_filename(path)
-        if lang and language_matches(lang, source_languages):
-            hi_penalty = 1 if is_hi_subtitle_filename(path) else 0
-            candidates.append((hi_penalty, path, lang))
-        elif lang is None and path.name == f"{stem}.srt":
-            # Bare .srt next to media — treat as first preferred language
-            default_lang = normalize_language_code(source_languages[0]) or "en"
-            candidates.append((2, path, default_lang))
+        if lang is None and path.name == f"{stem}.srt":
+            if not is_origin_language(
+                None,
+                preferred_languages=source_languages,
+                target_language=target_language,
+                allow_other_languages=allow_other_languages,
+            ):
+                continue
+            default_lang = (
+                normalize_language_code(source_languages[0]) if source_languages else None
+            ) or "und"
+            candidates.append(
+                (origin_language_rank(None, source_languages), 2, path, default_lang)
+            )
+            continue
+        if not is_origin_language(
+            lang,
+            preferred_languages=source_languages,
+            target_language=target_language,
+            allow_other_languages=allow_other_languages,
+            allow_unlabeled=False,
+        ):
+            continue
+        hi_penalty = 1 if is_hi_subtitle_filename(path) else 0
+        candidates.append(
+            (origin_language_rank(lang, source_languages), hi_penalty, path, lang or "und")
+        )
 
     if not candidates:
         return None
-    candidates.sort(key=lambda item: (item[0], item[1].name))
-    _, path, lang = candidates[0]
+    candidates.sort(key=lambda item: (item[0], item[1], item[2].name))
+    _, _, path, lang = candidates[0]
     return path, lang
 
 

@@ -107,6 +107,23 @@ async def test_gate_false_when_source_srt_exists(asr_env):
 
 
 @pytest.mark.asyncio
+async def test_gate_false_when_other_language_source_srt_exists(asr_env):
+    db, tmp_path, video = asr_env
+    (video.parent / "Film.fr.srt").write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nBonjour\n\n", encoding="utf-8"
+    )
+    gate = await assess_transcribe_gate(
+        str(video),
+        media_roots=[str(tmp_path / "media")],
+        source_languages=["en"],
+        target_language="pt-PT",
+        has_active_transcribe=False,
+    )
+    assert gate.can_transcribe is False
+    assert gate.reason_code == "has_source"
+
+
+@pytest.mark.asyncio
 async def test_gate_false_when_extractable(asr_env, monkeypatch):
     db, tmp_path, video = asr_env
 
@@ -128,6 +145,35 @@ async def test_gate_false_when_extractable(asr_env, monkeypatch):
         str(video),
         media_roots=[str(tmp_path / "media")],
         source_languages=["en"],
+        has_active_transcribe=False,
+    )
+    assert gate.can_transcribe is False
+    assert gate.reason_code == "can_extract"
+
+
+@pytest.mark.asyncio
+async def test_gate_false_when_other_language_extractable(asr_env, monkeypatch):
+    db, tmp_path, video = asr_env
+
+    async def fake_probe(_path):
+        from app.subtitles.embedded import EmbeddedTrack
+
+        return [
+            EmbeddedTrack(
+                stream_index=3,
+                language="fr",
+                codec="subrip",
+                kind="text",
+                extractable=True,
+            )
+        ]
+
+    monkeypatch.setattr("app.subtitles.embedded.probe_subtitle_tracks", fake_probe)
+    gate = await assess_transcribe_gate(
+        str(video),
+        media_roots=[str(tmp_path / "media")],
+        source_languages=["en"],
+        target_language="pt-PT",
         has_active_transcribe=False,
     )
     assert gate.can_transcribe is False
