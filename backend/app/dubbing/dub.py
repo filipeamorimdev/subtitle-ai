@@ -39,6 +39,10 @@ PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 VOICE_PATTERN = re.compile(
     r"^(?P<lang_family>[^-]+)_(?P<lang_region>[^-]+)-(?P<voice_name>[^-]+)-(?P<voice_quality>.+)$"
 )
+# Shaped cue clips are 16 kHz mono; adelay uses this rate with the `S` (samples) suffix
+# so delays can exceed ffmpeg's historic 65535 ms adelay limit.
+CUE_SAMPLE_RATE = 16000
+TTS_MIX_SAMPLE_RATE = 48000
 
 
 class DubError(Exception):
@@ -100,26 +104,28 @@ async def ensure_piper_voice_available(
     voice_model: str,
     voices_dir: Path,
     is_cancelled: Callable[[], bool],
-) -> None:
+) -> Path:
     """Ensure Piper voice files exist under `voices_dir`.
 
     We download directly from HuggingFace with URL-encoded path segments.
     Piper's bundled `download_voices` helper uses stdlib `urlopen`, which
     fails on non-ASCII voice names such as ``pt_PT-tugão-medium``.
+
+    Returns the path to the ``.onnx`` model.
     """
     voices_dir.mkdir(parents=True, exist_ok=True)
     voice_code, model_url, config_url = _piper_voice_download_urls(voice_model)
     model_path = voices_dir / f"{voice_code}.onnx"
     config_path = voices_dir / f"{voice_code}.onnx.json"
 
-    if model_path.is_file() and model_path.stat().st_size > 0 and config_path.is_file():
-        return
+    if not (model_path.is_file() and model_path.stat().st_size > 0 and config_path.is_file()):
+        logger.info("Downloading Piper voice model=%s into %s", voice_model, voices_dir)
+        if not model_path.is_file() or model_path.stat().st_size <= 0:
+            await _download_piper_file(model_url, model_path, is_cancelled=is_cancelled)
+        if not config_path.is_file() or config_path.stat().st_size <= 0:
+            await _download_piper_file(config_url, config_path, is_cancelled=is_cancelled)
 
-    logger.info("Downloading Piper voice model=%s into %s", voice_model, voices_dir)
-    if not model_path.is_file() or model_path.stat().st_size <= 0:
-        await _download_piper_file(model_url, model_path, is_cancelled=is_cancelled)
-    if not config_path.is_file() or config_path.stat().st_size <= 0:
-        await _download_piper_file(config_url, config_path, is_cancelled=is_cancelled)
+    return model_path
 
 
 def clean_text_for_tts(text: str) -> str:
@@ -253,41 +259,6 @@ async def run_process_checked(
             raise DubError(f"Command timed out: {argv[:2]}...") from exc
 
 
-async def prepend_silence_to_clip(
-    input_wav: Path,
-    output_wav: Path,
-    *,
-    start_ms: int,
-    sample_rate: int = 16000,
-) -> None:
-    """Place a shaped cue on the timeline by prepending silence."""
-    start_s = max(0, start_ms) / 1000.0
-    if start_s <= 0.001:
-        shutil.copyfile(input_wav, output_wav)
-        return
-
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-nostdin",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        f"anullsrc=r={sample_rate}:cl=mono:d={start_s:.3f}",
-        "-i",
-        str(input_wav),
-        "-filter_complex",
-        "[0:a][1:a]concat=n=2:v=0:a=1[out]",
-        "-map",
-        "[out]",
-        "-c:a",
-        "pcm_s16le",
-        str(output_wav),
-    ]
-    await run_process_checked(cmd, timeout_s=1800.0)
-
-
 async def shape_clip_to_duration(
     input_wav: Path,
     output_wav: Path,
@@ -310,7 +281,7 @@ async def shape_clip_to_duration(
             "-ac",
             "1",
             "-ar",
-            "16000",
+            str(CUE_SAMPLE_RATE),
             "-c:a",
             "pcm_s16le",
             "-af",
@@ -343,7 +314,7 @@ async def shape_clip_to_duration(
         "-ac",
         "1",
         "-ar",
-        "16000",
+        str(CUE_SAMPLE_RATE),
         "-c:a",
         "pcm_s16le",
         "-af",
@@ -358,7 +329,7 @@ async def shape_clip_to_duration(
 async def synthesize_piper_to_wav(
     text: str,
     *,
-    voice_model: str,
+    model_path: Path,
     voices_dir: Path,
     output_wav: Path,
     is_cancelled: Callable[[], bool],
@@ -370,12 +341,11 @@ async def synthesize_piper_to_wav(
     if not piper_bin:
         raise DubError("piper binary is not installed (expected piper-tts package)")
 
-    # Note: `piper` downloads the voice model on first use.
-    # We try to keep downloads under `/config/piper-voices` by passing both dirs.
+    payload = text if text.endswith("\n") else f"{text}\n"
     cmd = [
-        "piper",
+        piper_bin,
         "--model",
-        voice_model,
+        str(model_path),
         "--output_file",
         str(output_wav),
         "--data-dir",
@@ -384,7 +354,6 @@ async def synthesize_piper_to_wav(
         str(voices_dir),
     ]
 
-    # Pass cue text via stdin. Piper supports arbitrary unicode input.
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -392,8 +361,8 @@ async def synthesize_piper_to_wav(
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=text.encode("utf-8")),
+        _stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=payload.encode("utf-8")),
             timeout=1800.0,
         )
     except asyncio.CancelledError:
@@ -406,8 +375,14 @@ async def synthesize_piper_to_wav(
 
     if proc.returncode != 0:
         detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
-        raise DubError(f"piper failed for model={voice_model}: {detail or 'unknown error'}")
-    _ = stdout
+        raise DubError(f"piper failed for model={model_path.name}: {detail or 'unknown error'}")
+
+    if not output_wav.is_file() or output_wav.stat().st_size < 64:
+        raise DubError(f"piper produced no audio for cue ({model_path.name})")
+
+
+def _adelay_samples(start_ms: int, sample_rate: int = CUE_SAMPLE_RATE) -> int:
+    return max(0, int(round(max(0, start_ms) * sample_rate / 1000.0)))
 
 
 def build_tts_mix_command(
@@ -415,24 +390,37 @@ def build_tts_mix_command(
     output_wav: Path,
     *,
     media_duration_s: float | None = None,
-    sample_rate: int = 48000,
+    sample_rate: int = TTS_MIX_SAMPLE_RATE,
+    cue_sample_rate: int = CUE_SAMPLE_RATE,
 ) -> list[str]:
-    """Build ffmpeg command to mix cue clips onto a full-length timeline.
+    """Build ffmpeg command to mix short cue clips onto a full-length timeline.
 
-    Each clip must already include leading silence for its cue start time
-    (see ``prepend_silence_to_clip``). ``start_ms`` in each tuple is ignored.
+    Each clip is delayed with ``adelay`` using a sample count (``S`` suffix) so
+    start times above 65535 ms work. Clips must stay short — prepending minutes
+    of silence and then amixing hundreds of full-length files loops a buffer and
+    sounds like the same sound repeating.
     """
     if not shaped_clips:
         raise DubError("No cue clips to mix")
 
     inputs: list[str] = []
-    for clip_path, _start_ms in shaped_clips:
+    delay_filters: list[str] = []
+    delayed_labels: list[str] = []
+    for index, (clip_path, start_ms) in enumerate(shaped_clips):
         inputs.extend(["-i", str(clip_path)])
+        delay_samples = _adelay_samples(start_ms, cue_sample_rate)
+        label = f"d{index}"
+        delayed_labels.append(f"[{label}]")
+        if delay_samples > 0:
+            delay_filters.append(f"[{index}:a]adelay={delay_samples}S:all=1[{label}]")
+        else:
+            delay_filters.append(f"[{index}:a]anull[{label}]")
 
     input_count = len(shaped_clips)
-    labels = "".join(f"[{i}:a]" for i in range(input_count))
-    filter_graph = (
-        f"{labels}amix=inputs={input_count}:duration=longest:"
+    mix_inputs = "".join(delayed_labels)
+    filter_graph = ";".join(delay_filters)
+    filter_graph += (
+        f";{mix_inputs}amix=inputs={input_count}:duration=longest:"
         f"dropout_transition=0:normalize=0[mixed]"
     )
     if media_duration_s is not None and media_duration_s > 0:
@@ -444,7 +432,6 @@ def build_tts_mix_command(
         filter_graph += (
             f";[mixed]volume={TTS_MIX_GAIN_DB}dB,alimiter=limit={TTS_LIMITER_CEILING}[out]"
         )
-    map_label = "[out]"
 
     return [
         "ffmpeg",
@@ -455,7 +442,7 @@ def build_tts_mix_command(
         "-filter_complex",
         filter_graph,
         "-map",
-        map_label,
+        "[out]",
         "-ac",
         "1",
         "-ar",
@@ -576,7 +563,7 @@ async def dub_media_from_srt_to_mkv(
     event_log.record(event="source_srt", path=str(source_srt), cue_count=total)
 
     voice_model = voice_model or resolve_voice_model_for_language(target_language)
-    await ensure_piper_voice_available(
+    model_path = await ensure_piper_voice_available(
         voice_model=voice_model,
         voices_dir=voices_dir,
         is_cancelled=is_cancelled,
@@ -620,8 +607,8 @@ async def dub_media_from_srt_to_mkv(
                 continue
 
             piper_input_count += 1
-            cue_wav = tmp_dir / f"cue-{block.index}.wav"
-            shaped_wav = tmp_dir / f"cue-{block.index}-shaped.wav"
+            cue_wav = tmp_dir / f"cue-{block_idx}.wav"
+            shaped_wav = tmp_dir / f"cue-{block_idx}-shaped.wav"
 
             event_log.record(
                 event="cue",
@@ -630,11 +617,12 @@ async def dub_media_from_srt_to_mkv(
                 end_ms=end_ms,
                 chars=chars,
                 fit="synth",
+                text_preview=text[:80],
             )
 
             await synthesize_piper_to_wav(
                 text,
-                voice_model=voice_model,
+                model_path=model_path,
                 voices_dir=voices_dir,
                 output_wav=cue_wav,
                 is_cancelled=is_cancelled,
@@ -663,14 +651,7 @@ async def dub_media_from_srt_to_mkv(
                 target_duration_s=target_s,
             )
 
-            delayed_wav = tmp_dir / f"cue-{block.index}-delayed.wav"
-            await prepend_silence_to_clip(
-                shaped_wav,
-                delayed_wav,
-                start_ms=start_ms,
-            )
-
-            shaped_clips.append((delayed_wav, 0))
+            shaped_clips.append((shaped_wav, start_ms))
 
             if on_progress:
                 maybe = on_progress(block_idx, total)

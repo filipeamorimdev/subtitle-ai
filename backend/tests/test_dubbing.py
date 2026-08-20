@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -36,7 +38,7 @@ def test_piper_voice_download_urls_encode_unicode():
     assert config_url.endswith(".onnx.json?download=true")
 
 
-def test_build_tts_mix_command_mixes_prepositioned_clips(tmp_path):
+def test_build_tts_mix_command_uses_sample_adelay(tmp_path):
     clip_a = tmp_path / "a.wav"
     clip_b = tmp_path / "b.wav"
     clip_a.write_bytes(b"a")
@@ -44,20 +46,105 @@ def test_build_tts_mix_command_mixes_prepositioned_clips(tmp_path):
     out = tmp_path / "mix.wav"
 
     cmd = build_tts_mix_command(
-        [(clip_a, 0), (clip_b, 0)],
+        [(clip_a, 0), (clip_b, 1_140_000)],
         out,
         media_duration_s=1_428.0,
     )
     joined = " ".join(cmd)
 
-    assert "adelay" not in joined
     assert "-itsoffset" not in joined
+    assert "anullsrc" not in joined
+    assert "adelay=18240000S:all=1" in joined
+    assert "[0:a]anull[d0]" in joined
     assert "normalize=0" in joined
     assert "volume=18.0dB" in joined
     assert "alimiter" in joined
     assert "apad=whole_dur=1428.000" in joined
     assert "-ar 48000" in joined
     assert str(clip_a) in joined and str(clip_b) in joined
+
+
+def _mean_volume_db(path: Path, start_s: float, duration_s: float = 0.15) -> float:
+    proc = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-ss",
+            str(start_s),
+            "-i",
+            str(path),
+            "-t",
+            str(duration_s),
+            "-af",
+            "volumedetect",
+            "-f",
+            "null",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for line in proc.stderr.splitlines():
+        if "mean_volume" in line:
+            return float(line.rsplit(":", 1)[-1].replace("dB", "").strip())
+    raise AssertionError("volumedetect did not report mean_volume")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
+def test_mix_command_places_distinct_clips(tmp_path):
+    clip_a = tmp_path / "a.wav"
+    clip_b = tmp_path / "b.wav"
+    out = tmp_path / "mix.wav"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=f=440:d=0.4",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-y",
+            str(clip_a),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=f=880:d=0.4",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-y",
+            str(clip_b),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    cmd = build_tts_mix_command(
+        [(clip_a, 200), (clip_b, 1500)],
+        out,
+        media_duration_s=3.0,
+    )
+    subprocess.run(cmd, check=True, capture_output=True)
+
+    quiet = _mean_volume_db(out, 0.9)
+    first = _mean_volume_db(out, 0.25)
+    second = _mean_volume_db(out, 1.55)
+    assert quiet < -50
+    assert first > quiet + 20
+    assert second > quiet + 20
 
 
 def test_build_mux_command_copies_original_audio(tmp_path):
