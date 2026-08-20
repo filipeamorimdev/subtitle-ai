@@ -555,6 +555,107 @@ async def test_request_job_skips_when_not_found(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_request_job_does_not_complete_on_missing_bazarr_path(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SUBTITLE_AI_MEDIA_ROOTS", str(tmp_path))
+    get_app_config.cache_clear()
+
+    media_dir = tmp_path / "Empty"
+    media_dir.mkdir()
+    (media_dir / "Empty.mkv").write_text("x")
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    fernet = load_or_create_fernet(config_dir / "secret.key")
+    settings = SettingsService(db, fernet=fernet)
+    settings.update(
+        SettingsUpdate(
+            bazarr_url="http://bazarr:6767",
+            bazarr_api_key="k",
+            target_language_code="pt-PT",
+            target_language_name="Portuguese (Portugal)",
+            source_languages=["en"],
+            path_mappings=[PathMappingIn(bazarr_prefix="/movies", local_prefix=str(tmp_path))],
+        )
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/movies/wanted"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "No Source",
+                            "radarrId": 11,
+                            "missing_subtitles": [
+                                {"code2": "pt", "name": "Portuguese", "forced": False, "hi": False}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/episodes/wanted"):
+            return httpx.Response(200, json={"data": [], "total": 0})
+        if request.url.path.endswith("/api/movies"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "title": "No Source",
+                            "path": "/movies/Empty/Empty.mkv",
+                            "radarrId": 11,
+                            "subtitles": [
+                                {"code2": "en", "path": "/movies/Empty/Empty.en.srt"}
+                            ],
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        if request.url.path.endswith("/api/movies/subtitles") and request.method == "PATCH":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    class PatchedClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", PatchedClient)
+    monkeypatch.setattr("app.jobs.service.REQUEST_POLL_SECONDS", 0.01)
+    monkeypatch.setattr("app.jobs.service.REQUEST_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("app.jobs.service.REQUEST_HI_RETRY_AFTER_SECONDS", 0.01)
+
+    async def fake_probe(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("app.jobs.service.probe_subtitle_tracks", fake_probe)
+
+    from app.jobs.service import JobService
+
+    candidates = await CandidateService(db).list_candidates()
+    blocked = next(c for c in candidates if c.reason_code in {"no_source", "source_missing_on_disk"})
+    created = await JobService(db).create_request_subtitle_job(blocked.key)
+    claimed = JobService(db).claim_next_job()
+    assert claimed is not None
+    await JobService(db).process_job(claimed.id)
+    done = JobService(db).get_job(claimed.id)
+    assert done is not None
+    assert done.status == "skipped"
+    assert done.reason_code == "not_found"
+    assert created.id == done.id
+
+
+@pytest.mark.asyncio
 async def test_candidate_list_cache_coalesces_polls(tmp_path, monkeypatch):
     from app.services.candidates import CandidateService, clear_candidate_cache
 

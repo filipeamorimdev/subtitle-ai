@@ -252,6 +252,10 @@ class FallbackPlanner:
             cooldown = JobService(self.db)._recent_not_found_cooldown(candidate.key)
             if cooldown is not None:
                 return "none"
+            latest_request = self._latest_job(candidate.key, "request")
+            if latest_request and latest_request.status == "completed":
+                # TaskPlanner translates from a readable source; do not enqueue another search.
+                return "none"
             return "request"
 
         return "none"

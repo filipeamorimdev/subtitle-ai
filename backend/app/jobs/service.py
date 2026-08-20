@@ -2337,9 +2337,6 @@ class JobService:
             local = Path(path)
             if local.exists() and local.stat().st_size > 0:
                 return str(local)
-            # Bazarr may report the path before our mount sees it; still treat metadata as success
-            if path.lower().endswith(".srt"):
-                return path
         return None
 
     async def _process_transcribe_job(self, job_id: int) -> None:

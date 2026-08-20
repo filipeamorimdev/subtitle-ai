@@ -457,6 +457,41 @@ async def test_next_action_is_verify_when_target_written_but_bazarr_missing(auto
 
 
 @pytest.mark.asyncio
+async def test_next_action_does_not_rerequest_after_completed_request(auto_env):
+    auto_env["source"].unlink()
+    auto_env["subtitle_payload"].clear()
+    db = auto_env["SessionLocal"]()
+    SettingsService(db, fernet=auto_env["fernet"]).update(
+        SettingsUpdate(automatic_fallback_enabled=True, bazarr_grace_period_minutes=0)
+    )
+    planner = FallbackPlanner(db)
+    candidate = (await CandidateService(db).list_candidates())[0]
+    observed = planner.observe_candidate(candidate)
+    db.add(
+        JobRow(
+            candidate_key=candidate.key,
+            job_kind="request",
+            trigger_type="automatic",
+            media_type="movie",
+            media_path=candidate.media_path,
+            media_title=candidate.title,
+            bazarr_movie_id=candidate.bazarr_movie_id,
+            source_subtitle_path=str(auto_env["media"] / "Example.mkv"),
+            target_subtitle_path="/movies/Example.en.srt",
+            source_language="en",
+            target_language="en",
+            model="bazarr-search",
+            status="completed",
+            progress=100,
+        )
+    )
+    db.commit()
+
+    assert planner.next_action(candidate, observed) == "none"
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_verify_failure_does_not_retranslate(auto_env, monkeypatch):
     db = auto_env["SessionLocal"]()
     SettingsService(db, fernet=auto_env["fernet"]).update(

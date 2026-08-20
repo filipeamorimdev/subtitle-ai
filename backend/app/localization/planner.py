@@ -56,6 +56,22 @@ MSG_DUB_FAILED = "Dubbing failed."
 MSG_WAITING_SUBTITLES = "Localize subtitles first."
 
 
+def _readable_request_source(job: JobRow) -> Path | None:
+    """Return a non-empty SRT written by a completed request job, if present on disk."""
+    for raw in (job.target_subtitle_path, job.source_subtitle_path):
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.suffix.lower() != ".srt":
+            continue
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return path
+        except OSError:
+            continue
+    return None
+
+
 class TaskPlanner:
     """Owns all progression for task-backed localization work.
 
@@ -247,6 +263,7 @@ class TaskPlanner:
         snapshot = await self._resolve_source_snapshot(media, task.target_language_code)
         self._prefer_completed_extract(task.id, snapshot)
         self._prefer_completed_transcribe(task, snapshot)
+        self._prefer_completed_request(task, snapshot)
         trigger = "manual" if task.origin == "manual" else "automatic"
         jobs = JobService(self.db)
 
@@ -380,9 +397,16 @@ class TaskPlanner:
                 )
             return self.tasks.get(task.id)
 
-        # Failed request with not_found
+        # Failed request with not_found, or a "success" that produced no readable SRT.
         latest_request = self._latest_job(task.id, "request")
         if latest_request and latest_request.reason_code == "not_found":
+            return self._after_source_not_found(task)
+        if (
+            latest_request
+            and latest_request.status == "completed"
+            and not snapshot.get("can_translate")
+            and not snapshot.get("can_request")
+        ):
             return self._after_source_not_found(task)
 
         if not media.path and media.bazarr_movie_id is None and media.bazarr_episode_id is None:
@@ -657,6 +681,31 @@ class TaskPlanner:
             snapshot["can_extract"] = False
             return
         snapshot["can_extract"] = False
+
+    def _prefer_completed_request(self, task: LocalizationTaskRow, snapshot: dict) -> None:
+        """Use a finished Bazarr request as the translation source, and never re-request it.
+
+        Request jobs can complete from Bazarr metadata while the wanted-list snapshot still
+        reports no source. Without this, plan() enqueues another request immediately.
+        """
+        latest = self._latest_job(task.id, "request")
+        if latest is None or latest.status != "completed":
+            return
+        source = _readable_request_source(latest)
+        if source is not None:
+            snapshot["can_translate"] = True
+            snapshot["source_path"] = str(source)
+            if latest.source_language:
+                snapshot["source_language"] = latest.source_language
+            snapshot["can_extract"] = False
+            snapshot["can_request"] = False
+            return
+        if snapshot.get("can_translate") and snapshot.get("source_path"):
+            snapshot["can_request"] = False
+            return
+        # Explicit retry (planning) may search again; otherwise stop the request loop.
+        if task.status != "planning":
+            snapshot["can_request"] = False
 
     def _prefer_completed_transcribe(self, task: LocalizationTaskRow, snapshot: dict) -> None:
         """Use a finished transcription as the translation source (or the target itself)."""
