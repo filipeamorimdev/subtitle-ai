@@ -117,7 +117,7 @@ When Bazarr has no source subtitle and embedded extract is not possible, TaskPla
 
 ## Manual TTS dub preview
 
-When a target-language SRT already exists beside the media file, the media page can start a **dub** job. Local [Piper](https://github.com/rhasspy/piper) synthesizes speech per cue (models cached under `/config/piper-voices`), places those clips on a speech-only WAV timeline, and ffmpeg muxes a sidecar `{stem}.{lang}.dub.mkv` next to the original. The source video is never overwritten. Completion is verified by disk presence only (no Bazarr rescan). Dubbing is **not** auto-enqueued by TaskPlanner or automatic fallback.
+When a target-language SRT already exists beside the media file, the media page can start a **dub** job. Local [Piper](https://github.com/rhasspy/piper) (Python API, voice loaded once) synthesizes speech per cue (models cached under `/config/piper-voices`), places those clips on a speech-only WAV timeline, and ffmpeg muxes a sidecar `{stem}.{lang}.dub.mkv` next to the original. The source video is never overwritten. Completion is verified by disk presence only (no Bazarr rescan). Dubbing is **not** auto-enqueued by TaskPlanner or automatic fallback.
 
 ## Upgrade from v0.1 / v0.2.1
 

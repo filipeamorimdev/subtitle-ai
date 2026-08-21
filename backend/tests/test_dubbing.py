@@ -29,7 +29,10 @@ from app.dubbing.dub import (
     TTS_MIX_GAIN_DB,
     _piper_voice_download_urls,
     build_mux_command,
+    clean_text_for_tts,
+    piper_output_ignores_text,
     write_tts_timeline_wav,
+    _write_piper_wav,
 )
 
 
@@ -38,6 +41,69 @@ def test_piper_voice_download_urls_encode_unicode():
     assert "tug%C3%A3o" in model_url
     assert model_url.endswith(".onnx?download=true")
     assert config_url.endswith(".onnx.json?download=true")
+
+
+def test_clean_text_for_tts_strips_music_speaker_and_sfx():
+    assert "família" in clean_text_for_tts(
+        "♪ Bem, viemos de lugares diferentes Mas somos todos família ♪"
+    )
+    assert "♪" not in clean_text_for_tts("♪ No Dino Ranch ♪")
+    assert clean_text_for_tts("Miguel: Para! Para!") == "Para! Para!"
+    assert clean_text_for_tts("Bo (voz off): Aquele tricerátopo grande é o Angus.") == (
+        "Aquele tricerátopo grande é o Angus."
+    )
+    assert clean_text_for_tts("(chilrear)") == ""
+    assert clean_text_for_tts("(O Jon a ler)") == ""
+    assert "equitação" in clean_text_for_tts(
+        "é uma óptima maneira de aperfeiçoarmos a nossa equitação."
+    )
+
+
+def test_piper_output_ignores_text_detects_fixed_length_clips():
+    # Job 763 pattern: 3–64 chars, every clip ~1.5s.
+    samples = [
+        (61, 1.544),
+        (47, 1.544),
+        (3, 1.509),
+        (64, 1.521),
+        (8, 1.474),
+        (45, 1.498),
+        (10, 1.486),
+        (38, 1.498),
+    ]
+    assert piper_output_ignores_text(samples) is True
+    varying = [
+        (8, 0.6),
+        (20, 1.4),
+        (40, 2.6),
+        (12, 0.9),
+        (55, 3.4),
+        (30, 2.0),
+        (18, 1.2),
+        (48, 3.0),
+    ]
+    assert piper_output_ignores_text(varying) is False
+
+
+class _FakePiperVoice:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def synthesize_wav(self, text: str, wav_file) -> None:
+        self.texts.append(text)
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x10" * 200)
+
+
+def test_write_piper_wav_sends_cue_text_not_cli_flags(tmp_path):
+    voice = _FakePiperVoice()
+    out = tmp_path / "cue.wav"
+    _write_piper_wav(voice, "Para! Para!", out)
+    assert voice.texts == ["Para! Para!"]
+    assert "--download-dir" not in voice.texts[0]
+    assert out.stat().st_size > 64
 
 
 def _write_pcm_wav(path: Path, samples: array.array, *, sample_rate: int = CUE_SAMPLE_RATE) -> None:

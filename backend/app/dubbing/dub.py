@@ -37,6 +37,10 @@ TTS_MIX_GAIN_DB = 18.0
 TTS_LIMITER_CEILING = 0.98
 
 TAG_RE = re.compile(r"</?(?:i|b|u)>", flags=re.IGNORECASE)
+MUSIC_RE = re.compile(r"[♪♫🎵🎶]+")
+SFX_ONLY_RE = re.compile(r"^(?:\([^)]*\)\s*)+$")
+SPEAKER_PREFIX_RE = re.compile(r"^(?:[-–—]\s*)*(?P<name>[^:]{1,40}):\s+")
+LEADING_DASH_RE = re.compile(r"(?:^|\s)[-–—]\s*")
 PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 VOICE_PATTERN = re.compile(
     r"^(?P<lang_family>[^-]+)_(?P<lang_region>[^-]+)-(?P<voice_name>[^-]+)-(?P<voice_quality>.+)$"
@@ -131,9 +135,19 @@ async def ensure_piper_voice_available(
 
 
 def clean_text_for_tts(text: str) -> str:
-    # Strip the subset of player-friendly tags we keep elsewhere in the pipeline.
+    """Normalize cue text for Piper. Empty result means skip the cue."""
     stripped = TAG_RE.sub("", text or "")
-    return stripped.replace("\n", " ").strip()
+    stripped = MUSIC_RE.sub(" ", stripped)
+    stripped = stripped.replace("\n", " ")
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    stripped = LEADING_DASH_RE.sub(" ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    speaker = SPEAKER_PREFIX_RE.match(stripped)
+    if speaker:
+        stripped = stripped[speaker.end() :].strip()
+    if not stripped or SFX_ONLY_RE.match(stripped):
+        return ""
+    return stripped
 
 
 async def probe_has_audio_stream(path: str | Path) -> bool:
@@ -328,59 +342,77 @@ async def shape_clip_to_duration(
     return (fit, atempo, audio_duration)
 
 
+def load_piper_voice(model_path: Path) -> Any:
+    """Load a Piper ONNX voice once per dub job."""
+    try:
+        from piper import PiperVoice
+    except ImportError as exc:
+        raise DubError("piper-tts is not installed") from exc
+    try:
+        return PiperVoice.load(str(model_path))
+    except Exception as exc:  # noqa: BLE001
+        raise DubError(f"Failed to load Piper voice {model_path.name}: {exc}") from exc
+
+
+def _write_piper_wav(voice: Any, text: str, output_wav: Path) -> None:
+    """Write one utterance using the piper-tts Python API."""
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(output_wav), "wb") as wav_file:
+        synthesize_wav = getattr(voice, "synthesize_wav", None)
+        if callable(synthesize_wav):
+            synthesize_wav(text, wav_file)
+            return
+        try:
+            voice.synthesize(text, wav_file)
+            return
+        except TypeError:
+            pass
+        params_set = False
+        for chunk in voice.synthesize(text):
+            if not params_set:
+                wav_file.setframerate(getattr(chunk, "sample_rate", CUE_SAMPLE_RATE))
+                wav_file.setsampwidth(getattr(chunk, "sample_width", 2))
+                wav_file.setnchannels(getattr(chunk, "sample_channels", 1))
+                params_set = True
+            audio = getattr(chunk, "audio_int16_bytes", None)
+            if audio:
+                wav_file.writeframes(audio)
+
+
+def piper_output_ignores_text(samples: list[tuple[int, float]]) -> bool:
+    """True when clip length does not follow text length (stdin ignored / same junk)."""
+    if len(samples) < 8:
+        return False
+    chars = [count for count, _duration in samples]
+    durations = [duration for _count, duration in samples]
+    if max(chars) - min(chars) < 20:
+        return False
+    return max(durations) - min(durations) < 0.25
+
+
 async def synthesize_piper_to_wav(
     text: str,
     *,
-    model_path: Path,
-    voices_dir: Path,
+    voice: Any,
     output_wav: Path,
     is_cancelled: Callable[[], bool],
 ) -> None:
-    """Use `piper` CLI from piper-tts to synthesize wav for one cue."""
+    """Synthesize one cue with a loaded Piper voice (Python API, not the CLI).
+
+    Piper 1.3+ treats unknown CLI flags as the text to speak. Passing
+    ``--download-dir`` made every cue synthesize the same ~1.5s of junk.
+    """
     if not output_wav.parent.exists():
         output_wav.parent.mkdir(parents=True, exist_ok=True)
-    piper_bin = shutil.which("piper")
-    if not piper_bin:
-        raise DubError("piper binary is not installed (expected piper-tts package)")
-
-    payload = text if text.endswith("\n") else f"{text}\n"
-    cmd = [
-        piper_bin,
-        "--model",
-        str(model_path),
-        "--output_file",
-        str(output_wav),
-        "--data-dir",
-        str(voices_dir),
-        "--download-dir",
-        str(voices_dir),
-    ]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        _stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=payload.encode("utf-8")),
-            timeout=1800.0,
-        )
-    except asyncio.CancelledError:
-        proc.kill()
-        raise
-
     if is_cancelled():
-        proc.kill()
         raise DubError("Dub cancelled")
 
-    if proc.returncode != 0:
-        detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
-        raise DubError(f"piper failed for model={model_path.name}: {detail or 'unknown error'}")
+    await asyncio.to_thread(_write_piper_wav, voice, text, output_wav)
 
+    if is_cancelled():
+        raise DubError("Dub cancelled")
     if not output_wav.is_file() or output_wav.stat().st_size < 64:
-        raise DubError(f"piper produced no audio for cue ({model_path.name})")
+        raise DubError("piper produced no audio for cue")
 
 
 def _start_sample(start_ms: int, sample_rate: int) -> int:
@@ -587,6 +619,11 @@ async def dub_media_from_srt_to_mkv(
         voices_dir=voices_dir,
         is_cancelled=is_cancelled,
     )
+    if is_cancelled():
+        event_log.record(event="cancelled")
+        return
+    voice = await asyncio.to_thread(load_piper_voice, model_path)
+    event_log.record(event="voice_loaded", voice_model=voice_model, path=str(model_path))
 
     with tempfile.TemporaryDirectory(prefix="subtitle-ai-dub-") as tmp:
         tmp_dir = Path(tmp)
@@ -594,6 +631,7 @@ async def dub_media_from_srt_to_mkv(
 
         speed_cap = 1.2
         piper_input_count = 0
+        synth_samples: list[tuple[int, float]] = []
 
         for block_idx, block in enumerate(doc.blocks, start=1):
             if is_cancelled():
@@ -641,8 +679,7 @@ async def dub_media_from_srt_to_mkv(
 
             await synthesize_piper_to_wav(
                 text,
-                model_path=model_path,
-                voices_dir=voices_dir,
+                voice=voice,
                 output_wav=cue_wav,
                 is_cancelled=is_cancelled,
             )
@@ -670,6 +707,9 @@ async def dub_media_from_srt_to_mkv(
                 target_duration_s=target_s,
             )
 
+            if audio_duration is not None:
+                synth_samples.append((chars, audio_duration))
+
             shaped_clips.append((shaped_wav, start_ms))
 
             if on_progress:
@@ -680,6 +720,11 @@ async def dub_media_from_srt_to_mkv(
         # Place all shaped clips onto one speech-only timeline, then mux.
         if not shaped_clips:
             raise DubError("No cue text was synthesized; dub output would be silence.")
+        if piper_output_ignores_text(synth_samples):
+            raise DubError(
+                "Piper produced nearly the same clip length for every subtitle. "
+                "The voice is not reading cue text; refusing to mux a looping track."
+            )
 
         media_duration_s = await probe_duration_seconds(media)
         if media_duration_s is None:
