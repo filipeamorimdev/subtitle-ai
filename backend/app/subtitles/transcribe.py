@@ -317,7 +317,10 @@ async def transcribe_with_local(
             progress["total"] = total
 
     if on_progress:
-        await _maybe_progress(on_progress, 0.0, duration or 0.0)
+        try:
+            await _maybe_progress(on_progress, 0.0, duration or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Transcribe progress update failed: %s", exc)
 
     stop_pump = asyncio.Event()
 
@@ -327,14 +330,20 @@ async def transcribe_with_local(
             current = (progress["done"], progress["total"])
             if on_progress and current != last:
                 last = current
-                await _maybe_progress(on_progress, current[0], current[1])
+                try:
+                    await _maybe_progress(on_progress, current[0], current[1])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Transcribe progress update failed: %s", exc)
             try:
                 await asyncio.wait_for(stop_pump.wait(), timeout=1.0)
             except TimeoutError:
                 continue
         current = (progress["done"], progress["total"])
         if on_progress and current != last:
-            await _maybe_progress(on_progress, current[0], current[1])
+            try:
+                await _maybe_progress(on_progress, current[0], current[1])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Transcribe progress update failed: %s", exc)
 
     pump_task = asyncio.create_task(pump()) if on_progress else None
     try:
@@ -365,10 +374,16 @@ async def transcribe_with_local(
     finally:
         stop_pump.set()
         if pump_task is not None:
-            await pump_task
+            try:
+                await pump_task
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Transcribe progress pump failed: %s", exc)
     if on_progress:
         done = result.duration or duration or 0.0
-        await _maybe_progress(on_progress, done, done or 1.0)
+        try:
+            await _maybe_progress(on_progress, done, done or 1.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Transcribe progress update failed: %s", exc)
     return result
 
 

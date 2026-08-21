@@ -167,7 +167,7 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 ### TTS dub preview
 
 - Manual **Dub preview** on a media page when a target-language SRT already exists beside the file
-- Local Piper TTS (voices cached under `/config/piper-voices`); writes `{stem}.{lang}.dub.mkv` next to the original (video + original audio + TTS track)
+- Local Piper TTS (voices cached under `/config/piper-voices`); builds a speech-only track from the SRT, then writes `{stem}.{lang}.dub.mkv` next to the original (video + original audio + TTS track)
 - The source video is never overwritten; first run downloads the voice model; CPU synthesis is slow in the default image
 
 ### Translation

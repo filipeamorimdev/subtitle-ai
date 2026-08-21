@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -313,6 +314,137 @@ async def test_process_transcribe_then_planner_enqueues_translate(asr_env, monke
 
 
 @pytest.mark.asyncio
+async def test_transcribe_cancel_check_is_safe_from_whisper_thread(asr_env, monkeypatch):
+    db, tmp_path, video = asr_env
+    media = _media(db, video)
+
+    async def fake_probe(_path):
+        return []
+
+    thread_errors: list[BaseException] = []
+
+    async def fake_transcribe(media_path, output_path=None, **kwargs):
+        from app.subtitles.filenames import build_external_subtitle_path
+        from app.subtitles.models import SubtitleBlock, SubtitleDocument
+        from app.subtitles.writer.srt import write_srt_atomic
+
+        is_cancelled = kwargs["is_cancelled"]
+        on_progress = kwargs["on_progress"]
+
+        def hammer_cancel():
+            try:
+                for _ in range(80):
+                    assert is_cancelled() is False
+            except Exception as exc:  # noqa: BLE001
+                thread_errors.append(exc)
+
+        worker = threading.Thread(target=hammer_cancel)
+        worker.start()
+        try:
+            for index in range(40):
+                await on_progress(float(index), 40.0)
+        finally:
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+
+        out = build_external_subtitle_path(media_path, "en")
+        write_srt_atomic(
+            out,
+            SubtitleDocument(
+                format="srt",
+                encoding="utf-8",
+                blocks=[
+                    SubtitleBlock(index=1, start="00:00:01,000", end="00:00:02,000", text="Hello"),
+                ],
+            ),
+            overwrite=True,
+        )
+        return out, TranscriptResult(language="en", segments=[], engine="faster-whisper:small")
+
+    async def fake_rescan(self, row):
+        return None
+
+    monkeypatch.setattr("app.subtitles.embedded.probe_subtitle_tracks", fake_probe)
+    monkeypatch.setattr("app.jobs.service.transcribe_media_to_srt", fake_transcribe)
+    monkeypatch.setattr("app.jobs.service.JobService._rescan", fake_rescan)
+
+    created = await JobService(db).start_manual_transcribe(media, target_language="pt-PT")
+    row = db.get(JobRow, created.id)
+    row.status = "processing"
+    db.add(row)
+    db.commit()
+
+    await JobService(db)._process_transcribe_job(created.id)
+    assert thread_errors == []
+    done = db.get(JobRow, created.id)
+    assert done is not None
+    assert done.status == "completed"
+    assert done.error is None
+
+
+@pytest.mark.asyncio
+async def test_planner_transcribes_after_source_not_found(asr_env, monkeypatch):
+    db, tmp_path, video = asr_env
+    media = _media(db, video)
+    svc = LocalizationTaskService(db)
+    task, _ = svc.create_manual_task(media_item=media, target_language="pt-PT")
+    svc.transition(task, "planning")
+    task = svc.get(task.id)
+    svc.transition(task, "processing", substate="discovering_source")
+    db.add(
+        JobRow(
+            task_id=task.id,
+            candidate_key="k",
+            job_kind="request",
+            media_type="movie",
+            media_path=str(video),
+            media_title=media.title,
+            source_subtitle_path=str(video),
+            target_subtitle_path=str(video),
+            model="bazarr-search",
+            status="skipped",
+            progress=100,
+            progress_detail="No EN subtitle found",
+            reason_code="not_found",
+        )
+    )
+    db.commit()
+
+    async def fake_present(*_args, **_kwargs):
+        return False
+
+    async def empty_snapshot(self, media_row, target_language):
+        return {
+            "candidate_key": "k",
+            "can_translate": False,
+            "can_extract": False,
+            "can_request": False,
+            "source_path": None,
+            "source_language": None,
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    async def fake_probe(_path):
+        return []
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", fake_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", empty_snapshot)
+    monkeypatch.setattr("app.subtitles.embedded.probe_subtitle_tracks", fake_probe)
+
+    planned = await TaskPlanner(db).plan(task.id)
+    assert planned is not None
+    assert planned.status == "processing"
+    assert planned.substate == "transcribing_source"
+    jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id, JobRow.job_kind == "transcribe")).all())
+    assert len(jobs) == 1
+    assert jobs[0].status == "pending"
+    cps = read_checkpoints(svc.get(task.id).metadata_json)
+    assert cps["source"] == "active"
+    assert cps["extract"] == "skipped"
+
+
+@pytest.mark.asyncio
 async def test_transcribe_matching_target_skips_translate(asr_env, monkeypatch):
     db, tmp_path, video = asr_env
     media = _media(db, video)
@@ -478,6 +610,38 @@ async def test_local_whisper_reports_segment_progress(monkeypatch, tmp_path):
     assert (0.0, 120.0) in seen
     assert any(done == 60.0 and total == 120.0 for done, total in seen)
     assert seen[-1] == (120.0, 120.0)
+
+
+@pytest.mark.asyncio
+async def test_local_whisper_progress_errors_do_not_fail_transcription(monkeypatch, tmp_path):
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"x")
+
+    def fake_run(*_args, **kwargs):
+        callback = kwargs.get("on_progress")
+        if callback:
+            callback(12.0, 120.0)
+            callback(60.0, 120.0)
+        return TranscriptResult(
+            language="en",
+            segments=[TranscriptSegment(0.0, 60.0, "Hi")],
+            engine="faster-whisper:tiny",
+            duration=120.0,
+        )
+
+    monkeypatch.setattr("app.subtitles.transcribe._run_faster_whisper", fake_run)
+
+    async def on_progress(_done: float, _total: float) -> None:
+        raise RuntimeError("Cannot operate on a closed database.")
+
+    result = await transcribe_with_local(
+        audio,
+        model_size="tiny",
+        duration=120.0,
+        on_progress=on_progress,
+    )
+    assert result.engine == "faster-whisper:tiny"
+    assert result.duration == 120.0
 
 
 def test_worker_includes_transcribe_kind():

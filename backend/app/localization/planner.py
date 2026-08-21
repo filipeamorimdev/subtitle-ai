@@ -356,8 +356,9 @@ class TaskPlanner:
         if snapshot.get("can_request"):
             cooldown = JobService(self.db)._recent_not_found_cooldown(ckey) if ckey else None
             if cooldown is not None and task.status != "planning":
-                return self._after_source_not_found(
+                return await self._after_source_not_found(
                     task,
+                    media,
                     substate="source_cooldown",
                     waiting_message=MSG_RETRY_SOURCE,
                 )
@@ -386,7 +387,7 @@ class TaskPlanner:
                 if row:
                     self.tasks.attach_job(row, task.id)
                 if job.status == "skipped" and job.reason_code == "not_found":
-                    return self._after_source_not_found(task)
+                    return await self._after_source_not_found(task, media)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Source request failed task=%s error=%s", task.id, exc)
                 return self.tasks.transition(
@@ -401,14 +402,14 @@ class TaskPlanner:
         # Failed request with not_found, or a "success" that produced no readable SRT.
         latest_request = self._latest_job(task.id, "request")
         if latest_request and latest_request.reason_code == "not_found":
-            return self._after_source_not_found(task)
+            return await self._after_source_not_found(task, media)
         if (
             latest_request
             and latest_request.status == "completed"
             and not snapshot.get("can_translate")
             and not snapshot.get("can_request")
         ):
-            return self._after_source_not_found(task)
+            return await self._after_source_not_found(task, media)
 
         if not media.path and media.bazarr_movie_id is None and media.bazarr_episode_id is None:
             return self.tasks.transition(
@@ -447,15 +448,19 @@ class TaskPlanner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("on_job_finished job=%s error=%s", job_id, exc)
 
-    def _after_source_not_found(
+    async def _after_source_not_found(
         self,
         task: LocalizationTaskRow,
+        media: MediaItemRow,
         *,
         error_code: str = "not_found",
         substate: str = "awaiting_source",
         waiting_message: str = MSG_RETRY_SOURCE,
     ) -> LocalizationTaskRow:
-        """Fail a finished manual search; automatic tasks keep waiting for a later source."""
+        """Transcribe when search/extract are exhausted; otherwise fail or wait."""
+        transcribed = await self._enqueue_transcribe_if_available(task, media)
+        if transcribed is not None:
+            return transcribed
         self.tasks.update_checkpoints(task.id, source="failed")
         if task.origin == "manual" and task.status != "planning":
             return self.tasks.transition(
@@ -471,6 +476,43 @@ class TaskPlanner:
             error_code=error_code,
             error_message=waiting_message,
         )
+
+    async def _enqueue_transcribe_if_available(
+        self,
+        task: LocalizationTaskRow,
+        media: MediaItemRow,
+    ) -> LocalizationTaskRow | None:
+        """Start ASR when no subtitle source exists and embedded extract is impossible."""
+        latest = self._latest_job(task.id, "transcribe")
+        if latest is not None:
+            if latest.status in OPEN_JOB_STATUSES:
+                return self._sync_status_from_job(task, latest)
+            return None
+
+        jobs = JobService(self.db)
+        gate = await jobs.transcribe_gate_for_media(
+            media, target_language=task.target_language_code
+        )
+        if not gate.can_transcribe:
+            return None
+
+        trigger = "manual" if task.origin == "manual" else "automatic"
+        try:
+            job = await jobs.create_transcribe_job(
+                media,
+                target_language=task.target_language_code,
+                trigger_type=trigger,
+                task_id=task.id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Transcribe enqueue failed task=%s error=%s", task.id, exc)
+            return None
+        self.tasks.update_checkpoints(task.id, source="active", extract="skipped")
+        self.tasks.transition(task, "processing", substate="transcribing_source", clear_error=True)
+        row = self.db.get(JobRow, job.id)
+        if row:
+            self.tasks.attach_job(row, task.id)
+        return self.tasks.get(task.id)
 
     def _clear_verify_failure(self, task_id: int) -> None:
         """Drop stale verify-failed markers once the target is actually present."""

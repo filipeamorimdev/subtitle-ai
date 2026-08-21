@@ -33,13 +33,13 @@ Historical jobs without `task_id` remain valid legacy execution history.
 3. Choose language (dropdown or typed name/code)
 4. Backend normalizes language and creates/reuses an active task
 5. Task planner checks whether the target already exists → may complete immediately
-6. Otherwise creates the next necessary job (request / extract / translate)
-7. If no source exists and extract is impossible, the media page offers **Transcribe audio** (manual Whisper ASR). That job writes a source (or target) SRT; the planner then translates if needed and verifies as usual.
+6. Otherwise creates the next necessary job (request / extract / transcribe / translate)
+7. If Bazarr finds no source and extract is impossible, the planner enqueues **transcribe** (Whisper ASR). The media page still offers **Transcribe audio** as a manual control. That job writes a source (or target) SRT; the planner then translates if needed and verifies as usual.
 8. Worker processes the job; planner continues until verified
 
 ## Manual dub preview
 
-When a target-language SRT already exists, the media page offers **Dub preview** (manual Piper TTS + ffmpeg mux). This creates `{stem}.{lang}.dub.mkv` beside the original video; the source file is never overwritten. Completion is disk-only (no Bazarr verify). Use `capability=audio` on localization tasks; jobs use `job_kind=dub`.
+When a target-language SRT already exists, the media page offers **Dub preview** (manual Piper TTS, speech-only WAV timeline, then ffmpeg mux). This creates `{stem}.{lang}.dub.mkv` beside the original video; the source file is never overwritten. Completion is disk-only (no Bazarr verify). Use `capability=audio` on localization tasks; jobs use `job_kind=dub`.
 
 ## Automatic fallback
 

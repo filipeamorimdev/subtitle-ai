@@ -8,12 +8,14 @@ v1 behavior (sidecar MKV):
 
 from __future__ import annotations
 
+import array
 import asyncio
 import json
 import math
 import re
 import shutil
 import tempfile
+import wave
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
@@ -28,8 +30,8 @@ from app.subtitles.parsers.srt import parse_srt
 
 logger = get_logger("dubbing")
 
-# Piper clips are quiet; amix with many non-overlapping inputs also attenuates unless
-# normalize=0. Boost the final bus so the TTS track is audible beside the original.
+# Piper clips are quiet. Boost each cue and the assembled timeline so the TTS
+# track is audible beside the original.
 TTS_CUE_GAIN_DB = 6.0
 TTS_MIX_GAIN_DB = 18.0
 TTS_LIMITER_CEILING = 0.98
@@ -39,10 +41,10 @@ PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 VOICE_PATTERN = re.compile(
     r"^(?P<lang_family>[^-]+)_(?P<lang_region>[^-]+)-(?P<voice_name>[^-]+)-(?P<voice_quality>.+)$"
 )
-# Shaped cue clips are 16 kHz mono; adelay uses this rate with the `S` (samples) suffix
-# so delays can exceed ffmpeg's historic 65535 ms adelay limit.
+# Shaped cue clips are 16 kHz mono. The speech track is assembled in PCM at this
+# rate (not via ffmpeg adelay/amix, which loops a buffer on long timelines).
 CUE_SAMPLE_RATE = 16000
-TTS_MIX_SAMPLE_RATE = 48000
+MAX_TTS_TIMELINE_HOURS = 6.0
 
 
 class DubError(Exception):
@@ -381,76 +383,93 @@ async def synthesize_piper_to_wav(
         raise DubError(f"piper produced no audio for cue ({model_path.name})")
 
 
-def _adelay_samples(start_ms: int, sample_rate: int = CUE_SAMPLE_RATE) -> int:
+def _start_sample(start_ms: int, sample_rate: int) -> int:
     return max(0, int(round(max(0, start_ms) * sample_rate / 1000.0)))
 
 
-def build_tts_mix_command(
+def _read_pcm_s16_mono(path: Path) -> tuple[int, array.array]:
+    """Read a WAV as mono signed 16-bit samples."""
+    with wave.open(str(path), "rb") as handle:
+        channels = handle.getnchannels()
+        width = handle.getsampwidth()
+        rate = handle.getframerate()
+        frames = handle.readframes(handle.getnframes())
+    if width != 2:
+        raise DubError(f"Expected 16-bit PCM in {path.name}, got {width * 8}-bit")
+    if rate <= 0:
+        raise DubError(f"Invalid sample rate in {path.name}")
+    samples = array.array("h")
+    samples.frombytes(frames)
+    if channels <= 0:
+        raise DubError(f"No audio channels in {path.name}")
+    if channels > 1:
+        samples = array.array("h", (samples[index] for index in range(0, len(samples), channels)))
+    return rate, samples
+
+
+def write_tts_timeline_wav(
     shaped_clips: list[tuple[Path, int]],
     output_wav: Path,
     *,
     media_duration_s: float | None = None,
-    sample_rate: int = TTS_MIX_SAMPLE_RATE,
-    cue_sample_rate: int = CUE_SAMPLE_RATE,
-) -> list[str]:
-    """Build ffmpeg command to mix short cue clips onto a full-length timeline.
+    sample_rate: int = CUE_SAMPLE_RATE,
+) -> None:
+    """Place short cue clips onto a silent PCM timeline and write one WAV.
 
-    Each clip is delayed with ``adelay`` using a sample count (``S`` suffix) so
-    start times above 65535 ms work. Clips must stay short — prepending minutes
-    of silence and then amixing hundreds of full-length files loops a buffer and
-    sounds like the same sound repeating.
+    ffmpeg adelay/amix is intentionally not used here: delaying hundreds of clips
+    internally prepends minutes of silence, and mixing those long streams loops a
+    buffer so the same sound repeats instead of the subtitle text.
     """
     if not shaped_clips:
         raise DubError("No cue clips to mix")
 
-    inputs: list[str] = []
-    delay_filters: list[str] = []
-    delayed_labels: list[str] = []
-    for index, (clip_path, start_ms) in enumerate(shaped_clips):
-        inputs.extend(["-i", str(clip_path)])
-        delay_samples = _adelay_samples(start_ms, cue_sample_rate)
-        label = f"d{index}"
-        delayed_labels.append(f"[{label}]")
-        if delay_samples > 0:
-            delay_filters.append(f"[{index}:a]adelay={delay_samples}S:all=1[{label}]")
-        else:
-            delay_filters.append(f"[{index}:a]anull[{label}]")
+    gain = 10 ** (TTS_MIX_GAIN_DB / 20.0)
+    peak_limit = int(32767 * TTS_LIMITER_CEILING)
+    placed: list[tuple[int, array.array]] = []
+    last_sample = 0
 
-    input_count = len(shaped_clips)
-    mix_inputs = "".join(delayed_labels)
-    filter_graph = ";".join(delay_filters)
-    filter_graph += (
-        f";{mix_inputs}amix=inputs={input_count}:duration=longest:"
-        f"dropout_transition=0:normalize=0[mixed]"
-    )
+    for clip_path, start_ms in shaped_clips:
+        clip_rate, samples = _read_pcm_s16_mono(clip_path)
+        if clip_rate != sample_rate:
+            raise DubError(
+                f"Cue clip {clip_path.name} is {clip_rate} Hz, expected {sample_rate} Hz"
+            )
+        start = _start_sample(start_ms, sample_rate)
+        last_sample = max(last_sample, start + len(samples))
+        placed.append((start, samples))
+
+    total_samples = last_sample
     if media_duration_s is not None and media_duration_s > 0:
-        filter_graph += (
-            f";[mixed]apad=whole_dur={media_duration_s:.3f}[padded];"
-            f"[padded]volume={TTS_MIX_GAIN_DB}dB,alimiter=limit={TTS_LIMITER_CEILING}[out]"
-        )
-    else:
-        filter_graph += (
-            f";[mixed]volume={TTS_MIX_GAIN_DB}dB,alimiter=limit={TTS_LIMITER_CEILING}[out]"
+        total_samples = max(total_samples, int(round(media_duration_s * sample_rate)))
+    if total_samples <= 0:
+        raise DubError("TTS timeline would be empty")
+
+    max_samples = int(MAX_TTS_TIMELINE_HOURS * 3600 * sample_rate)
+    if total_samples > max_samples:
+        raise DubError(
+            f"TTS timeline is too long ({total_samples / sample_rate:.1f}s, "
+            f"max {MAX_TTS_TIMELINE_HOURS:.0f}h)"
         )
 
-    return [
-        "ffmpeg",
-        "-hide_banner",
-        "-nostdin",
-        "-y",
-        *inputs,
-        "-filter_complex",
-        filter_graph,
-        "-map",
-        "[out]",
-        "-ac",
-        "1",
-        "-ar",
-        str(sample_rate),
-        "-c:a",
-        "pcm_s16le",
-        str(output_wav),
-    ]
+    timeline = array.array("h", bytes(total_samples * 2))
+    for start, samples in placed:
+        for offset, value in enumerate(samples):
+            index = start + offset
+            if index >= total_samples:
+                break
+            mixed = int(timeline[index] + value * gain)
+            if mixed > peak_limit:
+                mixed = peak_limit
+            elif mixed < -peak_limit:
+                mixed = -peak_limit
+            timeline[index] = mixed
+
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(output_wav), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(timeline.tobytes())
 
 
 def build_mux_command(
@@ -658,7 +677,7 @@ async def dub_media_from_srt_to_mkv(
                 if maybe is not None:
                     await maybe
 
-        # Mix all shaped clips into one timeline audio track.
+        # Place all shaped clips onto one speech-only timeline, then mux.
         if not shaped_clips:
             raise DubError("No cue text was synthesized; dub output would be silence.")
 
@@ -679,18 +698,16 @@ async def dub_media_from_srt_to_mkv(
         )
 
         tts_audio_wav = tmp_dir / "tts-audio.wav"
-        mix_cmd = build_tts_mix_command(
-            shaped_clips,
-            tts_audio_wav,
-            media_duration_s=media_duration_s,
-        )
-
         if is_cancelled():
             event_log.record(event="cancelled")
             return
 
-        # Use a generous timeout: large SRTs can take a while.
-        await run_process_checked(mix_cmd, timeout_s=12 * 3600.0, is_cancelled=is_cancelled)
+        await asyncio.to_thread(
+            write_tts_timeline_wav,
+            shaped_clips,
+            tts_audio_wav,
+            media_duration_s=media_duration_s,
+        )
 
         event_log.record(event="audio_ready", path=str(tts_audio_wav))
 

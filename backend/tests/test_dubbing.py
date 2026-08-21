@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
+import array
+import wave
 from pathlib import Path
 
 import pytest
@@ -25,9 +25,11 @@ from app.media.service import MediaItemService
 from app.services.settings import SettingsService
 from app.subtitles.filenames import build_dub_preview_path
 from app.dubbing.dub import (
+    CUE_SAMPLE_RATE,
+    TTS_MIX_GAIN_DB,
     _piper_voice_download_urls,
     build_mux_command,
-    build_tts_mix_command,
+    write_tts_timeline_wav,
 )
 
 
@@ -38,113 +40,68 @@ def test_piper_voice_download_urls_encode_unicode():
     assert config_url.endswith(".onnx.json?download=true")
 
 
-def test_build_tts_mix_command_uses_sample_adelay(tmp_path):
-    clip_a = tmp_path / "a.wav"
-    clip_b = tmp_path / "b.wav"
-    clip_a.write_bytes(b"a")
-    clip_b.write_bytes(b"b")
-    out = tmp_path / "mix.wav"
-
-    cmd = build_tts_mix_command(
-        [(clip_a, 0), (clip_b, 1_140_000)],
-        out,
-        media_duration_s=1_428.0,
-    )
-    joined = " ".join(cmd)
-
-    assert "-itsoffset" not in joined
-    assert "anullsrc" not in joined
-    assert "adelay=18240000S:all=1" in joined
-    assert "[0:a]anull[d0]" in joined
-    assert "normalize=0" in joined
-    assert "volume=18.0dB" in joined
-    assert "alimiter" in joined
-    assert "apad=whole_dur=1428.000" in joined
-    assert "-ar 48000" in joined
-    assert str(clip_a) in joined and str(clip_b) in joined
+def _write_pcm_wav(path: Path, samples: array.array, *, sample_rate: int = CUE_SAMPLE_RATE) -> None:
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(samples.tobytes())
 
 
-def _mean_volume_db(path: Path, start_s: float, duration_s: float = 0.15) -> float:
-    proc = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-ss",
-            str(start_s),
-            "-i",
-            str(path),
-            "-t",
-            str(duration_s),
-            "-af",
-            "volumedetect",
-            "-f",
-            "null",
-            "-",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    for line in proc.stderr.splitlines():
-        if "mean_volume" in line:
-            return float(line.rsplit(":", 1)[-1].replace("dB", "").strip())
-    raise AssertionError("volumedetect did not report mean_volume")
+def _read_pcm_wav(path: Path) -> array.array:
+    with wave.open(str(path), "rb") as handle:
+        samples = array.array("h")
+        samples.frombytes(handle.readframes(handle.getnframes()))
+        return samples
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
-def test_mix_command_places_distinct_clips(tmp_path):
+def test_timeline_places_distinct_clips_without_ffmpeg(tmp_path):
     clip_a = tmp_path / "a.wav"
     clip_b = tmp_path / "b.wav"
     out = tmp_path / "mix.wav"
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=f=440:d=0.4",
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "-y",
-            str(clip_a),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=f=880:d=0.4",
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "-y",
-            str(clip_b),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    cmd = build_tts_mix_command(
-        [(clip_a, 200), (clip_b, 1500)],
-        out,
-        media_duration_s=3.0,
-    )
-    subprocess.run(cmd, check=True, capture_output=True)
+    _write_pcm_wav(clip_a, array.array("h", [1200] * 800))
+    _write_pcm_wav(clip_b, array.array("h", [2400] * 800))
 
-    quiet = _mean_volume_db(out, 0.9)
-    first = _mean_volume_db(out, 0.25)
-    second = _mean_volume_db(out, 1.55)
-    assert quiet < -50
-    assert first > quiet + 20
-    assert second > quiet + 20
+    write_tts_timeline_wav(
+        [(clip_a, 0), (clip_b, 1000)],
+        out,
+        media_duration_s=2.0,
+    )
+
+    mixed = _read_pcm_wav(out)
+    gain = 10 ** (TTS_MIX_GAIN_DB / 20.0)
+    first = mixed[100]
+    quiet = mixed[CUE_SAMPLE_RATE // 2]
+    second = mixed[CUE_SAMPLE_RATE + 100]
+
+    assert len(mixed) == CUE_SAMPLE_RATE * 2
+    assert quiet == 0
+    assert first == int(1200 * gain)
+    assert second == int(2400 * gain)
+
+
+def test_timeline_places_clip_beyond_adelay_ms_limit(tmp_path):
+    clip_a = tmp_path / "a.wav"
+    clip_b = tmp_path / "b.wav"
+    out = tmp_path / "mix.wav"
+    _write_pcm_wav(clip_a, array.array("h", [1500] * 400))
+    _write_pcm_wav(clip_b, array.array("h", [3000] * 400))
+
+    late_ms = 70_000
+    write_tts_timeline_wav(
+        [(clip_a, 0), (clip_b, late_ms)],
+        out,
+        media_duration_s=71.0,
+    )
+
+    mixed = _read_pcm_wav(out)
+    late_index = int(round(late_ms * CUE_SAMPLE_RATE / 1000.0))
+    gain = 10 ** (TTS_MIX_GAIN_DB / 20.0)
+
+    assert mixed[100] == int(1500 * gain)
+    assert mixed[CUE_SAMPLE_RATE * 5] == 0
+    assert mixed[late_index + 50] == int(3000 * gain)
+    assert max(abs(sample) for sample in mixed[CUE_SAMPLE_RATE : CUE_SAMPLE_RATE * 2]) == 0
 
 
 def test_build_mux_command_copies_original_audio(tmp_path):

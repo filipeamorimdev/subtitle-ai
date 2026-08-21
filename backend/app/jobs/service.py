@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1473,7 +1474,12 @@ class JobService:
         row = _bind_task_id(self.db, row, task_id)
         return job_to_out(row)
 
-    async def transcribe_gate_for_media(self, media: MediaItemRow) -> TranscribeGate:
+    async def transcribe_gate_for_media(
+        self,
+        media: MediaItemRow,
+        *,
+        target_language: str | None = None,
+    ) -> TranscribeGate:
         public = self.settings.get_public()
         mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
         path = apply_path_mapping(media.path, mappings) if media.path else None
@@ -1482,7 +1488,7 @@ class JobService:
             path,
             media_roots=public.media_roots,
             source_languages=public.source_languages or ["en"],
-            target_language=public.target_language.code,
+            target_language=target_language or public.target_language.code,
             has_active_transcribe=active is not None,
         )
 
@@ -2361,6 +2367,29 @@ class JobService:
         if not row or row.status != "processing":
             return
         log = get_logger("jobs")
+        # Whisper runs in a worker thread and must not touch this session.
+        # A shared SQLite connection used from both threads raises
+        # "Cannot operate on a closed database" mid-transcription.
+        cancel_flag = threading.Event()
+
+        def is_cancelled() -> bool:
+            return cancel_flag.is_set()
+
+        async def watch_cancel() -> None:
+            while not cancel_flag.is_set():
+                try:
+                    current = self._fresh_job(job_id)
+                    if current is None or current.status == "cancelled":
+                        cancel_flag.set()
+                        self._release_db()
+                        return
+                    self._release_db()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._rollback_quietly()
+                await asyncio.sleep(1.0)
+
         try:
             media_path = row.media_path
             public = self.settings.get_public()
@@ -2373,6 +2402,7 @@ class JobService:
             async def on_progress(done: float, total: float) -> None:
                 current = self._fresh_job(job_id)
                 if current is None or current.status == "cancelled":
+                    cancel_flag.set()
                     self._release_db()
                     return
                 ratio = 0.0 if total <= 0 else min(1.0, max(0.0, done / total))
@@ -2390,20 +2420,22 @@ class JobService:
                 self.db.add(current)
                 self._release_db()
 
-            def is_cancelled() -> bool:
-                current = self._fresh_job(job_id)
-                cancelled = current is None or current.status == "cancelled"
-                self._release_db()
-                return cancelled
-
-            path, result = await transcribe_media_to_srt(
-                media_path,
-                provider=public.asr_provider,
-                local_model=public.asr_local_model,
-                openai_key=openai_key,
-                is_cancelled=is_cancelled,
-                on_progress=on_progress,
-            )
+            watch_task = asyncio.create_task(watch_cancel(), name=f"transcribe-cancel-{job_id}")
+            try:
+                path, result = await transcribe_media_to_srt(
+                    media_path,
+                    provider=public.asr_provider,
+                    local_model=public.asr_local_model,
+                    openai_key=openai_key,
+                    is_cancelled=is_cancelled,
+                    on_progress=on_progress,
+                )
+            finally:
+                watch_task.cancel()
+                try:
+                    await watch_task
+                except asyncio.CancelledError:
+                    pass
 
             current = self._fresh_job(job_id)
             if not current or current.status == "cancelled":
