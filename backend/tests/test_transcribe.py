@@ -108,7 +108,7 @@ async def test_gate_false_when_source_srt_exists(asr_env):
 
 
 @pytest.mark.asyncio
-async def test_gate_false_when_other_language_source_srt_exists(asr_env):
+async def test_gate_true_when_other_language_source_srt_exists(asr_env):
     db, tmp_path, video = asr_env
     (video.parent / "Film.fr.srt").write_text(
         "1\n00:00:01,000 --> 00:00:02,000\nBonjour\n\n", encoding="utf-8"
@@ -120,8 +120,8 @@ async def test_gate_false_when_other_language_source_srt_exists(asr_env):
         target_language="pt-PT",
         has_active_transcribe=False,
     )
-    assert gate.can_transcribe is False
-    assert gate.reason_code == "has_source"
+    assert gate.can_transcribe is True
+    assert gate.source_type == "transcript"
 
 
 @pytest.mark.asyncio
@@ -153,7 +153,7 @@ async def test_gate_false_when_extractable(asr_env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gate_false_when_other_language_extractable(asr_env, monkeypatch):
+async def test_gate_true_when_other_language_extractable(asr_env, monkeypatch):
     db, tmp_path, video = asr_env
 
     async def fake_probe(_path):
@@ -177,8 +177,8 @@ async def test_gate_false_when_other_language_extractable(asr_env, monkeypatch):
         target_language="pt-PT",
         has_active_transcribe=False,
     )
-    assert gate.can_transcribe is False
-    assert gate.reason_code == "can_extract"
+    assert gate.can_transcribe is True
+    assert gate.source_type == "transcript"
 
 
 @pytest.mark.asyncio

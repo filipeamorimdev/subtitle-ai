@@ -329,6 +329,33 @@ class CandidateService:
             if source_path:
                 can_extract = False
 
+            from app.localization.source_resolver import (
+                SourceCandidate,
+                SourceType,
+                candidates_from_embedded,
+                resolve_from_candidates,
+                transcript_candidate,
+            )
+
+            scored_candidates: list[SourceCandidate] = []
+            if source_path:
+                scored_candidates.append(
+                    SourceCandidate(
+                        type=SourceType.SUBTITLE,
+                        language=source_lang,
+                        path=source_path,
+                    )
+                )
+            scored_candidates.extend(candidates_from_embedded(embedded_tracks))
+            if Path(local_media).is_file():
+                scored_candidates.append(transcript_candidate(source_langs))
+            scored = resolve_from_candidates(
+                scored_candidates,
+                preferred_languages=source_langs,
+                target_language=target,
+            )
+            selected_type = scored.selected.type if scored.selected else None
+
             target_path: str | None = None
             can_translate = False
             reason_code: str | None = None
@@ -404,8 +431,7 @@ class CandidateService:
                     has_embedded=bool(embedded_tracks),
                     can_extract=can_extract,
                     can_transcribe=(
-                        not can_translate
-                        and not can_extract
+                        selected_type == SourceType.TRANSCRIPT
                         and Path(local_media).is_file()
                         and key not in active_transcribe
                     ),

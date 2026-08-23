@@ -28,6 +28,11 @@ LocalizationTask + TaskPlanner
         ↓
 JobService + Worker
         ↓
+LocalizationPipeline
+        ├── SourceResolver
+        ├── SubtitlePipeline (translate / extract / transcribe)
+        └── DubbingPipeline
+        ↓
 ModelRouter → AIProvider (OpenRouter)
         ↓
 Validate + Bazarr verify → task completed
@@ -39,8 +44,11 @@ See [localization-tasks.md](localization-tasks.md) for the media-centric task mo
 
 | Area | Responsibility |
 | --- | --- |
-| `media/` | MediaRef, BazarrMediaProvider, MediaItem identity cache |
-| `localization/` | LocalizationTask service, state machine, TaskPlanner |
+| `media/` | MediaRef, BazarrMediaProvider, MediaItem identity cache, process runner |
+| `localization/` | LocalizationTask service, state machine, TaskPlanner, LocalizationPipeline |
+| `localization/source_resolver` | Scores subtitle / embedded / OCR / transcript sources (no hard gates) |
+| `localization/transcription` | Audio track selection, ASR providers, chunking, subtitle formatter |
+| `localization/dubbing` | SpeechSegments, TTS providers, timing, PCM timeline, mux |
 | `languages/` | Canonical language catalog + normalization |
 | `integrations/bazarr` | HTTP client, wanted normalization, rescan, target presence check |
 | `services/candidates` | Build UI candidates; never enqueue jobs |
@@ -111,13 +119,17 @@ Off by default. When enabled:
 4. Automatic extract/request success chains into translate while the toggle remains on.
 5. Manual jobs are claimed before automatic jobs of the same kind.
 
-## Manual audio transcription
+## Audio transcription
 
-When Bazarr has no source subtitle and embedded extract is not possible, TaskPlanner enqueues a **transcribe** job as the next step (the media page can also start one manually). Local `faster-whisper` is the default engine (models cached under `/config/whisper-models`); OpenAI Whisper API is an optional fallback. The resulting sidecar SRT is then translated (if needed) and verified through the existing localization task pipeline. If transcription is not possible (missing file, source already present, extract still available), a manual task fails and an automatic task keeps waiting.
+`SourceResolver` scores available sources. A French sidecar does **not** block transcription when the preferred source language is English. Transcription is selected when it outscores other-language subtitles and non-preferred embedded tracks.
 
-## Manual TTS dub preview
+`AudioTrackSelector` picks the dialogue stream from ffprobe metadata (language, default, commentary/AD penalties). `TranscriptionService` extracts that stream, chunks by duration with overlap, runs an `ASRProvider` (`faster-whisper` or OpenAI), and `SubtitleFormatter` builds readable SRT cues from word timestamps. Detected language and confidence are stored; English is never assumed when detection is missing.
 
-When a target-language SRT already exists beside the media file, the media page can start a **dub** job. Local [Piper](https://github.com/rhasspy/piper) (Python API, voice loaded once) synthesizes speech per cue (models cached under `/config/piper-voices`), places those clips on a speech-only WAV timeline, and ffmpeg muxes a sidecar `{stem}.{lang}.dub.mkv` next to the original. The source video is never overwritten. Completion is verified by disk presence only (no Bazarr rescan). Dubbing is **not** auto-enqueued by TaskPlanner or automatic fallback.
+Jobs record pipeline decisions in the job JSONL event log and task `metadata_json["pipeline"]`.
+
+## TTS dub preview
+
+When a target-language SRT already exists beside the media file, the media page can start a **dub** job. `DubbingPipeline` maps cues to `SpeechSegment`s (optional `speaker_id` for later voice mapping), synthesizes via a `TTSProvider` (Piper today), uses `TimingEngine` for limited speed-up or dialogue adaptation, mixes overlapping clips on an `AudioTimeline` with peak-normalize + limiter, and ffmpeg muxes a sidecar `{stem}.{lang}.dub.mkv`. The source video is never overwritten. Completion is verified with ffprobe. Dubbing is **not** auto-enqueued by TaskPlanner or automatic fallback.
 
 ## Upgrade from v0.1 / v0.2.1
 
@@ -129,3 +141,6 @@ On startup `init_db()` adds missing tables/columns, seeds legacy preferences whe
 - Adaptive **routing** (ranking is display-only)
 - Non-SRT formats
 - In-place dub mux / replacing original audio tracks
+- Speaker diarization / multiple TTS voices / voice cloning
+- Background music preservation / source separation
+- WhisperX alignment (provider slot only)

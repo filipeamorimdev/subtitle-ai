@@ -95,6 +95,7 @@ from app.subtitles.writer.srt import write_srt_atomic
 from app.jobs.usage import aggregate_usage, parse_exchanges
 from app.services.ai_cost import effective_cost_micro, micro_price_to_per_million, micro_to_usd
 from app.jobs.event_log import JobEventLog, job_event_log_path
+from app.localization.observability import merge_pipeline_metadata
 from app.dubbing.dub import DubError, dub_media_from_srt_to_mkv, resolve_voice_model_for_language
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.service import (
@@ -2421,6 +2422,17 @@ class JobService:
                 self._release_db()
 
             watch_task = asyncio.create_task(watch_cancel(), name=f"transcribe-cancel-{job_id}")
+            event_log = JobEventLog(job_event_log_path(get_app_config().config_dir, job_id), job_id=job_id)
+            event_log.record(
+                event="started",
+                media_path=media_path,
+                source_language=row.source_language,
+                target_language=row.target_language,
+            )
+
+            def on_pipeline_event(event: str, fields: dict) -> None:
+                event_log.record(event=event, **fields)
+
             try:
                 path, result = await transcribe_media_to_srt(
                     media_path,
@@ -2429,6 +2441,9 @@ class JobService:
                     openai_key=openai_key,
                     is_cancelled=is_cancelled,
                     on_progress=on_progress,
+                    source_language=row.source_language,
+                    preferred_languages=public.source_languages or ["en"],
+                    event_cb=on_pipeline_event,
                 )
             finally:
                 watch_task.cancel()
@@ -2447,6 +2462,26 @@ class JobService:
             current.progress_detail = "Transcribed"
             current.status = "completed"
             current.completed_at = utcnow()
+            if result.warnings:
+                current.warning = "; ".join(result.warnings)
+
+            task_id = getattr(current, "task_id", None)
+            if task_id:
+                task = self.db.get(LocalizationTaskRow, int(task_id))
+                if task is not None:
+                    task.metadata_json = merge_pipeline_metadata(
+                        task.metadata_json,
+                        {
+                            "transcript": {
+                                "language": result.language,
+                                "language_confidence": result.language_confidence,
+                                "requested_language": result.requested_language,
+                                "provider": result.engine,
+                                "warnings": list(result.warnings),
+                            }
+                        },
+                    )
+                    self.db.add(task)
 
             try:
                 await self._rescan(current)

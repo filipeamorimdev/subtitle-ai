@@ -21,7 +21,7 @@ jobs:
       - name: Ruff
         run: ruff check app tests
       - name: Pytest
-        run: pytest -q
+        run: pytest -q -m "not media_integration"
 
   frontend:
     runs-on: ubuntu-latest

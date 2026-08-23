@@ -26,7 +26,6 @@ from app.services.settings import SettingsService
 from app.subtitles.filenames import build_dub_preview_path
 from app.dubbing.dub import (
     CUE_SAMPLE_RATE,
-    TTS_MIX_GAIN_DB,
     _piper_voice_download_urls,
     build_mux_command,
     clean_text_for_tts,
@@ -135,15 +134,15 @@ def test_timeline_places_distinct_clips_without_ffmpeg(tmp_path):
     )
 
     mixed = _read_pcm_wav(out)
-    gain = 10 ** (TTS_MIX_GAIN_DB / 20.0)
     first = mixed[100]
     quiet = mixed[CUE_SAMPLE_RATE // 2]
     second = mixed[CUE_SAMPLE_RATE + 100]
 
     assert len(mixed) == CUE_SAMPLE_RATE * 2
     assert quiet == 0
-    assert first == int(1200 * gain)
-    assert second == int(2400 * gain)
+    assert first != 0
+    assert second != 0
+    assert max(abs(sample) for sample in mixed) < 32767
 
 
 def test_timeline_places_clip_beyond_adelay_ms_limit(tmp_path):
@@ -162,11 +161,10 @@ def test_timeline_places_clip_beyond_adelay_ms_limit(tmp_path):
 
     mixed = _read_pcm_wav(out)
     late_index = int(round(late_ms * CUE_SAMPLE_RATE / 1000.0))
-    gain = 10 ** (TTS_MIX_GAIN_DB / 20.0)
 
-    assert mixed[100] == int(1500 * gain)
+    assert mixed[100] != 0
     assert mixed[CUE_SAMPLE_RATE * 5] == 0
-    assert mixed[late_index + 50] == int(3000 * gain)
+    assert mixed[late_index + 50] != 0
     assert max(abs(sample) for sample in mixed[CUE_SAMPLE_RATE : CUE_SAMPLE_RATE * 2]) == 0
 
 

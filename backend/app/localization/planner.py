@@ -893,6 +893,7 @@ class TaskPlanner:
                     "target_exists": cand.reason_code == "target_exists",
                 }
                 self._overlay_disk_source(result, path, source_langs, target_language)
+                await self._apply_source_resolution(result, path, source_langs, target_language)
                 return result
         except BazarrError:
             pass
@@ -922,9 +923,8 @@ class TaskPlanner:
                 result["can_translate"] = True
                 result["source_path"] = str(found[0])
                 result["source_language"] = found[1]
-                return result
 
-            if media_path.is_file():
+            if media_path.is_file() and not result["can_translate"]:
                 probe_path = str(media_path)
                 release_session_connection(self.db)
                 tracks = await probe_subtitle_tracks(probe_path)
@@ -941,7 +941,7 @@ class TaskPlanner:
         episode_id = media.bazarr_episode_id
         series_id = media.bazarr_series_id
         # Bazarr request only when nothing local can be used as origin.
-        if not result["can_extract"]:
+        if not result["can_extract"] and not result["can_translate"]:
             if media_type == "movie" and movie_id is not None:
                 result["can_request"] = True
             elif episode_id is not None and series_id is not None:
@@ -995,4 +995,52 @@ class TaskPlanner:
             except BazarrError:
                 pass
 
+        await self._apply_source_resolution(result, path, source_langs, target_language)
         return result
+
+    async def _apply_source_resolution(
+        self,
+        result: dict,
+        path: str,
+        source_langs: list[str],
+        target_language: str,
+    ) -> None:
+        """Prefer SourceResolver scoring over hard subtitle-exists gates."""
+        if not path:
+            return
+        media_path = Path(path)
+        if not media_path.is_file():
+            return
+        from app.localization.source_resolver import SourceResolver, SourceType
+
+        resolution = await SourceResolver().resolve(
+            media_path,
+            preferred_languages=source_langs,
+            target_language=target_language,
+        )
+        planned = SourceResolver().to_planner_snapshot(resolution)
+        result["source_type"] = planned.get("source_type")
+        result["source_score"] = planned.get("source_score")
+        result["source_reason"] = planned.get("source_reason")
+        selected_type = planned.get("source_type")
+        if planned.get("target_exists"):
+            result["target_exists"] = True
+            return
+        if selected_type == SourceType.SUBTITLE:
+            result["can_translate"] = True
+            result["source_path"] = planned.get("source_path")
+            result["source_language"] = planned.get("source_language")
+            result["can_extract"] = False
+            return
+        if selected_type in {SourceType.EMBEDDED_SUBTITLE, SourceType.OCR}:
+            result["can_extract"] = bool(planned.get("can_extract"))
+            result["extract_stream_index"] = planned.get("extract_stream_index")
+            result["source_language"] = planned.get("source_language") or result.get("source_language")
+            result["can_translate"] = False
+            result["source_path"] = None
+            return
+        if selected_type == SourceType.TRANSCRIPT:
+            result["can_translate"] = False
+            result["can_extract"] = False
+            result["source_path"] = None
+
