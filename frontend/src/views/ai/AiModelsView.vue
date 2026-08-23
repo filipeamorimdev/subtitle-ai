@@ -15,6 +15,7 @@ const pickerError = ref<string | null>(null)
 const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid'>('compatible')
 const testResult = ref<Record<number, string>>({})
 const batchSize = ref(25)
+const operatorModelId = ref<string>('')
 const saving = ref(false)
 const catalogRefreshing = ref(false)
 
@@ -67,6 +68,14 @@ type ModelTier = 'free' | 'paid'
 const freePool = computed(() => poolItems('free'))
 const paidPool = computed(() => poolItems('paid'))
 const usedIds = computed(() => new Set((data.value?.preferences || []).map((p) => p.model_id)))
+const toolModels = computed(() =>
+  (data.value?.catalog || []).filter(
+    (m: OpenRouterModel) =>
+      Array.isArray(m.capabilities) &&
+      m.capabilities.includes('function_calling') &&
+      m.unavailable !== true,
+  ),
+)
 const modelPools = computed(() => [
   { tier: 'free' as const, title: 'Free models', empty: 'No free models configured.', badge: 'FREE', items: freePool.value },
   { tier: 'paid' as const, title: 'Paid models', empty: 'No paid models configured.', badge: 'PAID', items: paidPool.value },
@@ -104,6 +113,7 @@ async function load() {
     try {
       const settings = await api.getSettings()
       batchSize.value = settings.batch_size || 25
+      operatorModelId.value = settings.operator_model_id || ''
     } catch {
       /* keep default */
     }
@@ -126,8 +136,10 @@ async function saveRouting() {
     })
     await api.updateSettings({
       batch_size: Number(batchSize.value) || 25,
+      operator_model_id: operatorModelId.value || null,
+      clear_operator_model_id: !operatorModelId.value,
     })
-    message.value = 'Routing, cost controls, and batch size saved.'
+    message.value = 'Routing, cost controls, chat model, and batch size saved.'
     await load()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
@@ -365,6 +377,36 @@ onMounted(async () => {
           <span v-else-if="data.catalog_stale || data.pricing_freshness === 'stale'" class="text-amber-700">
             (stale pricing)
           </span>
+        </p>
+      </section>
+
+      <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <h2 class="font-display text-lg font-semibold">Chat model</h2>
+        <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+          Used by the dashboard operator chat. Prefer a model that supports tool / function calling.
+          Translation pools are unchanged.
+        </p>
+        <label class="mt-3 block text-sm">
+          <span class="text-ink-500">Operator model</span>
+          <select
+            v-model="operatorModelId"
+            class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+          >
+            <option value="">Auto (first tool-capable pool model)</option>
+            <option v-for="m in toolModels" :key="m.id" :value="m.id">
+              {{ m.name }} ({{ m.id }})
+            </option>
+            <option
+              v-if="operatorModelId && !toolModels.some((m) => m.id === operatorModelId)"
+              :value="operatorModelId"
+            >
+              {{ operatorModelId }} (current)
+            </option>
+          </select>
+        </label>
+        <p v-if="!toolModels.length" class="mt-2 text-xs text-amber-700 dark:text-amber-300">
+          No catalog models advertise function_calling yet — refresh the catalog, or pick Auto and
+          ensure a capable model is in your pools.
         </p>
       </section>
 

@@ -11,6 +11,7 @@ from app.ai.models import (
     AIResponse,
     Message,
     ProviderHealth,
+    ToolSpec,
 )
 
 
@@ -41,10 +42,12 @@ class AIProvider(ABC):
         self,
         *,
         model_id: str,
-        messages: list[Message] | list[dict[str, str]],
+        messages: list[Message] | list[dict[str, Any]],
         temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
+        tools: list[ToolSpec] | list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> AIResponse:
         ...
 

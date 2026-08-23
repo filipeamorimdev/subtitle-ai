@@ -13,7 +13,7 @@ import {
   candidateToMediaRef,
   mediaHref,
 } from '../utils/mediaNav'
-import { canPauseJob, canResumeJob, isActiveTaskStatus, languageChipClass, latestTasksByLanguage, taskStatusLabel } from '../utils/status'
+import { canPauseJob, canResumeJob, isActiveTaskStatus, languageChipClass, latestTasksByLanguageCapability, taskStatusLabel } from '../utils/status'
 import { isOpenJobStatus, latestActiveJob, taskElapsedStart, taskProgressPct } from '../utils/taskProgress'
 
 type MediaFilter = 'all' | 'needs-work' | 'in-progress' | 'failed' | 'completed'
@@ -192,14 +192,20 @@ const rows = computed(() => {
 })
 
 function rowKind(row: MediaRow): RowKind {
-  const latest = [...latestTasksByLanguage(row.tasks).values()]
+  const latest = [...latestTasksByLanguageCapability(row.tasks).values()]
   if (latest.some((task) => isActiveTaskStatus(task.status))) return 'in-progress'
 
   const targetLang = row.candidate?.target_language
   const targetExists = row.candidate?.reason_code === 'target_exists'
   const unresolvedFailed = latest.some((task) => {
     if (task.status !== 'failed') return false
-    if (targetExists && task.target_language_code === targetLang) return false
+    if (
+      targetExists &&
+      task.target_language_code === targetLang &&
+      (task.capability || 'subtitles') === 'subtitles'
+    ) {
+      return false
+    }
     return true
   })
   if (unresolvedFailed) return 'failed'
@@ -216,15 +222,20 @@ function rowKind(row: MediaRow): RowKind {
 
 function rowLanguages(row: MediaRow): LanguageChip[] {
   const map = new Map<string, LanguageChip>()
-  for (const task of latestTasksByLanguage(row.tasks).values()) {
+  for (const task of latestTasksByLanguageCapability(row.tasks).values()) {
     const available =
       task.status === 'completed' ||
-      (row.candidate?.reason_code === 'target_exists' &&
+      ((task.capability || 'subtitles') === 'subtitles' &&
+        row.candidate?.reason_code === 'target_exists' &&
         task.target_language_code === row.candidate.target_language)
     const job = latestActiveJob(task)
-    map.set(task.target_language_code, {
+    const key = `${task.target_language_code}:${task.capability || 'subtitles'}`
+    map.set(key, {
       code: task.target_language_code,
-      name: task.target_language_name,
+      name:
+        (task.capability || 'subtitles') === 'audio'
+          ? `${task.target_language_name} dub`
+          : task.target_language_name,
       status: available && task.status === 'failed' ? 'completed' : task.status,
       available,
       substate: task.substate,
@@ -232,8 +243,8 @@ function rowLanguages(row: MediaRow): LanguageChip[] {
       jobStatus: job?.status ?? null,
     })
   }
-  if (row.candidate && !map.has(row.candidate.target_language)) {
-    map.set(row.candidate.target_language, {
+  if (row.candidate && !map.has(`${row.candidate.target_language}:subtitles`)) {
+    map.set(`${row.candidate.target_language}:subtitles`, {
       code: row.candidate.target_language,
       name: row.candidate.target_language,
       status: row.candidate.reason_code === 'target_exists' ? 'completed' : null,
@@ -257,7 +268,7 @@ function rowMeta(row: MediaRow) {
 }
 
 function runningTask(row: MediaRow): LocalizationTask | null {
-  const active = [...latestTasksByLanguage(row.tasks).values()].filter((task) =>
+  const active = [...latestTasksByLanguageCapability(row.tasks).values()].filter((task) =>
     isActiveTaskStatus(task.status),
   )
   if (!active.length) return null
@@ -660,15 +671,13 @@ onUnmounted(() => {
             <p v-if="rowMeta(row)" class="mt-0.5 text-xs capitalize text-ink-500">
               {{ rowMeta(row) }}
             </p>
-            <p v-if="row.path" class="mt-0.5 truncate text-xs text-ink-500" :title="row.path">
-              {{ row.path }}
-            </p>
             <div v-if="rowLanguages(row).length" class="mt-3 flex flex-wrap gap-2">
               <span
                 v-for="lang in rowLanguages(row)"
-                :key="`${row.key}-${lang.code}`"
+                :key="`${row.key}-${lang.code}-${lang.name}`"
                 class="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold"
                 :class="languageChipClass(lang.status, lang.available)"
+                :title="row.path || undefined"
               >
                 {{ lang.name }}
                 <span v-if="lang.status" class="font-normal opacity-80">

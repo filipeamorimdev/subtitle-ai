@@ -18,11 +18,11 @@ MediaItem + CandidateService
         ↓
    ┌────┴────┐
    │         │
-Manual    AutomaticScanner
-request        ↓
-   │      Grace + FallbackPlanner
-   │         ↓
-   └────┬────┘
+Manual    AutomaticScanner    OperatorChat
+request        ↓                    │
+   │      Grace + FallbackPlanner   │ tools
+   │         ↓                      │
+   └────┬────┴──────────────────────┘
         ↓
 LocalizationTask + TaskPlanner
         ↓
@@ -38,6 +38,8 @@ ModelRouter → AIProvider (OpenRouter)
 Validate + Bazarr verify → task completed
 ```
 
+The dashboard **operator chat** is not a second orchestrator. It calls a whitelist of tools (`search_media`, `ensure_media`, `create_localization_task`, …) that wrap the same services as the REST UI. OpenRouter emits structured `tool_calls`; assistant prose never creates jobs.
+
 See [localization-tasks.md](localization-tasks.md) for the media-centric task model and [ai-providers.md](ai-providers.md) for the BYOAI provider abstraction.
 
 ## Components
@@ -46,6 +48,8 @@ See [localization-tasks.md](localization-tasks.md) for the media-centric task mo
 | --- | --- |
 | `media/` | MediaRef, BazarrMediaProvider, MediaItem identity cache, process runner |
 | `localization/` | LocalizationTask service, state machine, TaskPlanner, LocalizationPipeline |
+| `localization/operator` | Dashboard chat agent loop (OpenRouter tools → operator_tools) |
+| `localization/operator_tools` | Whitelisted goal-level tools (search, create task, dub, …) |
 | `localization/source_resolver` | Scores subtitle / embedded / OCR / transcript sources (no hard gates) |
 | `localization/transcription` | Audio track selection, ASR providers, chunking, subtitle formatter |
 | `localization/dubbing` | SpeechSegments, TTS providers, timing, PCM timeline, mux |
@@ -103,9 +107,9 @@ Budget reservations use a **process-wide lock** around check / insert / commit. 
 
 | Surface | Answers |
 | --- | --- |
-| Dashboard | What is Subtitle AI doing right now? Includes AI cost/quality snapshot. |
-| AI dashboard | Detailed AI observability (Overview / Usage), opened from Dashboard. |
-| Settings | How is Subtitle AI configured? General, Providers (Bazarr and AI), Models, Language. |
+| Dashboard (Ops) | What is Subtitle AI doing right now? Pipeline stages, interventions, live work, automation. |
+| Dashboard (AI) | Detailed AI observability (Overview / Usage) on the same page. |
+| Settings | How is Subtitle AI configured? General (incl. language), Providers, Models. |
 
 Provider credentials live under **Settings → Providers**. Pools, strategy, and budgets live under **Settings → Models**. Adaptive ranking on Overview is display-only and never reorders pools or enables paid fallback.
 

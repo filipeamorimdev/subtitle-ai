@@ -71,9 +71,42 @@ ALL_CAPABILITIES = frozenset(
 
 
 @dataclass
+class ToolCall:
+    """One model-emitted function/tool invocation."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    # Raw JSON string when the provider returns arguments unparsed.
+    arguments_raw: str | None = None
+
+
+@dataclass
+class ToolSpec:
+    """OpenAI-compatible tool definition passed to chat_completion."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+
+    def to_openai_dict(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters or {"type": "object", "properties": {}},
+            },
+        }
+
+
+@dataclass
 class Message:
     role: str
-    content: str
+    content: str | None = None
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 @dataclass
@@ -139,6 +172,7 @@ class AIResponse:
     latency_ms: int | None = None
     request_id: str | None = None
     raw_metadata: dict[str, Any] | None = None
+    tool_calls: list[ToolCall] | None = None
 
     @property
     def cost_usd(self) -> float | None:

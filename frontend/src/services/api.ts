@@ -25,6 +25,10 @@ import type {
   AiCosts,
   AiRouting,
   AiProviderInfo,
+  OperatorSession,
+  OperatorSessionDetail,
+  OperatorStatus,
+  OperatorTurn,
 } from '../types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -310,4 +314,20 @@ export const api = {
   exportSettings: () => request<{ settings: Settings; secrets_omitted: boolean }>('/api/settings/export'),
   importSettings: (payload: SettingsUpdate) =>
     request<Settings>('/api/settings/import', { method: 'POST', body: JSON.stringify(payload) }),
+  getOperatorStatus: () => request<OperatorStatus>('/api/operator/status'),
+  createOperatorSession: () =>
+    request<OperatorSession>('/api/operator/sessions', { method: 'POST' }),
+  getOperatorSession: (id: number) =>
+    request<OperatorSessionDetail>(`/api/operator/sessions/${id}`),
+  postOperatorMessage: (
+    id: number,
+    payload: {
+      content?: string
+      confirmed_tool?: { name: string; arguments?: Record<string, unknown> }
+    },
+  ) =>
+    request<OperatorTurn>(`/api/operator/sessions/${id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 }

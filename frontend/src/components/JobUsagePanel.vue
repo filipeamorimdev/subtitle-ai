@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
 import { api } from '../services/api'
 import type { JobLog, JobUsage, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
-import { safeReturnTo, withReturnTo } from '../utils/mediaNav'
 
-const props = defineProps<{ id: string }>()
-const route = useRoute()
+const props = defineProps<{ id: string | number }>()
 
 const usage = ref<JobUsage | null>(null)
 const error = ref<string | null>(null)
@@ -124,13 +121,6 @@ const kpiCards = computed(() => {
   ]
 })
 
-const returnTo = computed(() => safeReturnTo(route.query.from))
-const backHref = computed(() => returnTo.value || `/jobs/${props.id}`)
-const backLabel = computed(() =>
-  returnTo.value?.startsWith('/media') ? '← Media' : `← Job #${props.id}`,
-)
-const jobDetailsHref = computed(() => withReturnTo(`/jobs/${props.id}`, returnTo.value))
-
 async function load() {
   loading.value = true
   error.value = null
@@ -145,11 +135,14 @@ async function load() {
 }
 
 onMounted(load)
-watch(() => props.id, () => {
-  jobLog.value = null
-  requestModal.value = null
-  load()
-})
+watch(
+  () => props.id,
+  () => {
+    jobLog.value = null
+    requestModal.value = null
+    load()
+  },
+)
 
 function exchangeTitle(row: JobUsageExchange): string {
   return `#${row.index} ${actionLabel(row.action)} · ${row.model}`
@@ -161,7 +154,10 @@ function logTimestamp(value: unknown): string {
     .slice(0, 19)
 }
 
-function findExchangeRequest(entries: Record<string, unknown>[] | null | undefined, row: JobUsageExchange): unknown {
+function findExchangeRequest(
+  entries: Record<string, unknown>[] | null | undefined,
+  row: JobUsageExchange,
+): unknown {
   const exchanges = (entries || []).filter((entry) => entry.event === 'exchange')
   const rowTs = logTimestamp(row.ts)
   const matched =
@@ -211,72 +207,52 @@ async function viewRequest(row: JobUsageExchange) {
 </script>
 
 <template>
-  <section class="space-y-6">
-    <div class="flex flex-wrap items-start justify-between gap-4">
-      <div class="min-w-0">
-        <p class="text-sm text-ink-500">
-          <RouterLink class="text-accent hover:underline" :to="backHref">{{ backLabel }}</RouterLink>
-        </p>
-        <h1 class="mt-1 break-words font-display text-2xl font-bold sm:text-3xl">
-          {{ usage?.media_title || 'Job' }} usage
-        </h1>
-        <p v-if="usage" class="mt-1 capitalize text-sm text-ink-600 sm:text-base dark:text-ink-300">
-          {{ usage.job_kind }} · {{ usage.status }}
-        </p>
-      </div>
-      <RouterLink
-        class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-        :to="jobDetailsHref"
-      >
-        Job details
-      </RouterLink>
-    </div>
+  <div id="usage" class="space-y-4">
+    <h2 class="font-display text-lg font-semibold">Usage</h2>
 
     <p v-if="error" class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
       {{ error }}
     </p>
-    <p v-else-if="loading" class="text-ink-500">Loading usage…</p>
+    <p v-else-if="loading" class="text-sm text-ink-500">Loading usage…</p>
 
     <template v-else-if="usage">
       <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
         <article
           v-for="card in kpiCards"
           :key="card.label"
-          class="rounded-xl border border-ink-200 bg-white/80 px-3 py-3 dark:border-ink-800 dark:bg-ink-900/60 sm:px-4 sm:py-4"
+          class="rounded-md border border-l-4 border-ink-200 border-l-violet-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900"
         >
           <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ card.label }}</div>
-          <div class="mt-1 font-display text-xl font-bold sm:text-2xl">{{ card.value }}</div>
+          <div class="mt-1 font-mono text-xl font-semibold sm:text-2xl">{{ card.value }}</div>
           <div v-if="card.hint" class="mt-1 text-xs text-ink-500">{{ card.hint }}</div>
         </article>
       </div>
 
       <div class="grid gap-4 lg:grid-cols-2">
-        <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <section class="rounded-md border border-ink-200 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
           <div class="flex items-start justify-between gap-3">
-            <div>
-              <h2 class="font-display text-lg font-bold">Usage by model</h2>
-            </div>
-            <p class="text-sm text-ink-500">{{ usage.by_model.length }} model{{ usage.by_model.length === 1 ? '' : 's' }}</p>
+            <h3 class="font-display text-base font-semibold">Usage by model</h3>
+            <p class="text-sm text-ink-500">
+              {{ usage.by_model.length }} model{{ usage.by_model.length === 1 ? '' : 's' }}
+            </p>
           </div>
 
-          <p v-if="!usage.by_model.length" class="mt-6 text-sm text-ink-500">
-            No model usage recorded yet.
-          </p>
-          <ul v-else class="mt-5 space-y-4">
+          <p v-if="!usage.by_model.length" class="mt-4 text-sm text-ink-500">No model usage recorded yet.</p>
+          <ul v-else class="mt-4 space-y-4">
             <li v-for="item in usage.by_model" :key="item.model">
               <div class="flex items-center justify-between gap-3 text-sm">
                 <div class="min-w-0">
                   <div class="truncate font-medium">{{ item.name || item.model }}</div>
                   <div class="truncate text-xs text-ink-500">{{ item.model }}</div>
                 </div>
-                <div class="shrink-0 text-right">
+                <div class="shrink-0 text-right font-mono">
                   <div>{{ formatTokens(item.total_tokens) }} tok</div>
                   <div class="text-xs text-ink-500">{{ formatUsd(item.cost_usd) }}</div>
                 </div>
               </div>
-              <div class="mt-2 h-2 overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+              <div class="mt-2 h-2 overflow-hidden rounded-md bg-ink-100 dark:bg-ink-800">
                 <div
-                  class="h-full rounded-full transition-all"
+                  class="h-full transition-all"
                   :style="{
                     width: `${(item.total_tokens / maxModelTokens) * 100}%`,
                     backgroundColor: modelColor(item.model),
@@ -291,29 +267,25 @@ async function viewRequest(row: JobUsageExchange) {
           </ul>
         </section>
 
-        <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+        <section class="rounded-md border border-ink-200 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
           <div class="flex items-start justify-between gap-3">
-            <div>
-              <h2 class="font-display text-lg font-bold">Usage by action</h2>
-            </div>
+            <h3 class="font-display text-base font-semibold">Usage by action</h3>
             <p class="text-sm text-ink-500">{{ usage.by_action.length }} kinds</p>
           </div>
 
-          <p v-if="!usage.by_action.length" class="mt-6 text-sm text-ink-500">
-            No actions recorded yet.
-          </p>
-          <ul v-else class="mt-5 space-y-4">
+          <p v-if="!usage.by_action.length" class="mt-4 text-sm text-ink-500">No actions recorded yet.</p>
+          <ul v-else class="mt-4 space-y-4">
             <li v-for="item in usage.by_action" :key="item.action">
               <div class="flex items-center justify-between gap-3 text-sm">
                 <div class="font-medium capitalize">{{ actionLabel(item.action) }}</div>
-                <div class="shrink-0 text-right">
+                <div class="shrink-0 text-right font-mono">
                   <div>{{ formatTokens(item.total_tokens) }} tok</div>
                   <div class="text-xs text-ink-500">{{ formatUsd(item.cost_usd) }}</div>
                 </div>
               </div>
-              <div class="mt-2 h-2 overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+              <div class="mt-2 h-2 overflow-hidden rounded-md bg-ink-100 dark:bg-ink-800">
                 <div
-                  class="h-full rounded-full transition-all"
+                  class="h-full transition-all"
                   :style="{
                     width: `${(item.total_tokens / maxActionTokens) * 100}%`,
                     backgroundColor: actionColor(item.action),
@@ -326,10 +298,10 @@ async function viewRequest(row: JobUsageExchange) {
         </section>
       </div>
 
-      <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <section class="rounded-md border border-ink-200 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 class="font-display text-lg font-bold">Request volume by action</h2>
+            <h3 class="font-display text-base font-semibold">Request volume by action</h3>
             <p class="mt-1 text-sm text-ink-500">Each bar is one OpenRouter exchange in job order</p>
           </div>
           <div class="flex flex-wrap gap-3 text-xs text-ink-500">
@@ -347,13 +319,17 @@ async function viewRequest(row: JobUsageExchange) {
           </div>
         </div>
 
-        <p v-if="!exchangeBars.length" class="mt-6 text-sm text-ink-500">
+        <p v-if="!exchangeBars.length" class="mt-4 text-sm text-ink-500">
           <template v-if="!usage.log_exists">
             No OpenRouter log for this job. Stats appear after translation API calls run.
           </template>
           <template v-else>Log exists but has no exchange entries yet.</template>
         </p>
-        <div v-else class="mt-6 flex items-end gap-1 overflow-x-auto pb-1" :style="{ height: `${CHART_HEIGHT_PX}px` }">
+        <div
+          v-else
+          class="mt-4 flex items-end gap-1 overflow-x-auto pb-1"
+          :style="{ height: `${CHART_HEIGHT_PX}px` }"
+        >
           <div
             v-for="bar in exchangeBars"
             :key="bar.index"
@@ -372,11 +348,9 @@ async function viewRequest(row: JobUsageExchange) {
         </div>
       </section>
 
-      <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <section class="rounded-md border border-ink-200 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
         <div class="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 class="font-display text-lg font-bold">Exchanges</h2>
-          </div>
+          <h3 class="font-display text-base font-semibold">Exchanges</h3>
           <p class="text-sm text-ink-500">{{ usage.exchanges.length }} total</p>
         </div>
 
@@ -418,16 +392,16 @@ async function viewRequest(row: JobUsageExchange) {
                     {{ row.error || 'failed' }}
                   </span>
                 </td>
-                <td class="py-3 pr-4 align-top truncate max-w-[14rem]" :title="row.model">
+                <td class="max-w-[14rem] truncate py-3 pr-4 align-top" :title="row.model">
                   {{ row.model }}
                 </td>
-                <td class="py-3 pr-4 align-top whitespace-nowrap">
+                <td class="py-3 pr-4 align-top whitespace-nowrap font-mono">
                   {{ formatTokens(row.total_tokens) }}
                   <span class="text-ink-500">
                     ({{ formatTokens(row.input_tokens) }}/{{ formatTokens(row.output_tokens) }})
                   </span>
                 </td>
-                <td class="py-3 pr-4 align-top whitespace-nowrap">
+                <td class="py-3 pr-4 align-top whitespace-nowrap font-mono">
                   {{ formatUsd(row.cost_usd) }}
                   <span v-if="row.cost_estimated" class="text-xs text-ink-500">est.</span>
                 </td>
@@ -457,7 +431,7 @@ async function viewRequest(row: JobUsageExchange) {
       @click.self="requestModal = null"
     >
       <div
-        class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
+        class="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-md border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
       >
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
@@ -479,9 +453,9 @@ async function viewRequest(row: JobUsageExchange) {
         </p>
         <pre
           v-else
-          class="mt-4 min-h-0 flex-1 overflow-auto rounded-lg bg-ink-950 p-4 text-xs leading-relaxed text-ink-100"
+          class="mt-4 min-h-0 flex-1 overflow-auto rounded-md bg-ink-950 p-4 text-xs leading-relaxed text-ink-100"
         >{{ requestModal.body }}</pre>
       </div>
     </div>
-  </section>
+  </div>
 </template>

@@ -394,17 +394,6 @@ onUnmounted(() => {
             Cancel
           </button>
           <button
-            v-if="verifyFailedTasks.length"
-            type="button"
-            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-            title="Retry Bazarr sync"
-            aria-label="Retry Bazarr sync"
-            :disabled="busy"
-            @click="retryBazarrSync"
-          >
-            Retry Bazarr sync
-          </button>
-          <button
             v-if="canTranscribe"
             type="button"
             class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
@@ -434,6 +423,26 @@ onUnmounted(() => {
           >
             Request dub
           </button>
+          <details v-if="verifyFailedTasks.length" class="relative">
+            <summary
+              class="cursor-pointer list-none rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600 [&::-webkit-details-marker]:hidden"
+            >
+              More
+            </summary>
+            <div
+              class="absolute right-0 z-10 mt-1 min-w-[12rem] rounded-md border border-ink-200 bg-white p-1 shadow-lg dark:border-ink-700 dark:bg-ink-900"
+            >
+              <button
+                type="button"
+                class="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold hover:bg-ink-100 dark:hover:bg-ink-800"
+                title="Retry Bazarr sync"
+                :disabled="busy"
+                @click="retryBazarrSync"
+              >
+                Retry Bazarr sync
+              </button>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -463,47 +472,52 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <dl class="grid gap-4 rounded-xl border border-ink-200 bg-white/80 p-5 text-sm dark:border-ink-800 dark:bg-ink-900/60 sm:grid-cols-2">
-        <div>
-          <dt class="text-ink-500">Media</dt>
-          <dd class="mt-1 break-all">{{ media.path || '—' }}</dd>
-        </div>
-        <div>
-          <dt class="text-ink-500">Model</dt>
-          <dd class="mt-1">{{ detailModel || '—' }}</dd>
-        </div>
-        <div>
-          <dt class="text-ink-500">Source subtitle</dt>
-          <dd class="mt-1 break-all">{{ sourceSubtitlePath || '—' }}</dd>
-        </div>
-        <div>
-          <dt class="text-ink-500">Target subtitle</dt>
-          <dd class="mt-1 break-all">{{ targetSubtitlePath || '—' }}</dd>
-        </div>
-        <div v-if="detailReason" class="sm:col-span-2">
-          <dt class="text-ink-500">Reason</dt>
-          <dd class="mt-1">{{ detailReason }}</dd>
-        </div>
-        <div v-if="showEmbeddedTracks" class="sm:col-span-2">
-          <dt class="text-ink-500">Embedded tracks</dt>
-          <dd class="mt-2 flex flex-wrap gap-1.5">
-            <span
-              v-for="(track, idx) in matchedCandidate?.embedded_subtitles"
-              :key="`${track.label}-${idx}`"
-              class="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
-              :class="
-                track.kind === 'text'
-                  ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
-                  : track.kind === 'image'
-                    ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200'
-                    : 'border-ink-300 bg-ink-50 text-ink-600 dark:border-ink-700 dark:bg-ink-950/50 dark:text-ink-300'
-              "
-            >
-              Embedded {{ track.label }}
-            </span>
-          </dd>
-        </div>
-      </dl>
+      <details class="rounded-md border border-ink-200 bg-white dark:border-ink-800 dark:bg-ink-900">
+        <summary class="cursor-pointer px-4 py-3 text-sm font-semibold text-ink-700 dark:text-ink-200">
+          Details
+        </summary>
+        <dl class="grid gap-4 border-t border-ink-200 px-4 py-4 text-sm dark:border-ink-800 sm:grid-cols-2">
+          <div>
+            <dt class="text-ink-500">Media</dt>
+            <dd class="mt-1 break-all">{{ media.path || '—' }}</dd>
+          </div>
+          <div>
+            <dt class="text-ink-500">Model</dt>
+            <dd class="mt-1">{{ detailModel || '—' }}</dd>
+          </div>
+          <div>
+            <dt class="text-ink-500">Source subtitle</dt>
+            <dd class="mt-1 break-all">{{ sourceSubtitlePath || '—' }}</dd>
+          </div>
+          <div>
+            <dt class="text-ink-500">Target subtitle</dt>
+            <dd class="mt-1 break-all">{{ targetSubtitlePath || '—' }}</dd>
+          </div>
+          <div v-if="detailReason" class="sm:col-span-2">
+            <dt class="text-ink-500">Reason</dt>
+            <dd class="mt-1">{{ detailReason }}</dd>
+          </div>
+          <div v-if="showEmbeddedTracks" class="sm:col-span-2">
+            <dt class="text-ink-500">Embedded tracks</dt>
+            <dd class="mt-2 flex flex-wrap gap-1.5">
+              <span
+                v-for="(track, idx) in matchedCandidate?.embedded_subtitles"
+                :key="`${track.label}-${idx}`"
+                class="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                :class="
+                  track.kind === 'text'
+                    ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
+                    : track.kind === 'image'
+                      ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200'
+                      : 'border-ink-300 bg-ink-50 text-ink-600 dark:border-ink-700 dark:bg-ink-950/50 dark:text-ink-300'
+                "
+              >
+                Embedded {{ track.label }}
+              </span>
+            </dd>
+          </div>
+        </dl>
+      </details>
 
       <RunningJobsPanel
         v-if="runningTasks.length"

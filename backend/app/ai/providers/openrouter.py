@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -21,6 +22,7 @@ from app.ai.errors import (
 from app.ai.metadata import sanitize_metadata
 from app.ai.models import (
     CAPABILITY_BATCH,
+    CAPABILITY_FUNCTION_CALLING,
     CAPABILITY_TEXT_GENERATION,
     CAPABILITY_VISION,
     AIModel,
@@ -29,6 +31,8 @@ from app.ai.models import (
     PricingTier,
     ProviderHealth,
     ProviderStatus,
+    ToolCall,
+    ToolSpec,
 )
 from app.ai.providers.base import AIProvider
 from app.core.logging import get_logger
@@ -110,6 +114,9 @@ def normalize_openrouter_model(info: OpenRouterModelInfo) -> AIModel:
         capabilities.add(CAPABILITY_VISION)
     if is_batch_model(info.id):
         capabilities.add(CAPABILITY_BATCH)
+    supported = {str(p).lower() for p in (info.supported_parameters or [])}
+    if "tools" in supported or "tool_choice" in supported:
+        capabilities.add(CAPABILITY_FUNCTION_CALLING)
 
     tier = PricingTier.from_value(info.pricing_tier)
     metadata: dict[str, Any] = {}
@@ -117,6 +124,8 @@ def normalize_openrouter_model(info: OpenRouterModelInfo) -> AIModel:
         metadata["input_modalities"] = list(info.input_modalities)
     if info.output_modalities:
         metadata["output_modalities"] = list(info.output_modalities)
+    if info.supported_parameters:
+        metadata["supported_parameters"] = list(info.supported_parameters)
     if info.architecture:
         # Keep only non-content architecture hints.
         safe_arch = {
@@ -142,6 +151,41 @@ def normalize_openrouter_model(info: OpenRouterModelInfo) -> AIModel:
     )
 
 
+def _parse_tool_call_arguments(raw: Any) -> tuple[dict[str, Any], str | None]:
+    if isinstance(raw, dict):
+        return dict(raw), None
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {}, raw
+        if isinstance(parsed, dict):
+            return parsed, raw
+        return {}, raw
+    return {}, None
+
+
+def tool_calls_from_chat_result(result: ChatResult) -> list[ToolCall] | None:
+    raw = result.tool_calls
+    if not raw:
+        return None
+    out: list[ToolCall] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+        args, args_raw = _parse_tool_call_arguments(fn.get("arguments"))
+        out.append(
+            ToolCall(
+                id=str(item.get("id") or ""),
+                name=str(fn.get("name") or ""),
+                arguments=args,
+                arguments_raw=args_raw,
+            )
+        )
+    return out or None
+
+
 def normalize_chat_result(
     result: ChatResult,
     *,
@@ -162,16 +206,60 @@ def normalize_chat_result(
         latency_ms=result.latency_ms,
         request_id=request_id,
         raw_metadata=sanitize_metadata(raw_metadata),
+        tool_calls=tool_calls_from_chat_result(result),
     )
 
 
-def _messages_to_dicts(messages: list[Message] | list[dict[str, str]]) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def _tools_to_openai(
+    tools: list[ToolSpec] | list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    if not tools:
+        return None
+    out: list[dict[str, Any]] = []
+    for tool in tools:
+        if isinstance(tool, ToolSpec):
+            out.append(tool.to_openai_dict())
+        elif isinstance(tool, dict):
+            out.append(tool)
+        else:
+            raise TypeError(f"Unsupported tool type: {type(tool)}")
+    return out
+
+
+def _messages_to_dicts(
+    messages: list[Message] | list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for msg in messages:
         if isinstance(msg, Message):
-            out.append({"role": msg.role, "content": msg.content})
+            item: dict[str, Any] = {"role": msg.role}
+            if msg.content is not None:
+                item["content"] = msg.content
+            elif msg.tool_calls:
+                item["content"] = None
+            else:
+                item["content"] = ""
+            if msg.tool_call_id:
+                item["tool_call_id"] = msg.tool_call_id
+            if msg.name:
+                item["name"] = msg.name
+            if msg.tool_calls:
+                item["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments_raw
+                            if tc.arguments_raw is not None
+                            else json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            out.append(item)
         elif isinstance(msg, dict):
-            out.append({"role": str(msg.get("role", "user")), "content": str(msg.get("content", ""))})
+            out.append(dict(msg))
         else:
             raise TypeError(f"Unsupported message type: {type(msg)}")
     return out
@@ -229,7 +317,7 @@ class OpenRouterProvider(AIProvider):
         return bool(key and key.strip())
 
     def supports(self, capability: str) -> bool:
-        if capability in (CAPABILITY_TEXT_GENERATION, CAPABILITY_BATCH):
+        if capability in (CAPABILITY_TEXT_GENERATION, CAPABILITY_BATCH, CAPABILITY_FUNCTION_CALLING):
             return True
         return False
 
@@ -361,10 +449,12 @@ class OpenRouterProvider(AIProvider):
         self,
         *,
         model_id: str,
-        messages: list[Message] | list[dict[str, str]],
+        messages: list[Message] | list[dict[str, Any]],
         temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
+        tools: list[ToolSpec] | list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> AIResponse:
         req_id = request_id or str(uuid.uuid4())
         try:
@@ -374,6 +464,8 @@ class OpenRouterProvider(AIProvider):
                 messages=_messages_to_dicts(messages),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=_tools_to_openai(tools),
+                tool_choice=tool_choice,
             )
         except OpenRouterError as exc:
             raise openrouter_error_to_provider_error(exc, model_id=model_id) from exc
@@ -390,6 +482,7 @@ class OpenRouterProvider(AIProvider):
                     "output_tokens": result.output_tokens,
                     "total_tokens": result.total_tokens,
                 },
+                "tool_call_count": len(result.tool_calls or []),
             },
         )
 

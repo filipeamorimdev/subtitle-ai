@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
+import LanguageSelect from '../components/LanguageSelect.vue'
 import SettingsPageHeader from '../components/SettingsPageHeader.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
-import type { AutomationStatus } from '../types'
+import type { AutomationStatus, LanguageCatalogItem } from '../types'
 import { formatDateTime } from '../utils/datetime'
 
 const store = useAppStore()
@@ -14,6 +15,9 @@ const saving = ref(false)
 const clearing = ref(false)
 const scanning = ref(false)
 const automationStatus = ref<AutomationStatus | null>(null)
+const catalog = ref<LanguageCatalogItem[]>([])
+const catalogError = ref<string | null>(null)
+const catalogLoading = ref(false)
 
 const form = reactive({
   max_concurrent_translate: 1,
@@ -27,7 +31,25 @@ const form = reactive({
   automatic_retry_enabled: true,
   maximum_automatic_retries: 3,
   require_translation_approval: false,
+  source_language_code: 'en',
+  target_language_code: 'pt-PT',
+  target_language_name: 'Portuguese (Portugal)',
 })
+
+const languageOptions = computed(() => {
+  const items = [...catalog.value]
+  for (const code of [form.source_language_code, form.target_language_code]) {
+    if (code && !items.some((lang) => lang.code === code)) {
+      items.unshift({ code, display_name: code, aliases: [] })
+    }
+  }
+  return items
+})
+
+function onTargetChange(code: string = form.target_language_code) {
+  const match = languageOptions.value.find((lang) => lang.code === code)
+  if (match) form.target_language_name = match.display_name
+}
 
 async function loadAutomationStatus() {
   try {
@@ -39,6 +61,16 @@ async function loadAutomationStatus() {
 
 onMounted(async () => {
   await store.loadSettings()
+  catalogLoading.value = true
+  catalogError.value = null
+  try {
+    catalog.value = await api.getLanguages()
+  } catch (err) {
+    catalog.value = []
+    catalogError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    catalogLoading.value = false
+  }
   const s = store.settings
   if (!s) return
   form.max_concurrent_translate = s.max_concurrent_translate
@@ -52,6 +84,9 @@ onMounted(async () => {
   form.automatic_retry_enabled = s.automatic_retry_enabled ?? true
   form.maximum_automatic_retries = s.maximum_automatic_retries ?? 3
   form.require_translation_approval = s.require_translation_approval ?? false
+  form.target_language_code = s.target_language.code
+  form.target_language_name = s.target_language.name
+  form.source_language_code = s.source_languages?.[0] || 'en'
   await loadAutomationStatus()
 })
 
@@ -60,6 +95,7 @@ async function save() {
   message.value = null
   error.value = null
   try {
+    onTargetChange()
     await api.updateSettings({
       max_concurrent_translate: Number(form.max_concurrent_translate) || 1,
       max_concurrent_extract: Number(form.max_concurrent_extract) || 1,
@@ -72,6 +108,9 @@ async function save() {
       automatic_retry_enabled: form.automatic_retry_enabled,
       maximum_automatic_retries: Number(form.maximum_automatic_retries) || 0,
       require_translation_approval: form.require_translation_approval,
+      target_language_code: form.target_language_code,
+      target_language_name: form.target_language_name,
+      source_languages: [form.source_language_code || 'en'],
     })
     await store.loadSettings()
     await loadAutomationStatus()
@@ -172,7 +211,41 @@ function clearUsageStats() {
     </p>
 
     <form id="settings-general-form" class="space-y-8" @submit.prevent="save">
-      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
+      <fieldset
+        id="language"
+        class="min-w-0 space-y-4 overflow-visible rounded-md border border-ink-200 bg-white p-5 dark:border-ink-800 dark:bg-ink-900"
+      >
+        <legend class="px-1 font-display text-lg font-semibold">Language</legend>
+        <div class="block text-sm">
+          <span class="text-ink-500">Source language</span>
+          <LanguageSelect
+            v-model="form.source_language_code"
+            :languages="languageOptions"
+            :loading="catalogLoading"
+            :error="catalogError"
+            placeholder="Select source language"
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            Language Bazarr should search when no local subtitle file or extractable embedded track exists. Defaults to English.
+          </span>
+        </div>
+        <div class="block text-sm">
+          <span class="text-ink-500">Target language</span>
+          <LanguageSelect
+            v-model="form.target_language_code"
+            :languages="languageOptions"
+            :loading="catalogLoading"
+            :error="catalogError"
+            placeholder="Select target language"
+            @update:modelValue="onTargetChange"
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            Used for Bazarr wanted matching, default to requests and new automatic localize requests.
+          </span>
+        </div>
+      </fieldset>
+
+      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-md border border-ink-200 bg-white p-5 dark:border-ink-800 dark:bg-ink-900">
         <legend class="px-1 font-display text-lg font-semibold">Automatic Subtitle Fallback</legend>
         <label class="flex items-start gap-2 text-sm">
           <input v-model="form.automatic_fallback_enabled" type="checkbox" class="mt-1" />

@@ -28,12 +28,13 @@ By default only metadata is stored (model, attempt, status, token usage, errors)
 
 ## Settings UI sections
 
-The Settings sidebar has **General**, **Providers**, **Models**, and **Language**.
+The Settings sidebar has **General**, **Providers**, and **Models**.
 
 ### General
 
+- Source and target language defaults
 - Automatic fallback: enable, scan interval, Bazarr grace period, retries, run scan now
-- Job concurrency (translate / extract / request)
+- Job concurrency (translate / extract / request / transcribe / dub)
 - Advanced cleanup (jobs, usage stats)
 
 When automatic fallback is disabled, Media stays click-only. When enabled, newly missing wanted items are processed automatically after the grace period and **can incur AI costs**.
@@ -58,19 +59,16 @@ AI:
 - Catalog, free/paid pools, routing strategy, cost caps, monthly budget
 - Batch size (subtitle blocks per translation request)
 
-### Language
+## AI reports and model settings
 
-- Source language preference
-- Target language (wanted matching and new localize requests)
+AI **observability** lives on the Dashboard **AI** tab:
 
-## AI dashboard and model settings
-
-AI **observability** lives on the AI dashboard (opened from Dashboard):
-
-| Page | Purpose |
+| Report | Purpose |
 | --- | --- |
 | Overview | Status, monthly usage, budget, display-only adaptive ranking, cost over time, recent routing |
 | Usage | Period selector, requests/tokens/cost, success and failure rates, cost/requests by model, free vs paid, latency, paginated request history |
+
+Per-job token/cost breakdown lives on the **job detail** page (`#usage`) for translate jobs.
 
 AI **control** lives under Settings:
 
@@ -81,7 +79,7 @@ AI **control** lives under Settings:
 
 `GET /api/settings/openrouter/models` and `GET /api/ai/models` use a 6-hour catalog cache. Missing prices are **unknown**, never treated as free.
 
-`ai_usage_records` is the authoritative historical AI cost source. Dashboard, AI Usage, AI cost charts, and Job Detail usage read those snapshots. They are never repriced against the current catalogue.
+`ai_usage_records` is the authoritative historical AI cost source. Dashboard AI reports, cost charts, and Job Detail usage read those snapshots. They are never repriced against the current catalogue.
 
 ## Masking
 

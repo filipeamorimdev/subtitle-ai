@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
+import OperatorChatBar from '../components/OperatorChatBar.vue'
+import RunningJobsPanel from '../components/RunningJobsPanel.vue'
+import AiOverviewView from './ai/AiOverviewView.vue'
+import AiUsageView from './ai/AiUsageView.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
 import { onLiveEvent } from '../stores/events'
@@ -12,62 +16,61 @@ import type {
   Health,
   LocalizationTask,
 } from '../types'
-import { formatDateTime, formatElapsedClock } from '../utils/datetime'
+import { formatDateTime } from '../utils/datetime'
 import { localizationTaskTitle, mediaHref } from '../utils/mediaNav'
-import { isActiveTaskStatus, isUnresolvedFailedTask, taskStatusIcon, taskStatusLabel } from '../utils/status'
-import { latestActiveJob, taskProgressPct } from '../utils/taskProgress'
+import {
+  canApproveTask,
+  canRetryTask,
+  isActiveTaskStatus,
+  isUnresolvedFailedTask,
+  pipelineStage,
+  type PipelineStage,
+} from '../utils/status'
 
 const store = useAppStore()
+const route = useRoute()
+const router = useRouter()
+
 const health = ref<Health | null>(null)
 const automation = ref<AutomationStatus | null>(null)
 const aiOverview = ref<AiOverview | null>(null)
 const tasks = ref<LocalizationTask[]>([])
 const currentTasksDetailed = ref<LocalizationTask[]>([])
-const recentTranslations = ref<LocalizationTask[]>([])
 const pipelineLoading = ref(false)
 const pipelineError = ref<string | null>(null)
 const pipelineLoaded = ref(false)
 const modalOpen = ref(false)
-const now = ref(Date.now())
+const scanning = ref(false)
+const actionBusyId = ref<number | null>(null)
+const actionError = ref<string | null>(null)
+const moneyPeriod = ref<'today' | '7d' | 'month'>('month')
 let timer: number | undefined
-let tick: number | undefined
 let stopLive: (() => void) | undefined
 
-const LIST_LIMIT = 5
-const RECENT_MEDIA_LIMIT = 4
-const RECENT_FETCH_LIMIT = 40
+const LIVE_LIMIT = 20
 
-type RecentTranslationGroup = {
-  mediaItemId: number
-  task: LocalizationTask
-  languages: string[]
-  origin: string
+type DashTab = 'ops' | 'ai'
+type AiReport = 'overview' | 'usage'
+
+const activeTab = computed<DashTab>(() => (route.query.tab === 'ai' ? 'ai' : 'ops'))
+const aiReport = computed<AiReport>(() => (route.query.report === 'usage' ? 'usage' : 'overview'))
+
+function setTab(tab: DashTab) {
+  const query = { ...route.query }
+  if (tab === 'ops') {
+    delete query.tab
+    delete query.report
+  } else {
+    query.tab = 'ai'
+  }
+  router.replace({ query })
 }
 
-function groupRecentTranslationsByMedia(
-  tasks: LocalizationTask[],
-  limit: number,
-): RecentTranslationGroup[] {
-  const groups: RecentTranslationGroup[] = []
-  const byMedia = new Map<number, RecentTranslationGroup>()
-  for (const task of tasks) {
-    let group = byMedia.get(task.media_item_id)
-    if (!group) {
-      if (groups.length >= limit) continue
-      group = {
-        mediaItemId: task.media_item_id,
-        task,
-        languages: [],
-        origin: task.origin,
-      }
-      byMedia.set(task.media_item_id, group)
-      groups.push(group)
-    }
-    if (!group.languages.includes(task.target_language_name)) {
-      group.languages.push(task.target_language_name)
-    }
-  }
-  return groups
+function setAiReport(report: AiReport) {
+  const query: Record<string, string> = { ...route.query as Record<string, string>, tab: 'ai' }
+  if (report === 'overview') delete query.report
+  else query.report = 'usage'
+  router.replace({ query })
 }
 
 function isTargetDone(item: Candidate) {
@@ -84,40 +87,180 @@ const candidateHealth = computed(() => {
   }
 })
 
-const currentLocalization = computed(() => {
-  const byId = new Map(currentTasksDetailed.value.map((task) => [task.id, task]))
-  return tasks.value
-    .filter((task) => isActiveTaskStatus(task.status))
-    .slice(0, LIST_LIMIT)
-    .map((task) => byId.get(task.id) || task)
+const detailedById = computed(() => {
+  const map = new Map(currentTasksDetailed.value.map((task) => [task.id, task]))
+  return map
 })
 
-function latestJob(task: LocalizationTask) {
-  return latestActiveJob(task)
+const enrichedTasks = computed(() =>
+  tasks.value.map((task) => detailedById.value.get(task.id) || task),
+)
+
+function stageOf(task: LocalizationTask): PipelineStage {
+  return pipelineStage(detailedById.value.get(task.id) || task)
 }
 
-function taskElapsed(task: LocalizationTask) {
-  const job = latestJob(task)
-  const start = job?.started_at || task.started_at || job?.created_at || task.created_at
-  return formatElapsedClock(start, now.value)
+const stageCounts = computed(() => {
+  const counts: Record<PipelineStage, number> = {
+    requesting: 0,
+    extracting: 0,
+    transcribing: 0,
+    translating: 0,
+    verifying: 0,
+    approval: 0,
+    dubbing: 0,
+    dub_blocked: 0,
+    failed: 0,
+    other: 0,
+  }
+  for (const task of enrichedTasks.value) {
+    const cap = (task.capability || 'subtitles').toLowerCase()
+    if (task.status === 'failed' && isUnresolvedFailedTask(task, enrichedTasks.value)) {
+      counts.failed += 1
+      continue
+    }
+    if (cap === 'audio' && task.status === 'blocked') {
+      counts.dub_blocked += 1
+      continue
+    }
+    const stage = stageOf(task)
+    counts[stage] += 1
+  }
+  return counts
+})
+
+type PipelineCard = {
+  key: string
+  label: string
+  count: number
+  to: string
+  accent: string
+  always?: boolean
 }
+
+const subtitleCards = computed<PipelineCard[]>(() => {
+  const c = stageCounts.value
+  return [
+    {
+      key: 'missing',
+      label: 'Missing',
+      count: pipelineLoaded.value ? candidateHealth.value.missing : 0,
+      to: '/media?filter=needs-work',
+      accent: 'border-l-accent',
+      always: true,
+    },
+    {
+      key: 'ready',
+      label: 'Ready',
+      count: pipelineLoaded.value ? candidateHealth.value.ready : 0,
+      to: '/media?filter=needs-work',
+      accent: 'border-l-sky-500',
+      always: true,
+    },
+    {
+      key: 'requesting',
+      label: 'Requesting',
+      count: c.requesting,
+      to: '/media?filter=in-progress',
+      accent: 'border-l-amber-500',
+    },
+    {
+      key: 'extracting',
+      label: 'Extracting',
+      count: c.extracting,
+      to: '/media?filter=in-progress',
+      accent: 'border-l-amber-500',
+    },
+    {
+      key: 'transcribing',
+      label: 'Transcribing',
+      count: c.transcribing,
+      to: '/media?filter=in-progress',
+      accent: 'border-l-amber-500',
+    },
+    {
+      key: 'translating',
+      label: 'Translating',
+      count: c.translating,
+      to: '/media?filter=in-progress',
+      accent: 'border-l-amber-500',
+    },
+    {
+      key: 'verifying',
+      label: 'Verifying',
+      count: c.verifying,
+      to: '/media?filter=in-progress',
+      accent: 'border-l-amber-500',
+    },
+    {
+      key: 'approval',
+      label: 'Approval',
+      count: c.approval,
+      to: '/media?filter=in-progress',
+      accent: 'border-l-violet-500',
+    },
+    {
+      key: 'failed',
+      label: 'Failed',
+      count: c.failed,
+      to: '/media?filter=failed',
+      accent: 'border-l-red-500',
+      always: true,
+    },
+  ].filter((card) => card.always || card.count > 0)
+})
+
+const audioCards = computed<PipelineCard[]>(() => {
+  const c = stageCounts.value
+  return [
+    {
+      key: 'dubbing',
+      label: 'Dubbing',
+      count: c.dubbing,
+      to: '/media?filter=in-progress',
+      accent: 'border-l-amber-500',
+    },
+    {
+      key: 'dub_blocked',
+      label: 'Dub blocked',
+      count: c.dub_blocked,
+      to: '/media?filter=failed',
+      accent: 'border-l-amber-600',
+    },
+  ].filter((card) => card.count > 0)
+})
+
+const liveTasks = computed(() =>
+  enrichedTasks.value
+    .filter((task) => isActiveTaskStatus(task.status) && task.status !== 'awaiting_approval')
+    .slice(0, LIVE_LIMIT),
+)
+
+const liveOverflow = computed(() => {
+  const active = enrichedTasks.value.filter(
+    (task) => isActiveTaskStatus(task.status) && task.status !== 'awaiting_approval',
+  ).length
+  return Math.max(0, active - LIVE_LIMIT)
+})
 
 const failedTasks = computed(() =>
-  tasks.value
-    .filter((t) => isUnresolvedFailedTask(t, tasks.value))
-    .slice(0, LIST_LIMIT),
+  enrichedTasks.value.filter((t) => isUnresolvedFailedTask(t, enrichedTasks.value)).slice(0, 8),
 )
 
-const recentTranslationGroups = computed(() =>
-  groupRecentTranslationsByMedia(recentTranslations.value, RECENT_MEDIA_LIMIT),
+const approvalTasks = computed(() =>
+  enrichedTasks.value.filter((t) => canApproveTask(t.status)).slice(0, 8),
 )
 
-const completedToday = computed(() => {
-  const key = new Date().toISOString().slice(0, 10)
-  return tasks.value.filter(
-    (t) => t.status === 'completed' && t.completed_at?.slice(0, 10) === key,
-  ).length
-})
+const dubBlockedTasks = computed(() =>
+  enrichedTasks.value
+    .filter(
+      (t) =>
+        (t.capability || 'subtitles') === 'audio' &&
+        t.status === 'blocked' &&
+        (t.substate === 'awaiting_subtitles' || t.error_code === 'subtitle_missing'),
+    )
+    .slice(0, 8),
+)
 
 const bazarrOk = computed(() => {
   if (health.value) return health.value.bazarr === 'configured' || health.value.bazarr === 'ok'
@@ -131,64 +274,93 @@ const openRouterOk = computed(() => {
   return Boolean(store.settings?.openrouter_api_key_configured)
 })
 
-const openRouterAttention = computed(() => {
-  if (health.value?.openrouter === 'unreachable') {
-    return 'Cannot connect to the AI service.'
-  }
-  return 'OpenRouter is not configured.'
-})
-
-const monthCost = computed(
-  () => aiOverview.value?.ai_summary?.this_month_cost_usd ?? aiOverview.value?.cards?.month?.cost_usd,
-)
-const monthRequests = computed(
-  () => aiOverview.value?.ai_summary?.this_month_requests ?? aiOverview.value?.cards?.month?.requests,
-)
-const cleanSuccess = computed(
-  () => aiOverview.value?.ai_summary?.clean_success_rate ?? aiOverview.value?.clean_success_rate,
-)
-const bestModel = computed(() => aiOverview.value?.ai_summary?.best_model_id || null)
 const budgetPct = computed(() => aiOverview.value?.budget.percent_used)
-
-const attentionReasons = computed(() => {
-  const reasons: string[] = []
-  if (!bazarrOk.value) {
-    reasons.push(
-      health.value?.bazarr === 'unreachable'
-        ? 'Bazarr is unreachable.'
-        : 'Bazarr is not configured.',
-    )
-  }
-  if (health.value?.planner_error) reasons.push('Localization planner failed to resume after restart.')
-  if (!openRouterOk.value) reasons.push(openRouterAttention.value)
-  if (aiOverview.value?.status === 'attention') {
-    const aiReasons = aiOverview.value.status_reasons?.filter(Boolean) || []
-    if (aiReasons.length) reasons.push(...aiReasons)
-    else reasons.push('AI needs attention.')
-  }
-  if (failedTasks.value.length) {
-    reasons.push(
-      `${failedTasks.value.length} failed localization${failedTasks.value.length === 1 ? '' : 's'}.`,
-    )
-  }
-  return reasons
-})
-
-const heroTone = computed(() => {
-  if (attentionReasons.value.length) return 'attention'
-  if (!currentLocalization.value.length && (aiOverview.value?.status === 'idle' || !aiOverview.value)) {
-    return 'idle'
-  }
-  return 'healthy'
-})
-
-const hasNeedsAttention = computed(
-  () =>
-    Boolean(pipelineError.value) ||
-    !bazarrOk.value ||
-    !openRouterOk.value ||
-    failedTasks.value.length > 0,
+const budgetHot = computed(
+  () => Boolean(aiOverview.value?.budget.enabled && (budgetPct.value ?? 0) >= 90),
 )
+
+type Intervention = {
+  key: string
+  message: string
+  to?: string
+  actionLabel?: string
+  onAction?: () => void
+}
+
+const interventions = computed<Intervention[]>(() => {
+  const items: Intervention[] = []
+  if (pipelineError.value) {
+    items.push({ key: 'pipeline', message: pipelineError.value })
+  }
+  if (!bazarrOk.value) {
+    items.push({
+      key: 'bazarr',
+      message:
+        health.value?.bazarr === 'unreachable' ? 'Bazarr is unreachable.' : 'Bazarr is not configured.',
+      to: '/settings/providers',
+      actionLabel: 'Open settings',
+    })
+  }
+  if (!openRouterOk.value) {
+    items.push({
+      key: 'openrouter',
+      message:
+        health.value?.openrouter === 'unreachable'
+          ? 'Cannot connect to the AI service.'
+          : 'OpenRouter is not configured.',
+      to: '/settings/providers',
+      actionLabel: 'Open settings',
+    })
+  }
+  if (health.value?.planner_error) {
+    items.push({
+      key: 'planner',
+      message: 'Localization planner failed to resume after restart.',
+    })
+  }
+  if (budgetHot.value) {
+    items.push({
+      key: 'budget',
+      message: `Monthly budget ${(budgetPct.value || 0).toFixed(0)}% used.`,
+      to: '/settings/models',
+      actionLabel: 'Configure models',
+    })
+  }
+  for (const task of approvalTasks.value) {
+    items.push({
+      key: `approve-${task.id}`,
+      message: `Approve: ${localizationTaskTitle(task)}`,
+      actionLabel: 'Approve',
+      onAction: () => approveTask(task.id),
+    })
+  }
+  for (const task of failedTasks.value) {
+    items.push({
+      key: `fail-${task.id}`,
+      message: `${localizationTaskTitle(task)}${task.error_message ? ` — ${task.error_message}` : ''}`,
+      to: mediaHref(task.media_item_id),
+      actionLabel: canRetryTask(task.status) ? 'Retry' : 'Open',
+      onAction: canRetryTask(task.status) ? () => retryTask(task.id) : undefined,
+    })
+  }
+  for (const task of dubBlockedTasks.value) {
+    items.push({
+      key: `dub-block-${task.id}`,
+      message: `Dub blocked (need subtitles): ${localizationTaskTitle(task)}`,
+      to: mediaHref(task.media_item_id),
+      actionLabel: 'Localize subtitles',
+    })
+  }
+  return items
+})
+
+const periodCard = computed(() => {
+  const cards = aiOverview.value?.cards
+  if (!cards) return null
+  if (moneyPeriod.value === 'today') return cards.today || null
+  if (moneyPeriod.value === '7d') return cards['7d'] || cards.week || null
+  return cards.month || null
+})
 
 function formatUsd(n: number | null | undefined): string {
   if (n == null) return '—'
@@ -202,15 +374,19 @@ function formatPct(n: number | null | undefined): string {
   return `${(n * 100).toFixed(1)}%`
 }
 
+function formatTokens(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
 async function loadPipeline(refresh = false) {
   pipelineLoading.value = true
   pipelineError.value = null
   try {
-    if (refresh) {
-      await store.loadCandidates()
-    } else {
-      await store.loadCandidatesCached()
-    }
+    if (refresh) await store.loadCandidates()
+    else await store.loadCandidatesCached()
     pipelineLoaded.value = true
   } catch (err) {
     pipelineError.value = err instanceof Error ? err.message : String(err)
@@ -219,21 +395,9 @@ async function loadPipeline(refresh = false) {
   }
 }
 
-async function refreshDashboard() {
-  await Promise.all([
-    loadPipeline(true),
-    loadTasks(),
-    loadCurrentLocalization(),
-    loadRecentTranslations(),
-    loadHealth(),
-    loadAutomation(),
-    loadAiSummary(),
-  ])
-}
-
 async function loadTasks() {
   try {
-    tasks.value = await api.getLocalizationTasks({ limit: 100 })
+    tasks.value = await api.getLocalizationTasks({ limit: 200 })
   } catch {
     /* keep previous */
   }
@@ -244,19 +408,7 @@ async function loadCurrentLocalization() {
     currentTasksDetailed.value = await api.getLocalizationTasks({
       active_only: true,
       include_detail: true,
-      limit: LIST_LIMIT,
-    })
-  } catch {
-    /* keep previous */
-  }
-}
-
-async function loadRecentTranslations() {
-  try {
-    recentTranslations.value = await api.getLocalizationTasks({
-      status: 'completed',
-      sort: 'completed_at',
-      limit: RECENT_FETCH_LIMIT,
+      limit: LIVE_LIMIT,
     })
   } catch {
     /* keep previous */
@@ -281,11 +433,82 @@ async function loadAutomation() {
 
 async function loadAiSummary() {
   try {
-    aiOverview.value = await api.getAiOverview('month')
+    aiOverview.value = await api.getAiOverview(moneyPeriod.value === '7d' ? '7d' : moneyPeriod.value)
   } catch {
     aiOverview.value = null
   }
 }
+
+async function refreshDashboard() {
+  await Promise.all([
+    loadPipeline(true),
+    loadTasks(),
+    loadCurrentLocalization(),
+    loadHealth(),
+    loadAutomation(),
+    loadAiSummary(),
+  ])
+}
+
+async function runScan() {
+  scanning.value = true
+  actionError.value = null
+  try {
+    const result = await api.runAutomationScan()
+    await loadAutomation()
+    if (!result.ok) {
+      actionError.value = result.message || 'Automatic scan did not run.'
+      return
+    }
+    await Promise.all([loadTasks(), loadPipeline(true)])
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    scanning.value = false
+  }
+}
+
+async function retryTask(id: number) {
+  if (actionBusyId.value != null) return
+  actionBusyId.value = id
+  actionError.value = null
+  try {
+    await api.retryLocalizationTask(id)
+    await Promise.all([loadTasks(), loadCurrentLocalization()])
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    actionBusyId.value = null
+  }
+}
+
+async function approveTask(id: number) {
+  if (actionBusyId.value != null) return
+  actionBusyId.value = id
+  actionError.value = null
+  try {
+    await api.approveLocalizationTask(id)
+    await Promise.all([loadTasks(), loadCurrentLocalization()])
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    actionBusyId.value = null
+  }
+}
+
+async function cancelLiveTask(taskId: number) {
+  actionError.value = null
+  try {
+    await api.cancelLocalizationTask(taskId)
+    await Promise.all([loadTasks(), loadCurrentLocalization()])
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+watch(moneyPeriod, () => {
+  loadAiSummary().catch(() => undefined)
+})
 
 onMounted(async () => {
   await store.loadSettings().catch(() => undefined)
@@ -296,341 +519,352 @@ onMounted(async () => {
     loadPipeline(false),
     loadTasks(),
     loadCurrentLocalization(),
-    loadRecentTranslations(),
   ])
-  tick = window.setInterval(() => {
-    now.value = Date.now()
-  }, 1000)
   timer = window.setInterval(() => {
     loadTasks().catch(() => undefined)
     loadCurrentLocalization().catch(() => undefined)
-    loadRecentTranslations().catch(() => undefined)
     loadHealth().catch(() => undefined)
+    loadAutomation().catch(() => undefined)
   }, 30000)
   stopLive = onLiveEvent((event) => {
     if (event.type === 'hello') return
     loadTasks().catch(() => undefined)
     loadCurrentLocalization().catch(() => undefined)
-    loadRecentTranslations().catch(() => undefined)
   })
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
-  if (tick) window.clearInterval(tick)
   stopLive?.()
 })
 </script>
 
 <template>
-  <section class="space-y-8">
+  <section class="space-y-6">
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 class="font-display text-2xl font-bold sm:text-3xl">
-          <span class="mr-1 inline-block origin-bottom-right" :class="heroTone === 'healthy' ? 'dash-wiggle' : ''">🎬</span>
-          Dashboard
-        </h1>
+        <h1 class="font-display text-2xl font-bold sm:text-3xl">Dashboard</h1>
       </div>
       <div class="flex flex-wrap gap-2">
         <button
-          class="inline-flex items-center gap-1.5 rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
+          class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold text-ink-800 hover:bg-ink-100 disabled:opacity-40 dark:border-ink-600 dark:text-ink-100 dark:hover:bg-ink-800"
           type="button"
           :disabled="pipelineLoading || store.loading"
           @click="refreshDashboard"
         >
-          <span :class="pipelineLoading || store.loading ? 'inline-block animate-spin' : ''">🔄</span>
           {{ pipelineLoading || store.loading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+          class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
           @click="modalOpen = true"
         >
-          ✨ Request subtitles
+          Request subtitles
         </button>
       </div>
     </div>
 
-    <div class="grid items-stretch gap-6" :class="hasNeedsAttention ? 'lg:grid-cols-2' : ''">
-      <section
-        class="rounded-2xl border px-5 py-4 shadow-sm"
-        :class="{
-          'border-emerald-300 bg-gradient-to-br from-emerald-50 to-lime-50 dark:border-emerald-800 dark:from-emerald-950/50 dark:to-ink-900/60':
-            heroTone === 'healthy',
-          'border-sky-200 bg-gradient-to-br from-sky-50 to-indigo-50 dark:border-sky-900 dark:from-sky-950/40 dark:to-ink-900/60':
-            heroTone === 'idle',
-          'border-amber-300 bg-gradient-to-br from-amber-50 to-orange-50 dark:border-amber-800 dark:from-amber-950/40 dark:to-ink-900/60':
-            heroTone === 'attention',
-        }"
-      >
-        <div class="flex flex-wrap items-start justify-between gap-4">
-          <div class="flex items-start gap-3">
-            <span
-              class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-2xl shadow-inner"
-              :class="{
-                'dash-wiggle bg-emerald-200/80 dark:bg-emerald-900/70': heroTone === 'healthy',
-                'dash-bob bg-sky-200/80 dark:bg-sky-900/70': heroTone === 'idle',
-                'dash-wiggle bg-amber-200/80 dark:bg-amber-900/70': heroTone === 'attention',
-              }"
-              aria-hidden="true"
-            >
-              {{ heroTone === 'attention' ? '😬' : heroTone === 'idle' ? '😴' : '🥳' }}
-            </span>
-            <div>
-              <div class="text-xs uppercase tracking-wide text-ink-500">Status</div>
-              <div class="mt-1 font-display text-2xl font-bold">
-                <span v-if="heroTone === 'attention'">Uh-oh, attention needed</span>
-                <span v-else-if="heroTone === 'idle'">Idle — catching a nap</span>
-                <span v-else>Looking spicy</span>
-              </div>
-              <ul v-if="attentionReasons.length" class="mt-2 space-y-1 text-sm text-ink-700 dark:text-ink-200">
-                <li v-for="reason in attentionReasons" :key="reason">• {{ reason }}</li>
-              </ul>
-              <p v-else class="mt-2 text-sm text-ink-600 dark:text-ink-300">
-                Automation
-                {{ store.settings?.automatic_fallback_enabled ? 'on' : 'off' }}
-                · last scan
-                {{ automation?.last_scan_at ? formatDateTime(automation.last_scan_at) : 'never' }}
-              </p>
-            </div>
-          </div>
-          <dl class="grid grid-cols-2 gap-2 text-sm" :class="hasNeedsAttention ? '' : 'sm:grid-cols-4'">
-            <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
-              <dt class="text-xs uppercase text-ink-500">⚙️ Automation</dt>
-              <dd class="font-semibold">
-                {{ store.settings?.automatic_fallback_enabled ? 'Enabled' : 'Disabled' }}
-              </dd>
-            </div>
-            <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
-              <dt class="text-xs uppercase text-ink-500">🏃 Active tasks</dt>
-              <dd class="font-semibold">{{ currentLocalization.length }}</dd>
-            </div>
-            <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
-              <dt class="text-xs uppercase text-ink-500">🎉 Completed today</dt>
-              <dd class="font-semibold">{{ completedToday }}</dd>
-            </div>
-            <div class="rounded-xl bg-white/70 px-3 py-2 dark:bg-ink-950/40">
-              <dt class="text-xs uppercase text-ink-500">🤖 AI jobs</dt>
-              <dd class="font-semibold">{{ aiOverview?.active_jobs ?? 0 }}</dd>
-            </div>
-          </dl>
-        </div>
-      </section>
+    <OperatorChatBar />
 
-      <section
-        v-if="hasNeedsAttention"
-        class="rounded-2xl border border-rose-200 bg-gradient-to-br from-rose-50/70 to-white px-5 py-4 shadow-sm dark:border-rose-900 dark:from-rose-950/30 dark:to-ink-900/60"
+    <nav class="flex gap-1 border-b border-ink-200 dark:border-ink-800">
+      <button
+        type="button"
+        class="rounded-t-md px-3 py-2 text-sm font-medium"
+        :class="
+          activeTab === 'ops'
+            ? 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white'
+            : 'text-ink-600 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-900'
+        "
+        @click="setTab('ops')"
       >
-        <h2 class="font-display text-lg font-semibold">🚨 Needs attention</h2>
-        <p
-          v-if="pipelineError"
-          class="mt-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
-        >
-          {{ pipelineError }}
-        </p>
-        <ul
-          v-if="!bazarrOk || !openRouterOk || failedTasks.length"
-          class="mt-3 divide-y divide-rose-100 dark:divide-ink-800"
-        >
-          <li v-if="!bazarrOk" class="py-3 text-sm first:pt-0">
-            🔌 Bazarr is not configured.
-            <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/providers">
-              Open settings
-            </RouterLink>
-          </li>
-          <li v-if="!openRouterOk" class="py-3 text-sm first:pt-0">
-            🔌 {{ openRouterAttention }}
-            <RouterLink class="ml-1 font-medium text-accent hover:underline" to="/settings/providers">
-              Open settings
-            </RouterLink>
-          </li>
-          <li v-for="task in failedTasks" :key="`fail-${task.id}`" class="py-3 first:pt-0">
-            <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(task.media_item_id)">
-              {{ localizationTaskTitle(task) }}
-            </RouterLink>
-            <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
-              <span>{{ task.target_language_name }}</span>
-              <span>{{ formatDateTime(task.completed_at || task.created_at) }}</span>
+        Ops
+      </button>
+      <button
+        type="button"
+        class="rounded-t-md px-3 py-2 text-sm font-medium"
+        :class="
+          activeTab === 'ai'
+            ? 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white'
+            : 'text-ink-600 hover:bg-ink-50 dark:text-ink-300 dark:hover:bg-ink-900'
+        "
+        @click="setTab('ai')"
+      >
+        AI
+      </button>
+    </nav>
+
+    <p
+      v-if="actionError"
+      class="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"
+    >
+      {{ actionError }}
+    </p>
+
+    <template v-if="activeTab === 'ops'">
+      <section
+        v-if="interventions.length"
+        class="rounded-md border border-l-4 border-ink-200 border-l-red-500 bg-white p-4 dark:border-ink-800 dark:bg-ink-900"
+      >
+        <h2 class="text-xs font-semibold uppercase tracking-wide text-ink-500">Needs attention</h2>
+        <ul class="mt-3 divide-y divide-ink-100 dark:divide-ink-800">
+          <li
+            v-for="item in interventions"
+            :key="item.key"
+            class="flex flex-wrap items-start justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
+          >
+            <p class="min-w-0 flex-1 text-sm text-ink-800 dark:text-ink-100">{{ item.message }}</p>
+            <div class="flex shrink-0 gap-2">
+              <button
+                v-if="item.onAction"
+                type="button"
+                class="rounded-md border border-ink-300 px-2.5 py-1 text-xs font-semibold dark:border-ink-600"
+                :disabled="actionBusyId != null"
+                @click="item.onAction()"
+              >
+                {{ item.actionLabel || 'Act' }}
+              </button>
+              <RouterLink
+                v-else-if="item.to"
+                class="rounded-md border border-ink-300 px-2.5 py-1 text-xs font-semibold dark:border-ink-600"
+                :to="item.to"
+              >
+                {{ item.actionLabel || 'Open' }}
+              </RouterLink>
             </div>
-            <p
-              v-if="task.error_message"
-              class="mt-1 line-clamp-2 text-xs text-red-700 dark:text-red-300"
-            >
-              {{ task.error_message }}
-            </p>
           </li>
         </ul>
       </section>
-    </div>
 
-    <div class="grid items-stretch gap-3 lg:grid-cols-2 lg:gap-6">
-      <div class="flex h-full flex-col space-y-3">
-        <div class="flex items-baseline justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">🎙️ Current localization</h2>
-          <RouterLink class="text-xs font-medium text-accent hover:underline" to="/media">
-            View all
+      <div>
+        <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500">Subtitles</h2>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          <RouterLink
+            v-for="card in subtitleCards"
+            :key="card.key"
+            :to="card.to"
+            class="rounded-md border border-l-4 border-ink-200 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900"
+            :class="card.accent"
+          >
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ card.label }}</div>
+            <div class="mt-1 font-mono text-2xl font-semibold">
+              {{ pipelineLoaded || !['missing', 'ready'].includes(card.key) ? card.count : '—' }}
+            </div>
           </RouterLink>
-        </div>
-        <div class="flex-1 rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50/70 to-white shadow-sm dark:border-sky-900 dark:from-sky-950/30 dark:to-ink-900/60">
-          <p v-if="!currentLocalization.length" class="px-4 py-8 text-center text-sm text-ink-500">
-            Nobody's in the booth. Go grab popcorn. 🍿
-          </p>
-          <ul v-else class="divide-y divide-sky-100 dark:divide-ink-800">
-            <li v-for="task in currentLocalization" :key="`cur-${task.id}`" class="px-4 py-3">
-              <div class="flex items-start justify-between gap-3">
-                <RouterLink
-                  class="min-w-0 truncate font-medium text-accent hover:underline"
-                  :to="mediaHref(task.media_item_id)"
-                >
-                  {{ localizationTaskTitle(task) }}
-                </RouterLink>
-                <p class="shrink-0 text-xs tabular-nums text-ink-500">
-                  <span class="font-medium text-ink-700 dark:text-ink-200">{{ taskProgressPct(task) }}%</span>
-                  <span class="mx-1.5 text-ink-300 dark:text-ink-600">·</span>
-                  <span>{{ taskElapsed(task) }}</span>
-                </p>
-              </div>
-              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
-                <span>{{ task.target_language_name }}</span>
-                <span>{{ taskStatusIcon(task.status) }} {{ taskStatusLabel(task.status, task.substate) }}</span>
-                <span class="capitalize">{{ task.origin }}</span>
-              </div>
-            </li>
-          </ul>
         </div>
       </div>
 
-      <div class="flex h-full flex-col space-y-3">
-        <div class="flex items-baseline justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">✅ Last translations</h2>
-          <RouterLink class="text-xs font-medium text-accent hover:underline" to="/translations">
-            Show all
+      <div v-if="audioCards.length">
+        <h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500">Audio</h2>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          <RouterLink
+            v-for="card in audioCards"
+            :key="card.key"
+            :to="card.to"
+            class="rounded-md border border-l-4 border-ink-200 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900"
+            :class="card.accent"
+          >
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">{{ card.label }}</div>
+            <div class="mt-1 font-mono text-2xl font-semibold">{{ card.count }}</div>
           </RouterLink>
         </div>
-        <div class="flex-1 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50/70 to-white shadow-sm dark:border-emerald-900 dark:from-emerald-950/30 dark:to-ink-900/60">
-          <p v-if="!recentTranslationGroups.length" class="px-4 py-8 text-center text-sm text-ink-500">
-            No completed translations yet. 🎬
-          </p>
-          <ul v-else class="divide-y divide-emerald-100 dark:divide-ink-800">
-            <li v-for="group in recentTranslationGroups" :key="`done-${group.mediaItemId}`" class="px-4 py-3">
-              <RouterLink class="font-medium text-accent hover:underline" :to="mediaHref(group.mediaItemId)">
-                {{ localizationTaskTitle(group.task) }}
-              </RouterLink>
-              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-500">
-                <span>{{ group.languages.join(', ') }}</span>
-                <span>{{ formatDateTime(group.task.completed_at || group.task.updated_at) }}</span>
-                <span class="capitalize">{{ group.origin }}</span>
-              </div>
-            </li>
-          </ul>
-        </div>
       </div>
-    </div>
 
-    <div class="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3">
-        <RouterLink
-          class="group flex h-full flex-col rounded-2xl border border-rose-200 bg-gradient-to-br from-rose-50 to-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-rose-400 hover:shadow-md dark:border-rose-900 dark:from-rose-950/40 dark:to-ink-900/60"
-          to="/media?filter=needs-work"
-        >
-          <div class="flex items-start justify-between gap-2">
-            <div class="text-[10px] uppercase tracking-wide text-rose-700 sm:text-xs dark:text-rose-300">
-              Missing subtitles
-            </div>
-            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-200 text-lg shadow-inner transition group-hover:rotate-6 dark:bg-rose-900/80">
-              🙈
-            </span>
-          </div>
-          <div class="mt-1 font-display text-2xl font-bold text-rose-800 dark:text-rose-200">
-            {{ pipelineLoaded ? candidateHealth.missing : '—' }}
-          </div>
-        </RouterLink>
-        <RouterLink
-          class="group flex h-full flex-col rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-sky-400 hover:shadow-md dark:border-sky-900 dark:from-sky-950/40 dark:to-ink-900/60"
-          to="/media?filter=needs-work"
-        >
-          <div class="flex items-start justify-between gap-2">
-            <div class="text-[10px] uppercase tracking-wide text-sky-700 sm:text-xs dark:text-sky-300">
-              Ready to translate
-            </div>
-            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-200 text-lg shadow-inner transition group-hover:rotate-6 dark:bg-sky-900/80">
-              🚀
-            </span>
-          </div>
-          <div class="mt-1 font-display text-2xl font-bold text-sky-800 dark:text-sky-200">
-            {{ pipelineLoaded ? candidateHealth.ready : '—' }}
-          </div>
-        </RouterLink>
-        <RouterLink
-          class="group flex h-full flex-col rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-violet-400 hover:shadow-md dark:border-violet-900 dark:from-violet-950/40 dark:to-ink-900/60"
-          to="/ai/overview"
-        >
-          <div class="flex items-start justify-between gap-2">
-            <div class="text-[10px] uppercase tracking-wide text-violet-700 sm:text-xs dark:text-violet-300">
-              This month
-            </div>
-            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-200 text-lg shadow-inner transition group-hover:rotate-6 dark:bg-violet-900/80">
-              💸
-            </span>
-          </div>
-          <div class="mt-1 font-display text-2xl font-bold text-violet-800 dark:text-violet-200">
-            {{ formatUsd(monthCost) }}
-          </div>
-        </RouterLink>
-    </div>
-
-    <section class="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50/80 to-white p-5 shadow-sm dark:border-violet-900 dark:from-violet-950/30 dark:to-ink-900/60">
+      <section class="space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold">🤖 AI brain</h2>
-          <RouterLink class="text-sm font-semibold text-accent hover:underline" to="/ai/overview">
-            Open AI dashboard →
-          </RouterLink>
+          <h2 class="text-xs font-semibold uppercase tracking-wide text-ink-500">Cost & quality</h2>
+          <div class="flex flex-wrap gap-1">
+            <button
+              v-for="opt in [
+                { id: 'today' as const, label: 'Today' },
+                { id: '7d' as const, label: '7 days' },
+                { id: 'month' as const, label: 'Month' },
+              ]"
+              :key="opt.id"
+              type="button"
+              class="rounded-md px-2.5 py-1 text-xs font-medium"
+              :class="
+                moneyPeriod === opt.id
+                  ? 'bg-ink-100 font-semibold dark:bg-ink-800'
+                  : 'text-ink-600 hover:bg-ink-50 dark:text-ink-300'
+              "
+              @click="moneyPeriod = opt.id"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
         </div>
-        <dl class="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">💰 This month</dt>
-            <dd class="font-display text-xl font-bold">{{ formatUsd(monthCost) }}</dd>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-violet-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Spend</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
+              {{ formatUsd(periodCard?.cost_usd ?? aiOverview?.ai_summary?.this_month_cost_usd) }}
+            </div>
           </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">☀️ Today</dt>
-            <dd class="font-display text-xl font-bold">
-              {{ formatUsd(aiOverview?.cards?.today?.cost_usd) }}
-            </dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">📬 Requests</dt>
-            <dd class="font-display text-xl font-bold">{{ monthRequests ?? '—' }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">✨ Clean success</dt>
-            <dd class="font-display text-xl font-bold">{{ formatPct(cleanSuccess) }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">🏆 Best observed</dt>
-            <dd class="truncate font-semibold" :title="bestModel || ''">{{ bestModel || '—' }}</dd>
-          </div>
-          <div class="rounded-xl bg-white/80 px-3 py-2 dark:bg-ink-950/40">
-            <dt class="text-xs uppercase text-ink-500">📊 Budget</dt>
-            <dd class="font-semibold">
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-violet-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Budget left</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
               <template v-if="aiOverview?.budget.enabled">
-                {{ (budgetPct || 0).toFixed(1) }}% used
+                {{ formatUsd(aiOverview.budget.remaining) }}
               </template>
               <template v-else>Off</template>
-            </dd>
+            </div>
+            <p v-if="aiOverview?.budget.enabled" class="mt-1 text-xs text-ink-500">
+              {{ (budgetPct || 0).toFixed(1) }}% used
+            </p>
           </div>
-        </dl>
-        <template v-if="aiOverview?.budget.enabled">
-          <div class="mt-4 h-2.5 overflow-hidden rounded-full bg-ink-100 dark:bg-ink-800">
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-sky-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Requests</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
+              {{ periodCard?.requests ?? aiOverview?.requests ?? '—' }}
+            </div>
+          </div>
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-sky-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Tokens</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
+              {{ formatTokens(aiOverview?.tokens?.total) }}
+            </div>
+          </div>
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-emerald-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Clean success</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
+              {{ formatPct(aiOverview?.clean_success_rate ?? aiOverview?.ai_summary?.clean_success_rate) }}
+            </div>
+          </div>
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-amber-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Repair rate</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
+              {{ formatPct(aiOverview?.repair_rate) }}
+            </div>
+          </div>
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-ink-400 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Free / paid</div>
+            <div class="mt-1 font-mono text-sm font-semibold">
+              {{ aiOverview?.free_requests ?? 0 }} / {{ aiOverview?.paid_requests ?? 0 }}
+            </div>
+            <p class="mt-1 text-xs text-ink-500">
+              {{ formatUsd(aiOverview?.paid_cost_usd) }} paid
+            </p>
+          </div>
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-ink-400 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Best model</div>
             <div
-              class="h-full rounded-full bg-gradient-to-r from-violet-500 to-accent"
+              class="mt-1 truncate font-mono text-sm font-semibold"
+              :title="aiOverview?.ai_summary?.best_model_id || ''"
+            >
+              {{ aiOverview?.ai_summary?.best_model_id || '—' }}
+            </div>
+          </div>
+        </div>
+        <template v-if="aiOverview?.budget.enabled">
+          <div class="h-2 overflow-hidden rounded-md bg-ink-100 dark:bg-ink-800">
+            <div
+              class="h-full bg-accent"
               :style="{ width: `${Math.min(100, budgetPct || 0)}%` }"
             />
           </div>
-          <p class="mt-2 text-xs text-ink-500">
+          <p class="text-xs text-ink-500">
             {{ formatUsd(aiOverview.budget.used) }} / {{ formatUsd(aiOverview.budget.limit) }}
-            · {{ formatUsd(aiOverview.budget.remaining) }} remaining
           </p>
         </template>
       </section>
+
+      <div>
+        <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="text-xs font-semibold uppercase tracking-wide text-ink-500">Live work</h2>
+          <RouterLink
+            v-if="liveOverflow > 0"
+            class="text-xs font-medium text-accent hover:underline"
+            to="/media?filter=in-progress"
+          >
+            +{{ liveOverflow }} more on Media
+          </RouterLink>
+        </div>
+        <RunningJobsPanel
+          :tasks="liveTasks"
+          show-title
+          @cancel="cancelLiveTask"
+          @refreshed="
+            () => {
+              loadTasks()
+              loadCurrentLocalization()
+            }
+          "
+        />
+      </div>
+
+      <section class="rounded-md border border-l-4 border-ink-200 border-l-ink-400 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="font-display text-lg font-semibold">Automation</h2>
+            <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+              {{ store.settings?.automatic_fallback_enabled ? 'Enabled' : 'Disabled' }}
+              · last scan
+              {{ automation?.last_scan_at ? formatDateTime(automation.last_scan_at) : 'never' }}
+              <template v-if="automation?.next_scan_at">
+                · next {{ formatDateTime(automation.next_scan_at) }}
+              </template>
+            </p>
+            <p v-if="automation?.last_result" class="mt-1 text-xs text-ink-500">
+              Last result:
+              {{ automation.last_result.ok === false ? 'failed' : 'ok' }}
+              <template v-if="automation.last_result.created_count != null">
+                · {{ automation.last_result.created_count }} created
+              </template>
+              <template v-if="automation.last_result.message">
+                · {{ automation.last_result.message }}
+              </template>
+            </p>
+          </div>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            :disabled="scanning || !store.settings?.automatic_fallback_enabled"
+            @click="runScan"
+          >
+            {{ scanning ? 'Scanning…' : 'Scan now' }}
+          </button>
+        </div>
+      </section>
+    </template>
+
+    <template v-else>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap gap-1">
+          <button
+            type="button"
+            class="rounded-md px-3 py-1.5 text-sm"
+            :class="
+              aiReport === 'overview'
+                ? 'bg-ink-100 font-semibold dark:bg-ink-800'
+                : 'text-ink-600 hover:bg-ink-50 dark:text-ink-300'
+            "
+            @click="setAiReport('overview')"
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            class="rounded-md px-3 py-1.5 text-sm"
+            :class="
+              aiReport === 'usage'
+                ? 'bg-ink-100 font-semibold dark:bg-ink-800'
+                : 'text-ink-600 hover:bg-ink-50 dark:text-ink-300'
+            "
+            @click="setAiReport('usage')"
+          >
+            Usage
+          </button>
+        </div>
+        <RouterLink
+          class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+          to="/settings/models"
+        >
+          Configure models
+        </RouterLink>
+      </div>
+      <AiOverviewView v-if="aiReport === 'overview'" embedded />
+      <AiUsageView v-else embedded />
+    </template>
 
     <RequestSubtitlesModal
       :open="modalOpen"
@@ -644,33 +878,3 @@ onUnmounted(() => {
     />
   </section>
 </template>
-
-<style scoped>
-@keyframes dash-wiggle {
-  0%,
-  100% {
-    transform: rotate(-8deg);
-  }
-  50% {
-    transform: rotate(8deg);
-  }
-}
-
-@keyframes dash-bob {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-4px);
-  }
-}
-
-.dash-wiggle {
-  animation: dash-wiggle 1.6s ease-in-out infinite;
-}
-
-.dash-bob {
-  animation: dash-bob 2.2s ease-in-out infinite;
-}
-</style>

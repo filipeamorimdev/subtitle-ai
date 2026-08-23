@@ -13,11 +13,15 @@ onMounted(() => {
 })
 
 const links = [
+  { to: '/', label: 'Dashboard' },
   { to: '/media', label: 'Media' },
 ]
 
 function linkActive(to: string) {
   const path = route.path
+  if (to === '/') {
+    return path === '/'
+  }
   if (to === '/media') {
     return path.startsWith('/media') || path.startsWith('/tasks') || path.startsWith('/jobs')
   }
@@ -39,19 +43,16 @@ const activeLinkClass = 'bg-ink-100 text-ink-900 dark:bg-ink-800 dark:text-white
 
 <template>
   <div class="min-h-screen">
-    <header class="border-b border-ink-200/80 bg-white/70 backdrop-blur dark:border-ink-800 dark:bg-ink-900/70">
-      <div class="mx-auto max-w-6xl px-4 py-3 sm:py-4">
+    <header class="border-b border-ink-200 bg-white dark:border-ink-800 dark:bg-ink-900">
+      <div class="mx-auto max-w-6xl px-4 py-2.5 sm:py-3">
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0">
             <RouterLink
-              class="font-display text-xl font-bold tracking-tight text-ink-900 hover:text-accent sm:text-2xl dark:text-ink-50 dark:hover:text-accent"
+              class="font-display text-lg font-semibold tracking-tight text-ink-900 hover:text-accent sm:text-xl dark:text-ink-50 dark:hover:text-accent"
               to="/"
             >
               Subtitle AI
             </RouterLink>
-            <p class="hidden text-sm text-ink-500 sm:block dark:text-ink-300">
-              Your library, in your language
-            </p>
           </div>
 
           <div class="flex shrink-0 items-center gap-1">

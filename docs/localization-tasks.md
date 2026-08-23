@@ -23,12 +23,12 @@ Historical jobs without `task_id` remain valid legacy execution history.
 | | LocalizationTask | Job (execution) |
 | --- | --- | --- |
 | Represents | Desired outcome for one media + language + capability | One concrete unit of work |
-| Primary UI | Media list, media file page, dashboard | History on the media file page; job detail for logs |
+| Primary UI | Media list, media file page, Dashboard | History on the media file page; job detail for logs and usage |
 | Status | requested → planning → waiting_for_source → processing → verifying → completed | pending → processing → completed/failed/… |
 
 ## Manual on-demand request
 
-1. **Request subtitles** (Dashboard / Media / media file page)
+1. **Request subtitles** (Dashboard / Media / media file page), **or** the dashboard **Ask Subtitle AI** bar (operator chat)
 2. Search Bazarr media (or use pre-selected candidate)
 3. Choose language (dropdown or typed name/code)
 4. Backend normalizes language and creates/reuses an active task
@@ -36,6 +36,10 @@ Historical jobs without `task_id` remain valid legacy execution history.
 6. Otherwise creates the next necessary job (request / extract / transcribe / translate)
 7. If Bazarr finds no source and extract is impossible, the planner enqueues **transcribe** (Whisper ASR). The media page still offers **Transcribe audio** as a manual control. That job writes a source (or target) SRT; the planner then translates if needed and verifies as usual.
 8. Worker processes the job; planner continues until verified
+
+### Operator chat
+
+The dashboard ask bar talks to `POST /api/operator/sessions/{id}/messages`. The model may only mutate state by emitting OpenRouter `tool_calls` against a whitelist (`search_media`, `ensure_media`, `create_localization_task`, confirm-gated `transcribe_audio` / `start_dub` / `retry_task` / `cancel_task`, …). It must use a numeric `media_id` from `ensure_media`; it never enqueues extract/translate jobs directly. Configure the chat model under **Settings → Models** (`operator_model_id`).
 
 ## Manual dub preview
 

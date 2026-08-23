@@ -45,6 +45,7 @@ export interface Settings {
   monthly_budget_amount_usd: number | null
   allow_manual_budget_override: boolean
   require_translation_approval: boolean
+  operator_model_id: string | null
 }
 
 export interface SettingsUpdate {
@@ -86,6 +87,8 @@ export interface SettingsUpdate {
   clear_monthly_budget_amount?: boolean
   allow_manual_budget_override?: boolean
   require_translation_approval?: boolean
+  operator_model_id?: string | null
+  clear_operator_model_id?: boolean
 }
 
 export interface EmbeddedSubtitle {
@@ -428,6 +431,7 @@ export interface OpenRouterModel {
   pricing_freshness?: string | null
   input_modalities?: string[] | null
   output_modalities?: string[] | null
+  capabilities?: string[] | null
 }
 
 export interface AiRouting {
@@ -660,4 +664,48 @@ export interface AiCosts {
     free_cost_usd: number
     paid_cost_usd: number
   }
+}
+
+export interface OperatorStatus {
+  ready: boolean
+  reason: string | null
+  operator_model_id: string | null
+}
+
+export interface OperatorSession {
+  id: number
+}
+
+export interface OperatorMessage {
+  id: number
+  role: string
+  content: string | null
+  tool_calls?: Array<Record<string, unknown>> | null
+  tool_call_id?: string | null
+  name?: string | null
+}
+
+export interface OperatorSessionDetail {
+  id: number
+  messages: OperatorMessage[]
+  operator_model_id: string | null
+  operator_ready: boolean
+}
+
+export interface OperatorTurn {
+  session_id: number
+  assistant_text: string
+  tool_events: Array<{
+    tool: string
+    arguments?: Record<string, unknown>
+    result?: Record<string, unknown>
+  }>
+  pending_confirmation: {
+    needs_confirmation?: boolean
+    tool?: string
+    arguments?: Record<string, unknown>
+    preview?: string
+  } | null
+  media_links: Array<{ media_id: number; title?: string | null; task_id?: number | null }>
+  model_id: string | null
 }

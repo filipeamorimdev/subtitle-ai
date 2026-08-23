@@ -13,11 +13,11 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 1. Configure Bazarr, languages, batch size, automation, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
 2. Optionally enable **Automatic Subtitle Fallback** under Settings (off by default). When enabled, Subtitle AI periodically scans Bazarr wanted items, waits a configurable grace period, then automatically request/extract/translate missing target subtitles. This can incur OpenRouter API costs.
 3. Open **Settings → Providers** to set the OpenRouter API key (and test connection / refresh models). Then open **Settings → Models** for free/paid pools, routing strategy, per-job cost caps, a monthly budget, and batch size. Paid fallback stays off unless you enable it.
-4. Open **Dashboard** for current activity, or **Media** to see titles that need work, are in progress, or already have history.
+4. Open **Dashboard** for pipeline counts, live work, cost/quality cards, and AI reports (Ops / AI tabs), or **Media** to see titles that need work, are in progress, or already have history.
 5. Click a title to open the media file page (languages, localize, history). Use **Request subtitles** / **Localize** to create a localization task; the planner chooses request, extract, or translate.
 6. Use **Localize selected** or **Localize all missing** on the Media list when you want to queue several titles at once.
 7. The worker runs jobs in the background: routed translation via the AI provider layer (OpenRouter in v0.3-alpha1, with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
-8. Track progress on the media file page and the **AI dashboard** (from Dashboard).
+8. Track progress on the media file page, Dashboard live work, and the Dashboard **AI** tab (Overview / Usage).
 
 When automatic fallback is **off**, nothing is scheduled — only clicks create jobs.
 
@@ -25,23 +25,21 @@ When automatic fallback is **off**, nothing is scheduled — only clicks create 
 
 | Page | Purpose |
 | --- | --- |
-| **Dashboard** | Command center: status, missing titles, AI snapshot; opens the AI dashboard |
+| **Dashboard** | Mission control: intervention strip, pipeline stage cards, cost/quality sums, live work, automation; AI Overview/Usage tabs |
 | **Media** | Library / work queue: wanted titles plus anything with a localization task |
-| **Media detail** | One file: languages, localize, source/tracks, request/extract/translate history |
-| **Job detail** | Progress, action timeline, OpenRouter exchange log, Retry / Cancel / Retry Bazarr sync |
-| **Usage stats** | Per-job token/cost breakdown (from `ai_usage_records` snapshots) |
-| **AI dashboard** | Observability: Overview and Usage (opened from Dashboard) |
-| **Settings** | General, Providers (Bazarr and AI), Models, Language |
+| **Media detail** | One file: languages, localize, details, running jobs, history |
+| **Job detail** | Progress, OpenRouter log, requests, usage KPIs (translate jobs), Retry / Cancel / Retry Bazarr sync |
+| **Settings** | General (incl. language), Providers (Bazarr and AI), Models |
 
 See [docs/localization-tasks.md](docs/localization-tasks.md) for the media-centric task architecture.
 
 Semantic split:
 
-- **Dashboard** → what is happening? (includes AI snapshot)
-- **AI dashboard** → detailed AI cost/quality/routing (from Dashboard)
-- **Settings** → how is Subtitle AI configured? (General, Providers, Models, Language)
+- **Dashboard** → what is happening, and AI cost/quality reports
+- **Media** → which titles need work
+- **Settings** → how Subtitle AI is configured (General, Providers, Models)
 
-OpenRouter keys live under **Settings → Providers**. Model pools, routing, and budgets live under **Settings → Models**.
+OpenRouter keys live under **Settings → Providers**. Model pools, routing, and budgets live under **Settings → Models**. Language defaults live under **Settings → General**.
 
 ## Architecture
 

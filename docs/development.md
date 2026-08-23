@@ -54,7 +54,7 @@ docker compose up
 2. Pull/build the new image.
 3. Start the same compose stack with the same `/config` mount.
 4. On startup the app runs `init_db()` then **Alembic** (`alembic upgrade head`). Pre-Alembic databases are stamped at revision `0012` first, then upgraded.
-5. Open Dashboard, then **Open AI dashboard** and **Settings → Models**, and confirm the previous model is still selected.
+5. Open Dashboard (Ops and AI tabs) and **Settings → Models**, and confirm the previous model is still selected.
 
 Do not run multiple Subtitle AI containers against the same SQLite file.
 

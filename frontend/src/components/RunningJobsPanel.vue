@@ -5,17 +5,32 @@ import { api } from '../services/api'
 import type { Job, JobLog, LocalizationTask } from '../types'
 import { formatElapsed } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
-import { withReturnTo } from '../utils/mediaNav'
-import { jobHasAiArtifacts, jobKindLabel, jobStatusClass, taskStatusLabel } from '../utils/status'
+import { localizationTaskTitle, withReturnTo } from '../utils/mediaNav'
+import {
+  canPauseJob,
+  canResumeJob,
+  jobHasAiArtifacts,
+  jobKindLabel,
+  jobStatusClass,
+  taskStatusLabel,
+} from '../utils/status'
 import { latestActiveJob } from '../utils/taskProgress'
 
-const props = defineProps<{
-  tasks: LocalizationTask[]
-  busy?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    tasks: LocalizationTask[]
+    busy?: boolean
+    showTitle?: boolean
+  }>(),
+  {
+    busy: false,
+    showTitle: false,
+  },
+)
 
 const emit = defineEmits<{
   cancel: [taskId: number]
+  refreshed: []
 }>()
 
 const route = useRoute()
@@ -30,6 +45,7 @@ const logByJob = ref<Record<number, JobLog | null>>({})
 const logErrorByJob = ref<Record<number, string | null>>({})
 const logOpen = ref<Set<number>>(new Set())
 const logBusyId = ref<number | null>(null)
+const jobActionId = ref<number | null>(null)
 let tick: number | undefined
 
 const iconBtnClass =
@@ -94,6 +110,28 @@ async function toggleLog(jobId: number) {
   }
 }
 
+async function pauseJob(jobId: number) {
+  if (jobActionId.value != null) return
+  jobActionId.value = jobId
+  try {
+    await api.pauseJob(jobId)
+    emit('refreshed')
+  } finally {
+    jobActionId.value = null
+  }
+}
+
+async function resumeJob(jobId: number) {
+  if (jobActionId.value != null) return
+  jobActionId.value = jobId
+  try {
+    await api.resumeJob(jobId)
+    emit('refreshed')
+  } finally {
+    jobActionId.value = null
+  }
+}
+
 watch(
   () =>
     rows.value
@@ -120,46 +158,76 @@ function jobHref(jobId: number) {
 }
 
 function statsHref(jobId: number) {
-  return withReturnTo(`/jobs/${jobId}/stats`, route.fullPath)
+  const base = withReturnTo(`/jobs/${jobId}`, route.fullPath)
+  if (typeof base === 'string') return { path: base, hash: '#usage' }
+  return { ...base, hash: '#usage' }
 }
 </script>
 
 <template>
-  <div class="rounded-xl border border-accent/30 bg-accent/5 p-5 dark:bg-accent/10">
+  <div class="rounded-md border border-l-4 border-ink-200 border-l-amber-500 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
     <div class="flex flex-wrap items-start justify-between gap-3">
-      <h2 class="font-display text-lg font-bold">Running</h2>
-      <p v-if="rows.length === 1" class="text-sm tabular-nums text-ink-500">
+      <h2 class="font-display text-lg font-semibold">Live work</h2>
+      <p v-if="rows.length === 1" class="font-mono text-sm text-ink-500">
         {{ progressSummary(rows[0]) }}
       </p>
     </div>
 
-    <ul class="mt-4 space-y-4">
+    <p v-if="!rows.length" class="mt-4 text-sm text-ink-500">No active localization.</p>
+
+    <ul v-else class="mt-4 space-y-3">
       <li
         v-for="{ task, job } in rows"
         :key="task.id"
-        class="rounded-lg border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
+        class="rounded-md border border-ink-200 bg-ink-50/50 p-3 dark:border-ink-800 dark:bg-ink-950/40"
       >
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div class="min-w-0">
-            <p class="font-medium">
+            <p v-if="showTitle" class="truncate font-medium">
+              {{ localizationTaskTitle(task) }}
+            </p>
+            <p class="text-sm" :class="showTitle ? 'mt-0.5 text-ink-600 dark:text-ink-300' : 'font-medium'">
               {{ task.target_language_name }}
               <span class="font-normal text-ink-500">({{ task.target_language_code }})</span>
+              <span class="capitalize text-ink-500">
+                · {{ task.capability || 'subtitles' }}
+              </span>
             </p>
             <p class="mt-1 text-sm text-accent">
               {{ taskStatusLabel(task.status, task.substate) }}
               <span class="capitalize text-ink-500"> · {{ task.origin }}</span>
             </p>
           </div>
-          <button
-            type="button"
-            class="rounded-md border border-red-300 px-3 py-1.5 text-sm font-semibold text-red-700 disabled:opacity-50 dark:border-red-800 dark:text-red-300"
-            title="Cancel"
-            aria-label="Cancel"
-            :disabled="busy"
-            @click="emit('cancel', task.id)"
-          >
-            Cancel
-          </button>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-if="job && canPauseJob(job.status)"
+              type="button"
+              class="rounded-md border border-ink-300 px-2.5 py-1 text-xs font-semibold dark:border-ink-600"
+              :disabled="busy || jobActionId === job.id"
+              @click="pauseJob(job.id)"
+            >
+              Pause
+            </button>
+            <button
+              v-else-if="job && canResumeJob(job.status)"
+              type="button"
+              class="rounded-md border border-ink-300 px-2.5 py-1 text-xs font-semibold dark:border-ink-600"
+              :disabled="busy || jobActionId === job.id"
+              @click="resumeJob(job.id)"
+            >
+              Resume
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-red-300 px-2.5 py-1 text-xs font-semibold text-red-700 disabled:opacity-50 dark:border-red-800 dark:text-red-300"
+              title="Cancel"
+              aria-label="Cancel"
+              :disabled="busy"
+              @click="emit('cancel', task.id)"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
 
         <ol v-if="task.progress_steps?.length" class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
@@ -176,7 +244,7 @@ function statsHref(jobId: number) {
               <span v-if="job.model" class="normal-case text-ink-500"> · {{ job.model }}</span>
             </RouterLink>
             <div class="flex shrink-0 items-center">
-              <p v-if="rows.length > 1" class="mr-2 tabular-nums text-ink-600 dark:text-ink-300">
+              <p v-if="rows.length > 1" class="mr-2 font-mono text-ink-600 dark:text-ink-300">
                 {{ progressSummary({ task, job }) }}
               </p>
               <template v-if="jobHasAiArtifacts(job.job_kind)">
@@ -235,7 +303,7 @@ function statsHref(jobId: number) {
           </p>
           <div
             v-if="job.status === 'pending' || job.status === 'processing'"
-            class="mt-2 h-1.5 overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800"
+            class="mt-2 h-1.5 overflow-hidden rounded-md bg-ink-200 dark:bg-ink-800"
           >
             <div
               class="h-full bg-accent transition-all"
@@ -256,7 +324,7 @@ function statsHref(jobId: number) {
           </p>
           <pre
             v-else-if="logOpen.has(job.id) && formatJobLog(logByJob[job.id] || null)"
-            class="mt-2 max-h-64 overflow-auto rounded-lg bg-ink-950 p-3 text-xs leading-relaxed text-ink-100"
+            class="mt-2 max-h-64 overflow-auto rounded-md bg-ink-950 p-3 text-xs leading-relaxed text-ink-100"
           >{{ formatJobLog(logByJob[job.id] || null) }}</pre>
         </div>
         <p v-else class="mt-3 text-sm text-ink-500">

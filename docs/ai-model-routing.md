@@ -4,7 +4,7 @@ Subtitle AI v0.3-alpha1 routes translation jobs across **configured provider mod
 
 Canonical model identity is **`(provider_id, model_id)`**. In this milestone only **OpenRouter** is registered.
 
-Configure Bazarr and AI credentials under **Settings → Providers**. Configure pools, strategy, budgets, and batch size under **Settings → Models**. General contains automation, concurrency, and cleanup. Language contains source/target defaults. `openrouter_model` remains a compatibility field (first enabled preference).
+Configure Bazarr and AI credentials under **Settings → Providers**. Configure pools, strategy, budgets, and batch size under **Settings → Models**. General contains automation, concurrency, language defaults, and cleanup. `openrouter_model` remains a compatibility field (first enabled preference).
 
 See also [ai-providers.md](ai-providers.md).
 
@@ -77,7 +77,7 @@ Ranking uses only production translation operations:
 
 `translation`, `translation_retry`, `translation_repair`
 
-Excluded: `model_test` and any other non-translation op.
+Excluded: `model_test`, `operator_chat`, and any other non-translation op.
 
 Score philosophy:
 
@@ -89,7 +89,11 @@ adaptive     = 0.50×Q + 0.25×C + 0.20×S + 0.05×R
 
 Confidence: under 10 samples → insufficient (no rank); 10–24 low; 25–99 medium; 100+ high.
 
-Model tests still count toward budget and usage analytics but never influence adaptive production ranking.
+Model tests and operator chat still count toward budget and usage analytics but never influence adaptive production ranking.
+
+## Operator chat model
+
+Dashboard operator chat uses `settings.operator_model_id` when set (Settings → Models → Chat model). Otherwise the first enabled pool model that advertises `function_calling` is used (paid pool, then free). Chat completions are recorded as `operation_type=operator_chat`.
 
 ## Authoritative usage
 

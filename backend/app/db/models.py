@@ -50,6 +50,7 @@ class SettingsRow(Base):
     monthly_budget_amount_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
     allow_manual_budget_override: Mapped[bool] = mapped_column(Boolean, default=False)
     require_translation_approval: Mapped[bool] = mapped_column(Boolean, default=False)
+    operator_model_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -377,4 +378,30 @@ class LocalePromptNoteRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class OperatorChatSessionRow(Base):
+    """In-app operator chat session (dashboard ask bar)."""
+
+    __tablename__ = "operator_chat_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OperatorChatMessageRow(Base):
+    """Persisted operator chat turns (tool-call JSON allowed; never subtitle bodies)."""
+
+    __tablename__ = "operator_chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("operator_chat_sessions.id"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)  # user|assistant|tool|system
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

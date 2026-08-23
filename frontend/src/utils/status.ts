@@ -42,6 +42,87 @@ export function latestTasksByLanguage<T extends { id: number; target_language_co
   return map
 }
 
+/** Prefer latest task per language + capability so dub and subtitle chips coexist. */
+export function latestTasksByLanguageCapability<
+  T extends { id: number; target_language_code: string; capability?: string },
+>(tasks: T[]): Map<string, T> {
+  const map = new Map<string, T>()
+  for (const task of tasks) {
+    const key = `${task.target_language_code}:${task.capability || 'subtitles'}`
+    const prev = map.get(key)
+    if (!prev || task.id > prev.id) map.set(key, task)
+  }
+  return map
+}
+
+export type PipelineStage =
+  | 'requesting'
+  | 'extracting'
+  | 'transcribing'
+  | 'translating'
+  | 'verifying'
+  | 'approval'
+  | 'dubbing'
+  | 'dub_blocked'
+  | 'failed'
+  | 'other'
+
+type PipelineTask = Pick<LocalizationTask, 'status' | 'substate' | 'capability' | 'error_code'> & {
+  executions?: { job_kind?: string; status: string }[]
+}
+
+function activeJobKind(task: PipelineTask): string | null {
+  const open = new Set(['pending', 'processing', 'paused'])
+  const jobs = task.executions || []
+  const active = [...jobs].reverse().find((job) => open.has(job.status))
+  return active?.job_kind || null
+}
+
+/** Classify a localization task into a dashboard pipeline stage. */
+export function pipelineStage(task: PipelineTask): PipelineStage {
+  const capability = (task.capability || 'subtitles').toLowerCase()
+  const status = task.status
+  const sub = task.substate || ''
+  const kind = (activeJobKind(task) || '').toLowerCase()
+
+  if (capability === 'audio') {
+    if (status === 'failed') return 'failed'
+    if (status === 'blocked' && (sub === 'awaiting_subtitles' || task.error_code === 'subtitle_missing')) {
+      return 'dub_blocked'
+    }
+    if (
+      isActiveTaskStatus(status) ||
+      status === 'planning' ||
+      sub === 'dubbing' ||
+      kind === 'dub'
+    ) {
+      return 'dubbing'
+    }
+    return 'other'
+  }
+
+  if (status === 'failed') return 'failed'
+  if (status === 'awaiting_approval') return 'approval'
+  if (status === 'verifying') return 'verifying'
+
+  if (
+    status === 'requested' ||
+    status === 'waiting_for_source' ||
+    sub === 'discovering_source' ||
+    sub === 'awaiting_source' ||
+    sub === 'source_cooldown' ||
+    kind === 'request'
+  ) {
+    return 'requesting'
+  }
+
+  if (sub === 'extracting_source' || kind === 'extract') return 'extracting'
+  if (sub === 'transcribing_source' || kind === 'transcribe') return 'transcribing'
+  if (sub === 'translating' || kind === 'translate') return 'translating'
+  if (status === 'processing' || status === 'planning') return 'other'
+  return 'other'
+}
+
 /** True when this failed task is still the latest attempt for that media + language. */
 export function isUnresolvedFailedTask(task: LocalizationTarget, allTasks: LocalizationTarget[]) {
   if (task.status !== 'failed') return false

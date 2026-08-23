@@ -58,6 +58,8 @@ class SettingsUpdate(BaseModel):
     clear_monthly_budget_amount: bool = False
     allow_manual_budget_override: bool | None = None
     require_translation_approval: bool | None = None
+    operator_model_id: str | None = None
+    clear_operator_model_id: bool = False
 
 
 class SettingsOut(BaseModel):
@@ -97,6 +99,7 @@ class SettingsOut(BaseModel):
     monthly_budget_amount_usd: float | None = None
     allow_manual_budget_override: bool = False
     require_translation_approval: bool = False
+    operator_model_id: str | None = None
 
 
 class ConnectionTestResult(BaseModel):

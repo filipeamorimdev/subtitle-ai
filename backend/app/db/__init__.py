@@ -206,6 +206,7 @@ def init_db() -> None:
             ("monthly_budget_amount_micro_usd", "ALTER TABLE settings ADD COLUMN monthly_budget_amount_micro_usd INTEGER"),
             ("allow_manual_budget_override", "ALTER TABLE settings ADD COLUMN allow_manual_budget_override BOOLEAN NOT NULL DEFAULT 0"),
             ("require_translation_approval", "ALTER TABLE settings ADD COLUMN require_translation_approval BOOLEAN NOT NULL DEFAULT 0"),
+            ("operator_model_id", "ALTER TABLE settings ADD COLUMN operator_model_id VARCHAR(256)"),
         ):
             if column not in settings_columns:
                 conn.execute(text(ddl))

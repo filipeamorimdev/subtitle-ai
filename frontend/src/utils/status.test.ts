@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { canPauseJob, canResumeJob, canRetryTask, isActiveTaskStatus, isUnresolvedFailedTask, latestTasksByLanguage, taskStatusLabel } from './status'
+import {
+  canPauseJob,
+  canResumeJob,
+  canRetryTask,
+  isActiveTaskStatus,
+  isUnresolvedFailedTask,
+  latestTasksByLanguage,
+  latestTasksByLanguageCapability,
+  pipelineStage,
+  taskStatusLabel,
+} from './status'
 import { latestActiveJob, taskElapsedStart, taskProgressPct } from './taskProgress'
 import type { LocalizationTask } from '../types'
 
@@ -65,6 +75,41 @@ describe('task status helpers', () => {
     const newer = task({ id: 2, status: 'completed', target_language_code: 'pt-PT' })
     const map = latestTasksByLanguage([newer, older])
     expect(map.get('pt-PT')?.id).toBe(2)
+  })
+
+  it('keeps subtitle and audio tasks per language', () => {
+    const sub = task({ id: 1, capability: 'subtitles', status: 'completed' })
+    const audio = task({ id: 2, capability: 'audio', status: 'processing', substate: 'dubbing' })
+    const map = latestTasksByLanguageCapability([sub, audio])
+    expect(map.get('pt-PT:subtitles')?.id).toBe(1)
+    expect(map.get('pt-PT:audio')?.id).toBe(2)
+  })
+
+  it('classifies pipeline stages without lumping dub into translate', () => {
+    expect(pipelineStage(task({ status: 'processing', substate: 'translating' }))).toBe('translating')
+    expect(pipelineStage(task({ status: 'processing', substate: 'transcribing_source' }))).toBe(
+      'transcribing',
+    )
+    expect(pipelineStage(task({ status: 'processing', substate: 'extracting_source' }))).toBe(
+      'extracting',
+    )
+    expect(
+      pipelineStage(
+        task({ capability: 'audio', status: 'processing', substate: 'dubbing' }),
+      ),
+    ).toBe('dubbing')
+    expect(
+      pipelineStage(
+        task({
+          capability: 'audio',
+          status: 'blocked',
+          substate: 'awaiting_subtitles',
+          error_code: 'subtitle_missing',
+        }),
+      ),
+    ).toBe('dub_blocked')
+    expect(pipelineStage(task({ status: 'waiting_for_source' }))).toBe('requesting')
+    expect(pipelineStage(task({ status: 'awaiting_approval' }))).toBe('approval')
   })
 })
 

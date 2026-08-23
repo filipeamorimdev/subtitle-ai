@@ -74,6 +74,67 @@ async def test_openrouter_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_with_tool_calls(monkeypatch):
+    seen: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        seen["tools"] = payload.get("tools")
+        seen["tool_choice"] = payload.get("tool_choice")
+        return httpx.Response(
+            200,
+            json={
+                "model": "openai/gpt-4o-mini",
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_abc",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "search_media",
+                                        "arguments": '{"query":"Matrix"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+            },
+        )
+
+    _patch_httpx(monkeypatch, handler)
+    client = OpenRouterClient("test-key")
+    result = await client.chat_completion(
+        model="openai/gpt-4o-mini",
+        messages=[{"role": "user", "content": "Find The Matrix"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_media",
+                    "description": "Search media",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            }
+        ],
+        tool_choice="auto",
+    )
+    assert result.content == ""
+    assert result.tool_calls is not None
+    assert result.tool_calls[0]["function"]["name"] == "search_media"
+    assert seen["tool_choice"] == "auto"
+    assert seen["tools"][0]["function"]["name"] == "search_media"
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_strips_batch_suffix(monkeypatch):
     seen = {"model": None}
 

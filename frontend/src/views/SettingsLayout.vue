@@ -6,7 +6,6 @@ const tabs = [
   { to: '/settings/general', label: 'General', match: '/settings/general' },
   { to: '/settings/providers', label: 'Providers', match: '/settings/providers' },
   { to: '/settings/models', label: 'Models', match: '/settings/models' },
-  { to: '/settings/language', label: 'Language', match: '/settings/language' },
 ]
 
 function isActive(match: string) {

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
+import JobUsagePanel from '../components/JobUsagePanel.vue'
 import { api } from '../services/api'
 import type { Job, JobLog, JobUsageExchange } from '../types'
 import { formatDateTime } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
 import { mediaHrefForJob, mediaHrefForTaskId, safeReturnTo, withReturnTo } from '../utils/mediaNav'
+import { jobHasAiArtifacts } from '../utils/status'
 import { onLiveEvent } from '../stores/events'
 
 const props = defineProps<{ id: string }>()
@@ -30,11 +32,16 @@ let stopLive: (() => void) | undefined
 
 const returnTo = computed(() => safeReturnTo(route.query.from))
 const backHref = computed(() => returnTo.value || mediaHref.value || '/media')
-const statsHref = computed(() => withReturnTo(`/jobs/${props.id}/stats`, returnTo.value))
+const usageHref = computed(() => {
+  const base = withReturnTo(`/jobs/${props.id}`, returnTo.value)
+  if (typeof base === 'string') return { path: base, hash: '#usage' }
+  return { ...base, hash: '#usage' }
+})
 
 const isTranslateJob = computed(() => (job.value?.job_kind || 'translate') === 'translate')
 const isDubJob = computed(() => (job.value?.job_kind || '').toLowerCase() === 'dub')
 const canShowJobLog = computed(() => isTranslateJob.value || isDubJob.value)
+const showUsage = computed(() => jobHasAiArtifacts(job.value?.job_kind))
 const jobLogTitle = computed(() => (isTranslateJob.value ? 'OpenRouter log' : 'Job log'))
 
 const ACTION_LABELS: Record<string, string> = {
@@ -354,11 +361,11 @@ async function viewRequestLog(row: JobUsageExchange) {
           {{ logVisible ? 'Hide log' : logBusy ? 'Loading log…' : 'View log' }}
         </button>
         <RouterLink
-          v-if="isTranslateJob"
+          v-if="showUsage"
           class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
-          :to="statsHref"
+          :to="usageHref"
         >
-          Usage stats
+          Usage
         </RouterLink>
       </div>
     </div>
@@ -426,7 +433,7 @@ async function viewRequestLog(row: JobUsageExchange) {
         <div class="text-right text-sm text-ink-500">
           <p>{{ requests.length }} total</p>
           <p v-if="job.total_tokens != null">
-            <RouterLink class="text-accent hover:underline" :to="statsHref">
+            <RouterLink class="text-accent hover:underline" :to="usageHref">
               {{ job.total_tokens }} tokens
               <span v-if="job.input_tokens != null">
                 (in {{ job.input_tokens }} / out {{ job.output_tokens }})
@@ -512,6 +519,8 @@ async function viewRequestLog(row: JobUsageExchange) {
         </table>
       </div>
     </div>
+
+    <JobUsagePanel v-if="showUsage" :id="props.id" />
 
     <div
       v-if="requestLogModal"

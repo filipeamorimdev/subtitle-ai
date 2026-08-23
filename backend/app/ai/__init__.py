@@ -28,6 +28,8 @@ from app.ai.models import (
     PricingTier,
     ProviderHealth,
     ProviderStatus,
+    ToolCall,
+    ToolSpec,
 )
 
 __all__ = [
@@ -53,4 +55,6 @@ __all__ = [
     "ProviderStatus",
     "ProviderUnavailableError",
     "RateLimitError",
+    "ToolCall",
+    "ToolSpec",
 ]

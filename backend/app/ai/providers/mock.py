@@ -25,6 +25,7 @@ from app.ai.models import (
     PricingTier,
     ProviderHealth,
     ProviderStatus,
+    ToolSpec,
 )
 from app.ai.providers.base import AIProvider
 
@@ -35,7 +36,7 @@ PROVIDER_ID = "mock"
 class MockCallRecord:
     method: str
     model_id: str | None
-    messages: list[dict[str, str]] | None
+    messages: list[dict[str, Any]] | None
     request_id: str | None
     kwargs: dict[str, Any] = field(default_factory=dict)
 
@@ -152,14 +153,31 @@ class MockAIProvider(AIProvider):
             raise self.global_error
 
     def _normalize_messages(
-        self, messages: list[Message] | list[dict[str, str]]
-    ) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
+        self, messages: list[Message] | list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for msg in messages:
             if isinstance(msg, Message):
-                out.append({"role": msg.role, "content": msg.content})
+                item: dict[str, Any] = {
+                    "role": msg.role,
+                    "content": msg.content if msg.content is not None else "",
+                }
+                if msg.tool_call_id:
+                    item["tool_call_id"] = msg.tool_call_id
+                if msg.name:
+                    item["name"] = msg.name
+                if msg.tool_calls:
+                    item["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        }
+                        for tc in msg.tool_calls
+                    ]
+                out.append(item)
             else:
-                out.append({"role": str(msg.get("role", "user")), "content": str(msg.get("content", ""))})
+                out.append(dict(msg))
         return out
 
     async def test_connection(self, model_id: str | None = None) -> ProviderHealth:
@@ -224,10 +242,12 @@ class MockAIProvider(AIProvider):
         self,
         *,
         model_id: str,
-        messages: list[Message] | list[dict[str, str]],
+        messages: list[Message] | list[dict[str, Any]],
         temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
+        tools: list[ToolSpec] | list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> AIResponse:
         req_id = request_id or str(uuid.uuid4())
         normalized = self._normalize_messages(messages)
@@ -237,7 +257,12 @@ class MockAIProvider(AIProvider):
                 model_id=model_id,
                 messages=normalized,
                 request_id=req_id,
-                kwargs={"temperature": temperature, "max_tokens": max_tokens},
+                kwargs={
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                },
             )
         )
         if self.latency_ms:
@@ -250,6 +275,8 @@ class MockAIProvider(AIProvider):
                 request_id=req_id,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
+                tool_choice=tool_choice,
             )
         return AIResponse(
             provider_id=PROVIDER_ID,

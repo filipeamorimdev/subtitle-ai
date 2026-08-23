@@ -99,7 +99,9 @@ function logsHref(item: JobAction) {
 
 function statsHref(item: JobAction) {
   const id = aiJobId(item)
-  return withReturnTo(`/jobs/${id ?? item.id}/stats`, route.fullPath)
+  const base = withReturnTo(`/jobs/${id ?? item.id}`, route.fullPath)
+  if (typeof base === 'string') return { path: base, hash: '#usage' }
+  return { ...base, hash: '#usage' }
 }
 </script>
 

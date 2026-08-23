@@ -4,6 +4,13 @@ import { api } from '../../services/api'
 import type { AiCosts, AiUsagePage } from '../../types'
 import { formatDateTime } from '../../utils/datetime'
 
+withDefaults(
+  defineProps<{
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
+
 const page = ref<AiUsagePage | null>(null)
 const costs = ref<AiCosts | null>(null)
 const error = ref<string | null>(null)

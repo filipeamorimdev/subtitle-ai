@@ -32,7 +32,8 @@ def operation_from_messages(messages: list[dict] | None, *, default: str = "tran
         if isinstance(message, dict) and isinstance(message.get("content"), str):
             parts.append(message["content"])
         elif isinstance(message, Message):
-            parts.append(message.content)
+            if isinstance(message.content, str):
+                parts.append(message.content)
     joined = "\n".join(parts).lower()
     if "classify media into a franchise universe" in joined:
         return "glossary_universe"
@@ -46,6 +47,8 @@ def operation_from_messages(messages: list[dict] | None, *, default: str = "tran
     # substring-match "ping" — it is contained in "mapping" from translate prompts.
     if "reply with exactly: ok" in joined:
         return "model_test"
+    if "only mutate the library by calling tools" in joined or "operator chat" in joined:
+        return "operator_chat"
     return default
 
 

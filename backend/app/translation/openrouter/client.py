@@ -46,6 +46,7 @@ class ChatResult:
     total_tokens: int | None = None
     cost_usd: float | None = None
     latency_ms: int | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -60,6 +61,7 @@ class OpenRouterModelInfo:
     output_modalities: list[str] | None = None
     architecture: dict[str, Any] | None = None
     pricing_raw: dict[str, Any] | None = None
+    supported_parameters: list[str] | None = None
 
     @property
     def pricing_tier(self) -> str:
@@ -82,6 +84,7 @@ class OpenRouterModelInfo:
             "output_modalities": self.output_modalities,
             "architecture": self.architecture,
             "pricing_raw": self.pricing_raw,
+            "supported_parameters": self.supported_parameters,
             "pricing_tier": self.pricing_tier,
         }
 
@@ -109,6 +112,9 @@ class OpenRouterModelInfo:
             else None,
             pricing_raw=data.get("pricing_raw")
             if isinstance(data.get("pricing_raw"), dict)
+            else None,
+            supported_parameters=list(data["supported_parameters"])
+            if isinstance(data.get("supported_parameters"), list)
             else None,
         )
 
@@ -320,6 +326,10 @@ class OpenRouterClient:
             if not isinstance(output_modalities, list):
                 output_modalities = None
             description = item.get("description")
+            supported_raw = item.get("supported_parameters")
+            supported_parameters: list[str] | None = None
+            if isinstance(supported_raw, list):
+                supported_parameters = [str(x) for x in supported_raw]
             models.append(
                 OpenRouterModelInfo(
                     id=model_id,
@@ -334,6 +344,7 @@ class OpenRouterClient:
                     output_modalities=[str(x) for x in output_modalities] if output_modalities else None,
                     architecture=architecture or None,
                     pricing_raw=pricing or None,
+                    supported_parameters=supported_parameters,
                 )
             )
 
@@ -351,9 +362,11 @@ class OpenRouterClient:
         self,
         *,
         model: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         temperature: float = 0,
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> ChatResult:
         # Sync completions never use the :batch catalog slug.
         sync_model = batch_base_model(model)
@@ -364,6 +377,10 @@ class OpenRouterClient:
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if tools:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
 
         delays = [0, 2, 5]
         last_error: Exception | None = None
@@ -464,7 +481,11 @@ class OpenRouterClient:
                     logger.warning("Malformed OpenRouter response attempt=%s", attempt)
                     continue
                 try:
-                    content = data["choices"][0]["message"]["content"]
+                    message = data["choices"][0]["message"]
+                    if not isinstance(message, dict):
+                        raise TypeError("message is not a dict")
+                    content = message.get("content")
+                    raw_tool_calls = message.get("tool_calls")
                 except (KeyError, IndexError, TypeError) as exc:
                     last_error = OpenRouterError(
                         "Malformed OpenRouter response.",
@@ -476,6 +497,38 @@ class OpenRouterClient:
                         exc,
                     )
                     continue
+
+                # Tool-call responses may have null content; plain text may omit tool_calls.
+                if content is None and not raw_tool_calls:
+                    last_error = OpenRouterError(
+                        "Malformed OpenRouter response.",
+                        retryable=True,
+                    )
+                    logger.warning(
+                        "Malformed OpenRouter response attempt=%s detail=empty message",
+                        attempt,
+                    )
+                    continue
+
+                parsed_tool_calls: list[dict[str, Any]] | None = None
+                if isinstance(raw_tool_calls, list) and raw_tool_calls:
+                    parsed_tool_calls = []
+                    for item in raw_tool_calls:
+                        if not isinstance(item, dict):
+                            continue
+                        fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+                        parsed_tool_calls.append(
+                            {
+                                "id": str(item.get("id") or ""),
+                                "type": str(item.get("type") or "function"),
+                                "function": {
+                                    "name": str(fn.get("name") or ""),
+                                    "arguments": fn.get("arguments")
+                                    if isinstance(fn.get("arguments"), str)
+                                    else json.dumps(fn.get("arguments") or {}),
+                                },
+                            }
+                        )
 
                 usage = data.get("usage") or {}
                 cost_raw = usage.get("cost") if isinstance(usage, dict) else None
@@ -494,6 +547,7 @@ class OpenRouterClient:
                     total_tokens=usage.get("total_tokens"),
                     cost_usd=cost_usd,
                     latency_ms=latency_ms,
+                    tool_calls=parsed_tool_calls,
                 )
 
         assert last_error is not None

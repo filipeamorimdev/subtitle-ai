@@ -5,6 +5,13 @@ import { api } from '../../services/api'
 import type { AiCosts, AiModelJobTimes, AiOverview } from '../../types'
 import { formatDateTime, formatDuration } from '../../utils/datetime'
 
+withDefaults(
+  defineProps<{
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
+
 const period = ref('month')
 const overview = ref<AiOverview | null>(null)
 const costs = ref<AiCosts | null>(null)
@@ -135,10 +142,11 @@ onMounted(load)
 
     <template v-else-if="overview">
       <section
-        class="rounded-xl border px-5 py-4"
+        v-if="!embedded"
+        class="rounded-md border px-5 py-4"
         :class="{
           'border-emerald-300 bg-emerald-50/70 dark:border-emerald-900 dark:bg-emerald-950/30': statusTone === 'healthy',
-          'border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60': statusTone === 'idle',
+          'border-ink-200 bg-white dark:border-ink-800 dark:bg-ink-900': statusTone === 'idle',
           'border-amber-300 bg-amber-50/80 dark:border-amber-900 dark:bg-amber-950/30': statusTone === 'attention',
         }"
       >
@@ -146,9 +154,9 @@ onMounted(load)
           <div>
             <div class="text-xs uppercase tracking-wide text-ink-500">AI status</div>
             <div class="mt-1 font-display text-xl font-bold">
-              <span v-if="overview.status === 'attention'">⚠ Attention needed</span>
-              <span v-else-if="overview.status === 'idle'">● Idle</span>
-              <span v-else>● Healthy</span>
+              <span v-if="overview.status === 'attention'">Attention needed</span>
+              <span v-else-if="overview.status === 'idle'">Idle</span>
+              <span v-else>Healthy</span>
             </div>
             <ul v-if="overview.status_reasons?.length" class="mt-2 space-y-1 text-sm text-ink-700 dark:text-ink-200">
               <li v-for="reason in overview.status_reasons" :key="reason">{{ reason }}</li>
@@ -157,24 +165,25 @@ onMounted(load)
           <div class="grid grid-cols-3 gap-4 text-sm">
             <div>
               <div class="text-xs uppercase text-ink-500">This month</div>
-              <div class="font-semibold">{{ formatUsd(overview.cards?.month?.cost_usd) }}</div>
+              <div class="font-mono font-semibold">{{ formatUsd(overview.cards?.month?.cost_usd) }}</div>
             </div>
             <div>
               <div class="text-xs uppercase text-ink-500">Today</div>
-              <div class="font-semibold">{{ formatUsd(overview.cards?.today?.cost_usd) }}</div>
+              <div class="font-mono font-semibold">{{ formatUsd(overview.cards?.today?.cost_usd) }}</div>
             </div>
             <div>
               <div class="text-xs uppercase text-ink-500">Active jobs</div>
-              <div class="font-semibold">{{ overview.active_jobs ?? 0 }}</div>
+              <div class="font-mono font-semibold">{{ overview.active_jobs ?? 0 }}</div>
             </div>
           </div>
         </div>
       </section>
 
       <section
-        class="rounded-xl border px-5 py-4"
+        v-if="!embedded"
+        class="rounded-md border px-5 py-4"
         :class="{
-          'border-ink-200 bg-white/80 dark:border-ink-800 dark:bg-ink-900/60': budgetTone === 'neutral' || budgetTone === 'ok',
+          'border-ink-200 bg-white dark:border-ink-800 dark:bg-ink-900': budgetTone === 'neutral' || budgetTone === 'ok',
           'border-amber-300 bg-amber-50/80 dark:border-amber-900': budgetTone === 'warn',
           'border-red-300 bg-red-50/80 dark:border-red-900': budgetTone === 'danger' || budgetTone === 'blocked',
         }"
