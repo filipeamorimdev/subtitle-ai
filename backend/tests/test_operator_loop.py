@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.ai.models import AIResponse, Message, ToolCall
+from app.ai.models import AIResponse, ToolCall
 from app.ai.providers.mock import MockAIProvider
 from app.core.config import get_app_config
 from app.db import Base
 from app.localization.operator import (
-    ConfirmedTool,
     OperatorLoop,
     create_session,
 )

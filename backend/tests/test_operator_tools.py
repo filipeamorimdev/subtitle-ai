@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -11,9 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.ai.models import ToolSpec
 from app.core.config import get_app_config
 from app.db import Base
-from app.db.models import MediaItemRow
 from app.localization import operator_tools as ot
-from app.localization.service import LocalizationTaskService
 from app.media import MediaRef
 from app.media.service import MediaItemService
 
