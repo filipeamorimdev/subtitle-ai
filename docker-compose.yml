@@ -16,3 +16,5 @@ services:
       # - SUBTITLE_AI_AUTH_PASSWORD=change-me
       # Optional; omit to auto-discover mounts under /data and /media:
       # - SUBTITLE_AI_MEDIA_ROOTS=/media
+      # Optional per-task audio-separation traces under /config/debug:
+      # - SUBTITLE_AI_DEBUG_TRACE=true

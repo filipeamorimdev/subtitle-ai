@@ -18,6 +18,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         ffmpeg \
+        libsndfile1 \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-por \
@@ -32,7 +33,17 @@ COPY backend/app /app/backend/app
 COPY backend/alembic.ini /app/backend/alembic.ini
 COPY backend/alembic /app/backend/alembic
 WORKDIR /app/backend
-RUN pip install --no-cache-dir .
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        make \
+        python3-dev \
+    && pip install --no-cache-dir . \
+    && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir demucs \
+    && apt-get purge -y gcc g++ make python3-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* /root/.cache/pip
 
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
 

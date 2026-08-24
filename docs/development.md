@@ -41,6 +41,19 @@ npm run build
 
 The Docker image runs `npm run build` and FastAPI serves `frontend/dist`.
 
+## Audio separation smoke test
+
+Inside the running container (Demucs is installed in the image, not on the host):
+
+```bash
+docker compose exec subtitle-ai python -m app.localization.audio \
+  --input /data/movies/example.mkv \
+  --duration 45 \
+  --debug
+```
+
+Outputs `dialogue.wav` and `background.wav` plus a trace under `/config/debug/audio-separation/`. This does not change the dubbing pipeline.
+
 ## Docker
 
 ```bash

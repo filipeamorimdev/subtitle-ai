@@ -26,6 +26,9 @@ dev = [
     "httpx>=0.28.0",
     "ruff>=0.8.0",
 ]
+separation = [
+    "demucs>=4.0.1",
+]
 
 [build-system]
 requires = ["setuptools>=75.0.0"]

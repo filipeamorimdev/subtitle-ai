@@ -39,6 +39,7 @@ class AudioStream:
     comment: bool = False
     visual_impaired: bool = False
     codec: str | None = None
+    sample_rate: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -58,6 +59,7 @@ class ScoredAudioStream:
             "reasons": list(self.reasons),
             "default": self.stream.default,
             "comment": self.stream.comment,
+            "sample_rate": self.stream.sample_rate,
         }
 
 
@@ -75,6 +77,7 @@ class AudioSelection:
             "stream_index": stream.stream_index,
             "language": stream.language,
             "channels": stream.channels,
+            "sample_rate": stream.sample_rate,
             "score": self.selected.score,
             "reason": self.reason,
             "title": stream.title,
@@ -204,6 +207,10 @@ def streams_from_ffprobe(payload: dict[str, Any]) -> list[AudioStream]:
             channels = int(item.get("channels") or 0)
         except (TypeError, ValueError):
             channels = 0
+        try:
+            sample_rate_raw = int(item.get("sample_rate") or 0)
+        except (TypeError, ValueError):
+            sample_rate_raw = 0
         language = normalize_language_code(tags.get("language") if tags else None)
         title = tags.get("title") if tags else None
 
@@ -227,6 +234,7 @@ def streams_from_ffprobe(payload: dict[str, Any]) -> list[AudioStream]:
                     disposition.get("visual_impaired") or disposition.get("descriptions")
                 ),
                 codec=item.get("codec_name"),
+                sample_rate=sample_rate_raw or None,
                 metadata={"tags": tags, "disposition": disposition},
             )
         )
@@ -234,7 +242,13 @@ def streams_from_ffprobe(payload: dict[str, Any]) -> list[AudioStream]:
 
 
 class AudioTrackSelector:
-    async def probe(self, media_path: str | Path, *, timeout_s: float = 60.0) -> list[AudioStream]:
+    async def probe(
+        self,
+        media_path: str | Path,
+        *,
+        timeout_s: float = 60.0,
+        is_cancelled=None,
+    ) -> list[AudioStream]:
         media = Path(media_path)
         result = await run_process_checked(
             [
@@ -244,12 +258,13 @@ class AudioTrackSelector:
                 "-select_streams",
                 "a",
                 "-show_entries",
-                "stream=index,codec_type,codec_name,channels:stream_tags=language,title:stream_disposition=default,comment,visual_impaired,descriptions",
+                "stream=index,codec_type,codec_name,channels,sample_rate:stream_tags=language,title:stream_disposition=default,comment,visual_impaired,descriptions",
                 "-of",
                 "json",
                 str(media),
             ],
             timeout_s=timeout_s,
+            is_cancelled=is_cancelled,
         )
         try:
             payload = json.loads(result.stdout_text or "{}")
@@ -269,8 +284,9 @@ class AudioTrackSelector:
         preferred_languages: list[str],
         allow_commentary: bool = False,
         allow_description: bool = False,
+        is_cancelled=None,
     ) -> AudioSelection:
-        streams = await self.probe(media_path)
+        streams = await self.probe(media_path, is_cancelled=is_cancelled)
         return select_audio_stream(
             streams,
             preferred_languages=preferred_languages,

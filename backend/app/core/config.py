@@ -53,6 +53,8 @@ class AppConfig(BaseSettings):
     auth_forward_header: str | None = None
     # 0/unset = auto (half the cores, leaving headroom for the API).
     whisper_cpu_threads: int = 0
+    # Per-task debug traces under {config_dir}/debug. Independent of log_level.
+    debug_trace: bool = False
 
     @field_validator("media_roots", mode="before")
     @classmethod

@@ -9,6 +9,7 @@ Settings are stored in SQLite under `/config/subtitle-ai.db`. Secrets are Fernet
 | `SUBTITLE_AI_CONFIG_DIR` | `/config` | Persistent config directory |
 | `SUBTITLE_AI_MEDIA_ROOTS` | _(auto)_ | Optional override. When unset, roots are discovered from container mounts under `/data` and `/media` |
 | `SUBTITLE_AI_LOG_LEVEL` | `INFO` | Log level |
+| `SUBTITLE_AI_DEBUG_TRACE` | `false` | When `true`, each audio-separation run writes a persistent trace under `/config/debug/audio-separation/<task-id>/trace.log`. Independent of `SUBTITLE_AI_LOG_LEVEL`. Off by default. |
 | `SUBTITLE_AI_HOST` / `PORT` | `0.0.0.0` / `6768` | Bind address (uvicorn CLI usually sets this) |
 | `SUBTITLE_AI_FRONTEND_DIST` | auto-detected | Built Vue assets directory |
 
@@ -25,6 +26,25 @@ Each translation job writes a JSONL exchange log under:
 ```
 
 By default only metadata is stored (model, attempt, status, token usage, errors). Enable **Log full OpenRouter exchanges** under **Settings → Providers** to persist full request/response bodies for debugging. The toggle defaults to off. API keys are never written.
+
+## Audio separation debug traces
+
+Audio stem separation is an isolated capability (not wired into dubbing yet). Enable traces with `SUBTITLE_AI_DEBUG_TRACE=true`. Each run writes:
+
+```text
+/config/debug/audio-separation/<task-id>/trace.log
+```
+
+Copy that file out of the `/config` volume to debug a run without shelling into a live container. Traces are not rotated automatically.
+
+Manual smoke test inside the container:
+
+```bash
+docker compose exec subtitle-ai python -m app.localization.audio \
+  --input /data/movies/example.mkv \
+  --duration 45 \
+  --debug
+```
 
 ## Settings UI sections
 
