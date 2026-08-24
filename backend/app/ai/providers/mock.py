@@ -241,20 +241,22 @@ class MockAIProvider(AIProvider):
     async def chat_completion(
         self,
         *,
-        model_id: str,
         messages: list[Message] | list[dict[str, Any]],
+        model_id: str | None = None,
         temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
         tools: list[ToolSpec] | list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> AIResponse:
+        resolved_model = model_id or model or "mock-free"
         req_id = request_id or str(uuid.uuid4())
         normalized = self._normalize_messages(messages)
         self.call_history.append(
             MockCallRecord(
                 method="chat_completion",
-                model_id=model_id,
+                model_id=resolved_model,
                 messages=normalized,
                 request_id=req_id,
                 kwargs={
@@ -270,7 +272,7 @@ class MockAIProvider(AIProvider):
         self._maybe_raise()
         if self.response_factory is not None:
             return self.response_factory(
-                model_id=model_id,
+                model_id=resolved_model,
                 messages=normalized,
                 request_id=req_id,
                 temperature=temperature,
@@ -280,12 +282,12 @@ class MockAIProvider(AIProvider):
             )
         return AIResponse(
             provider_id=PROVIDER_ID,
-            model_id=model_id,
+            model_id=resolved_model,
             content=self.default_content,
             input_tokens=10,
             output_tokens=5,
             total_tokens=15,
-            actual_cost_usd=Decimal("0") if model_id == "mock-free" else Decimal("0.001"),
+            actual_cost_usd=Decimal("0") if resolved_model == "mock-free" else Decimal("0.001"),
             latency_ms=self.latency_ms,
             request_id=req_id,
             raw_metadata={"request_id": req_id, "finish_reason": "stop"},

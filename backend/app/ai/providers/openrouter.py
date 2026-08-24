@@ -448,30 +448,38 @@ class OpenRouterProvider(AIProvider):
     async def chat_completion(
         self,
         *,
-        model_id: str,
         messages: list[Message] | list[dict[str, Any]],
+        model_id: str | None = None,
         temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
         tools: list[ToolSpec] | list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> AIResponse:
+        resolved_model = model_id or model
+        if not resolved_model:
+            raise TypeError("chat_completion requires model_id (or legacy model=)")
         req_id = request_id or str(uuid.uuid4())
         try:
             client = self._build_client()
-            result = await client.chat_completion(
-                model=model_id,
-                messages=_messages_to_dicts(messages),
-                temperature=temperature,
-                max_tokens=max_tokens,
-                tools=_tools_to_openai(tools),
-                tool_choice=tool_choice,
-            )
+            client_kwargs: dict[str, Any] = {
+                "model": resolved_model,
+                "messages": _messages_to_dicts(messages),
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            openai_tools = _tools_to_openai(tools)
+            if openai_tools:
+                client_kwargs["tools"] = openai_tools
+            if tool_choice is not None:
+                client_kwargs["tool_choice"] = tool_choice
+            result = await client.chat_completion(**client_kwargs)
         except OpenRouterError as exc:
-            raise openrouter_error_to_provider_error(exc, model_id=model_id) from exc
+            raise openrouter_error_to_provider_error(exc, model_id=resolved_model) from exc
         return normalize_chat_result(
             result,
-            model_id=model_id,
+            model_id=resolved_model,
             request_id=req_id,
             raw_metadata={
                 "request_id": req_id,

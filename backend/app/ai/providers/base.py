@@ -41,8 +41,8 @@ class AIProvider(ABC):
     async def chat_completion(
         self,
         *,
-        model_id: str,
         messages: list[Message] | list[dict[str, Any]],
+        model_id: str,
         temperature: float = 0,
         max_tokens: int | None = None,
         request_id: str | None = None,
