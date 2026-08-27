@@ -369,8 +369,9 @@ class RecordingAIProvider:
         self._attempt_number = attempt_number
         self._provider_id = provider_id or getattr(inner, "provider_id", OPENROUTER_PROVIDER_ID)
         self._http_hook_active = False
+        self._http_usage_event_count = 0
 
-        hook = make_openrouter_http_usage_hook(
+        persist_http_usage = make_openrouter_http_usage_hook(
             usage,
             job_id=job_id,
             trigger_type=trigger_type,
@@ -379,6 +380,11 @@ class RecordingAIProvider:
             attempt_number=attempt_number,
             provider_id=self._provider_id,
         )
+
+        def hook(record: dict[str, Any]) -> None:
+            self._http_usage_event_count += 1
+            persist_http_usage(record)
+
         if hasattr(inner, "with_usage_hook"):
             self._inner = inner.with_usage_hook(hook)  # type: ignore[call-arg]
             self._http_hook_active = True
@@ -413,10 +419,7 @@ class RecordingAIProvider:
             model_id = kwargs["model_id"]
         request_id = kwargs.get("request_id") or str(uuid.uuid4())
         kwargs["request_id"] = request_id
-
-        if self._http_hook_active:
-            # Each OpenRouter HTTP attempt is persisted by the usage hook.
-            return await self._inner.chat_completion(*args, **kwargs)
+        http_events_before = self._http_usage_event_count
 
         operation = operation_from_messages(
             messages if isinstance(messages, list) else None,
@@ -425,26 +428,27 @@ class RecordingAIProvider:
         try:
             result = await self._inner.chat_completion(*args, **kwargs)
         except AIProviderError as exc:
-            self._usage.record(
-                model_id=str(model_id),
-                operation_type=operation,
-                trigger_type=self._trigger_type,
-                job_id=self._job_id,
-                status="failed",
-                failure_category=classify_provider_failure(exc),
-                outcome="technical_failure",
-                tier=self._tier,
-                provider_id=self._provider_id,
-                request_id=request_id,
-                attempt_number=self._attempt_number,
-            )
-            self._usage.db.commit()
+            if self._http_usage_event_count == http_events_before:
+                self._usage.record(
+                    model_id=str(model_id),
+                    operation_type=operation,
+                    trigger_type=self._trigger_type,
+                    job_id=self._job_id,
+                    status="failed",
+                    failure_category=classify_provider_failure(exc),
+                    outcome="technical_failure",
+                    tier=self._tier,
+                    provider_id=self._provider_id,
+                    request_id=request_id,
+                    attempt_number=self._attempt_number,
+                )
+                self._usage.db.commit()
             raise
         # Also catch legacy OpenRouterError if it bubbles through.
         except Exception as exc:
             from app.translation.openrouter.client import OpenRouterError
 
-            if isinstance(exc, OpenRouterError):
+            if isinstance(exc, OpenRouterError) and self._http_usage_event_count == http_events_before:
                 self._usage.record(
                     model_id=str(model_id),
                     operation_type=operation,
@@ -461,39 +465,41 @@ class RecordingAIProvider:
                 self._usage.db.commit()
             raise
 
-        if isinstance(result, AIResponse):
-            self._usage.record_chat_result(
-                result,
-                model_id=str(model_id),
-                operation_type=operation,
-                trigger_type=self._trigger_type,
-                job_id=self._job_id,
-                status="success",
-                tier=self._tier,
-                provider_id=self._provider_id,
-                request_id=result.request_id or request_id,
-                attempt_number=self._attempt_number,
-            )
-        else:
-            # ChatResult from a thinly wrapped OpenRouter client.
-            self._usage.record_chat_result(
-                result,
-                model_id=str(model_id),
-                operation_type=operation,
-                trigger_type=self._trigger_type,
-                job_id=self._job_id,
-                status="success",
-                tier=self._tier,
-                provider_id=self._provider_id,
-                request_id=request_id,
-                attempt_number=self._attempt_number,
-            )
-        self._usage.db.commit()
+        if self._http_usage_event_count == http_events_before:
+            if isinstance(result, AIResponse):
+                self._usage.record_chat_result(
+                    result,
+                    model_id=str(model_id),
+                    operation_type=operation,
+                    trigger_type=self._trigger_type,
+                    job_id=self._job_id,
+                    status="success",
+                    tier=self._tier,
+                    provider_id=self._provider_id,
+                    request_id=result.request_id or request_id,
+                    attempt_number=self._attempt_number,
+                )
+            else:
+                # ChatResult from a thinly wrapped OpenRouter client.
+                self._usage.record_chat_result(
+                    result,
+                    model_id=str(model_id),
+                    operation_type=operation,
+                    trigger_type=self._trigger_type,
+                    job_id=self._job_id,
+                    status="success",
+                    tier=self._tier,
+                    provider_id=self._provider_id,
+                    request_id=request_id,
+                    attempt_number=self._attempt_number,
+                )
+            self._usage.db.commit()
         return result
 
     async def run_chat_batch(self, *args: Any, **kwargs: Any):
+        http_events_before = self._http_usage_event_count
         results = await self._inner.run_chat_batch(*args, **kwargs)
-        if self._http_hook_active:
+        if self._http_usage_event_count != http_events_before:
             return results
         model_id = kwargs.get("model_id") or kwargs.get("model") or "unknown"
         if isinstance(results, dict):

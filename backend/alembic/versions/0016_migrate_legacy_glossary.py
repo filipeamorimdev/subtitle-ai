@@ -43,8 +43,8 @@ def upgrade() -> None:
                 terms.source_normalized,
                 terms.target,
                 terms.locked,
-                terms.created_at,
-                terms.updated_at
+                COALESCE(terms.created_at, CURRENT_TIMESTAMP),
+                COALESCE(terms.updated_at, CURRENT_TIMESTAMP)
             FROM glossary_terms AS terms
             JOIN glossary_scopes AS scopes ON scopes.id = terms.scope_id
             WHERE trim(terms.source) <> '' AND trim(terms.target) <> ''
