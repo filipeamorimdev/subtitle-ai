@@ -416,7 +416,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-            title="Create or replace a TTS dub preview"
+            title="Create or replace a Portuguese TTS dub"
             aria-label="Request dub"
             :disabled="busy || anyActive"
             @click="dubModalOpen = true"

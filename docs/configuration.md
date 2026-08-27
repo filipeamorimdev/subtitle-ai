@@ -29,7 +29,7 @@ By default only metadata is stored (model, attempt, status, token usage, errors)
 
 ## Audio separation debug traces
 
-Audio stem separation is an isolated capability (not wired into dubbing yet). Enable traces with `SUBTITLE_AI_DEBUG_TRACE=true`. Each run writes:
+Audio stem separation is used by the default background-preserved dubbing mode. Enable traces with `SUBTITLE_AI_DEBUG_TRACE=true`. Each run writes:
 
 ```text
 /config/debug/audio-separation/<task-id>/trace.log

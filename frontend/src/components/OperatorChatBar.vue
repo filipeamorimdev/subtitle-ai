@@ -105,7 +105,7 @@ function toolLabel(name: string): string {
     get_media_localization: 'Checked localization',
     create_localization_task: 'Started task',
     transcribe_audio: 'Transcribe',
-    start_dub: 'Dub preview',
+    start_dub: 'Dub',
     list_tasks: 'Listed tasks',
     get_task: 'Task status',
     retry_task: 'Retry task',

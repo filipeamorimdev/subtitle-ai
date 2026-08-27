@@ -204,6 +204,8 @@ class TranscribeCreate(BaseModel):
 class DubCreate(BaseModel):
     target_language: str | None = None
     replace_existing: bool = False
+    mix_mode: Literal["background_preserved", "voiceover_preview"] = "background_preserved"
+    speaker_voices: dict[str, str] = Field(default_factory=dict)
 
 
 class RequestSubtitleCreate(BaseModel):
@@ -608,4 +610,3 @@ class GlossaryOut(BaseModel):
     scope_key: str
     target_language: str
     entries: list[GlossaryEntryOut] = Field(default_factory=list)
-

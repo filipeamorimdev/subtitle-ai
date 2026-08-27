@@ -13,6 +13,7 @@ import pytest
 
 from app.jobs.event_log import JobEventLog
 from app.localization.dubbing.pipeline import DubbingPipeline, probe_media_artifact
+from app.localization.dubbing.options import DUB_MIX_VOICEOVER_PREVIEW
 from app.localization.source_resolver import SourceResolver, SourceType
 from app.localization.transcription.audio_selector import AudioTrackSelector
 from app.localization.transcription.models import Transcript, TranscriptSegment, TranscriptWord
@@ -142,6 +143,7 @@ async def test_smoke_select_transcribe_format_dub_mux(tmp_path, monkeypatch):
         event_log=event_log,
         is_cancelled=lambda: False,
         use_loudnorm=False,
+        mix_mode=DUB_MIX_VOICEOVER_PREVIEW,
     )
     assert out.is_file()
     assert artifact is not None

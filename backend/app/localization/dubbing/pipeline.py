@@ -13,9 +13,22 @@ from pathlib import Path
 from app.core.logging import get_logger
 from app.jobs.event_log import JobEventLog
 from app.localization.artifacts import MediaArtifact
+from app.localization.audio.models import AudioSeparationError
+from app.localization.audio.separation import AudioSeparationService
 from app.localization.dubbing.dialogue import speech_segments_from_document
-from app.localization.dubbing.mixer import finalize_dialogue_track
+from app.localization.dubbing.mixer import (
+    DUB_OUTPUT_SAMPLE_RATE,
+    finalize_dialogue_track,
+    mix_background_and_dialogue_track,
+)
 from app.localization.dubbing.models import VoiceConfig
+from app.localization.dubbing.options import (
+    DUB_MIX_BACKGROUND_PRESERVED,
+    DUB_MIX_VOICEOVER_PREVIEW,
+    normalize_dub_mix_mode,
+    normalize_speaker_voice_overrides,
+    speaker_key,
+)
 from app.localization.dubbing.providers.piper import (
     PiperTTSProvider,
     TTSError,
@@ -118,11 +131,12 @@ async def probe_media_artifact(path: str | Path) -> MediaArtifact:
 
 def build_mux_command(
     media: Path,
-    tts_audio_wav: Path,
+    dub_audio_wav: Path,
     output: Path,
     *,
     lang_tag: str,
     copy_original_audio: bool,
+    dub_title: str = "Dub (TTS + background)",
 ) -> list[str]:
     cmd = [
         "ffmpeg",
@@ -132,44 +146,35 @@ def build_mux_command(
         "-i",
         str(media),
         "-i",
-        str(tts_audio_wav),
+        str(dub_audio_wav),
         "-map",
         "0:v:0",
+        "-map",
+        "1:a:0",
         "-c:v",
         "copy",
+        "-c:a:0",
+        "aac",
+        "-b:a:0",
+        "192k",
+        "-disposition:a:0",
+        "default",
+        "-metadata:s:a:0",
+        f"language={lang_tag}",
+        "-metadata:s:a:0",
+        f"title={dub_title}",
     ]
     if copy_original_audio:
         cmd.extend(
             [
                 "-map",
                 "0:a:0",
-                "-map",
-                "1:a:0",
-                "-c:a:0",
-                "copy",
                 "-c:a:1",
-                "aac",
-                "-b:a:1",
-                "192k",
+                "copy",
+                "-disposition:a:1",
+                "0",
                 "-metadata:s:a:1",
-                f"language={lang_tag}",
-                "-metadata:s:a:1",
-                "title=Dub (TTS)",
-            ]
-        )
-    else:
-        cmd.extend(
-            [
-                "-map",
-                "1:a:0",
-                "-c:a:0",
-                "aac",
-                "-b:a:0",
-                "192k",
-                "-metadata:s:a:0",
-                f"language={lang_tag}",
-                "-metadata:s:a:0",
-                "title=Dub (TTS)",
+                "title=Original audio",
             ]
         )
     cmd.append(str(output))
@@ -223,9 +228,11 @@ class DubbingPipeline:
         *,
         timing: TimingEngine | None = None,
         translation: DubTranslationService | None = None,
+        separation: AudioSeparationService | None = None,
     ) -> None:
         self.timing = timing or TimingEngine()
         self.translation = translation or DubTranslationService()
+        self.separation = separation or AudioSeparationService()
 
     async def run(
         self,
@@ -235,6 +242,8 @@ class DubbingPipeline:
         target_language: str,
         output_path: str | Path,
         voice_model: str | None = None,
+        mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
+        speaker_voice_overrides: dict[str, str] | None = None,
         event_log: JobEventLog,
         is_cancelled: CancelCheck,
         on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
@@ -252,6 +261,11 @@ class DubbingPipeline:
             raise DubError(f"Source SRT is missing: {source_srt}")
         if out.exists() and out.stat().st_size > 0:
             raise DubError(f"Output dub already exists: {out.name}")
+        try:
+            mix_mode = normalize_dub_mix_mode(mix_mode)
+        except ValueError as exc:
+            raise DubError(str(exc)) from exc
+        speaker_voice_overrides = normalize_speaker_voice_overrides(speaker_voice_overrides)
 
         event_log.record(event="started", media_path=str(media), target_language=target_language)
         try:
@@ -261,27 +275,50 @@ class DubbingPipeline:
             raise DubError(f"Failed to parse SRT {source_srt.name}: {exc}") from exc
 
         segments = speech_segments_from_document(document)
-        event_log.record(event="source_srt", path=str(source_srt), cue_count=len(document.blocks), speech_segments=len(segments))
+        labelled_speakers = sorted({segment.speaker_id for segment in segments if segment.speaker_id})
+        event_log.record(
+            event="source_srt",
+            path=str(source_srt),
+            cue_count=len(document.blocks),
+            speech_segments=len(segments),
+            labelled_speakers=labelled_speakers,
+            mix_mode=mix_mode,
+        )
         logger.info("dub_speech_segments count=%s cues=%s", len(segments), len(document.blocks))
 
         voice_model = voice_model or resolve_voice_model_for_language(target_language)
-        model_path = await ensure_piper_voice_available(
-            voice_model=voice_model,
-            voices_dir=voices_dir,
-            is_cancelled=is_cancelled,
-        )
+        tts_by_model: dict[str, PiperTTSProvider] = {}
+
+        async def tts_for(model: str) -> PiperTTSProvider:
+            cached = tts_by_model.get(model)
+            if cached is not None:
+                return cached
+            try:
+                model_path = await ensure_piper_voice_available(
+                    voice_model=model,
+                    voices_dir=voices_dir,
+                    is_cancelled=is_cancelled,
+                )
+                if is_cancelled():
+                    raise TTSError("Dub cancelled")
+                voice = await asyncio.to_thread(load_piper_voice, model_path)
+            except TTSError as exc:
+                raise DubError(str(exc)) from exc
+            tts = PiperTTSProvider(voice)
+            tts_by_model[model] = tts
+            event_log.record(event="voice_loaded", voice_model=model, path=str(model_path))
+            return tts
+
+        await tts_for(voice_model)
         if is_cancelled():
             event_log.record(event="cancelled")
             return None
-        voice = await asyncio.to_thread(load_piper_voice, model_path)
-        tts = PiperTTSProvider(voice)
-        voice_config = VoiceConfig(voice_id=voice_model, language=target_language)
-        event_log.record(event="voice_loaded", voice_model=voice_model, path=str(model_path))
 
         total = max(1, len(segments))
-        synth_samples: list[tuple[int, float]] = []
+        synth_samples_by_model: dict[str, list[tuple[int, float]]] = {}
         speed_adjustments = 0
         timeline = AudioTimeline()
+        assigned_speakers: dict[str, str] = {}
 
         with tempfile.TemporaryDirectory(prefix="subtitle-ai-dub-") as tmp:
             tmp_dir = Path(tmp)
@@ -291,6 +328,21 @@ class DubbingPipeline:
                     return None
                 text = segment.spoken_text
                 cue_wav = tmp_dir / f"seg-{index}.wav"
+                segment_voice_model = speaker_voice_overrides.get(speaker_key(segment.speaker_id), voice_model)
+                tts = await tts_for(segment_voice_model)
+                voice_config = VoiceConfig(
+                    voice_id=segment_voice_model,
+                    language=target_language,
+                    speaker_id=segment.speaker_id,
+                )
+                if segment.speaker_id and segment.speaker_id not in assigned_speakers:
+                    assigned_speakers[segment.speaker_id] = segment_voice_model
+                    event_log.record(
+                        event="speaker_voice_assigned",
+                        speaker_id=segment.speaker_id,
+                        voice_model=segment_voice_model,
+                        source="override" if speaker_key(segment.speaker_id) in speaker_voice_overrides else "default",
+                    )
                 event_log.record(
                     event="speech",
                     index=index,
@@ -298,6 +350,7 @@ class DubbingPipeline:
                     end=segment.end,
                     chars=len(text),
                     speaker_id=segment.speaker_id,
+                    voice_model=segment_voice_model,
                     text_preview=text[:80],
                 )
                 try:
@@ -344,7 +397,7 @@ class DubbingPipeline:
                     speed_adjustments += 1
                 await shape_clip(cue_wav, shaped, speed=speed, is_cancelled=is_cancelled)
                 if actual:
-                    synth_samples.append((len(text), actual))
+                    synth_samples_by_model.setdefault(segment_voice_model, []).append((len(text), actual))
                 timeline.add_clip(shaped, segment.start, speaker_id=segment.speaker_id)
                 if on_progress:
                     maybe = on_progress(index, total)
@@ -353,7 +406,7 @@ class DubbingPipeline:
 
             if not timeline.clips:
                 raise DubError("No cue text was synthesized; dub output would be silence.")
-            if piper_output_ignores_text(synth_samples):
+            if any(piper_output_ignores_text(samples) for samples in synth_samples_by_model.values()):
                 raise DubError(
                     "Piper produced nearly the same clip length for every subtitle. "
                     "The voice is not reading cue text; refusing to mux a looping track."
@@ -364,6 +417,9 @@ class DubbingPipeline:
                 event="mix",
                 input_clips=len(timeline.clips),
                 voice_model=voice_model,
+                voice_models=sorted(tts_by_model),
+                speaker_voices=assigned_speakers,
+                mix_mode=mix_mode,
                 media_duration_s=media_duration_s,
                 overlaps=timeline.overlap_count,
                 speed_adjustments=speed_adjustments,
@@ -381,23 +437,103 @@ class DubbingPipeline:
                 event_log.record(event="cancelled")
                 return None
             timeline.render(tts_audio_wav, media_duration_s=media_duration_s)
-            await finalize_dialogue_track(
-                tts_audio_wav,
-                use_loudnorm=use_loudnorm,
-                is_cancelled=is_cancelled,
+            try:
+                await finalize_dialogue_track(
+                    tts_audio_wav,
+                    use_loudnorm=use_loudnorm,
+                    output_sample_rate=DUB_OUTPUT_SAMPLE_RATE,
+                    is_cancelled=is_cancelled,
+                )
+            except ProcessError as exc:
+                if exc.outcome is ProcessOutcome.CANCELLED or is_cancelled():
+                    event_log.record(event="cancelled")
+                    return None
+                raise DubError(str(exc)) from exc
+            event_log.record(
+                event="dialogue_audio_ready",
+                path=str(tts_audio_wav),
+                duration=wav_duration_seconds(tts_audio_wav),
+                sample_rate=DUB_OUTPUT_SAMPLE_RATE,
             )
-            event_log.record(event="audio_ready", path=str(tts_audio_wav), duration=wav_duration_seconds(tts_audio_wav))
+
+            copy_original_audio = await probe_has_audio_stream(media)
+            audio_for_mux = tts_audio_wav
+            effective_mix_mode = mix_mode
+            if mix_mode == DUB_MIX_BACKGROUND_PRESERVED and copy_original_audio:
+                stems_dir = tmp_dir / "stems"
+
+                def record_separation_event(event: str, payload: dict[str, object]) -> None:
+                    event_log.record(event=event, **payload)
+
+                event_log.record(event="background_separation_start", mode=mix_mode)
+                try:
+                    separation = await self.separation.separate(
+                        media,
+                        output_dir=stems_dir,
+                        task_id=f"dub-{getattr(event_log, 'job_id', 'media')}",
+                        is_cancelled=is_cancelled,
+                        event_cb=record_separation_event,
+                    )
+                    background_wav = Path(separation.background.path)
+                    mixed_wav = tmp_dir / "dub-mixed.wav"
+                    audio_for_mux = await mix_background_and_dialogue_track(
+                        background_wav,
+                        tts_audio_wav,
+                        mixed_wav,
+                        use_loudnorm=use_loudnorm,
+                        is_cancelled=is_cancelled,
+                    )
+                except AudioSeparationError as exc:
+                    if is_cancelled():
+                        event_log.record(event="cancelled")
+                        return None
+                    raise DubError(f"Could not create a background-preserved dub: {exc}") from exc
+                except ProcessError as exc:
+                    if exc.outcome is ProcessOutcome.CANCELLED or is_cancelled():
+                        event_log.record(event="cancelled")
+                        return None
+                    raise DubError(str(exc)) from exc
+                except RuntimeError as exc:
+                    raise DubError(str(exc)) from exc
+                event_log.record(
+                    event="background_mix_ready",
+                    path=str(audio_for_mux),
+                    duration=wav_duration_seconds(audio_for_mux),
+                    provider=separation.provider,
+                    model=separation.model,
+                    source_stream=separation.metadata.get("selected_stream"),
+                )
+            elif mix_mode == DUB_MIX_BACKGROUND_PRESERVED:
+                # A video without audio has no bed to preserve.  It can still produce
+                # a usable voiceover-preview track and the event log explains why.
+                effective_mix_mode = DUB_MIX_VOICEOVER_PREVIEW
+                event_log.record(
+                    event="background_mix_unavailable",
+                    reason="source_media_has_no_audio",
+                    fallback_mode=effective_mix_mode,
+                )
+            event_log.record(
+                event="audio_ready",
+                path=str(audio_for_mux),
+                duration=wav_duration_seconds(audio_for_mux),
+                mix_mode=effective_mix_mode,
+                sample_rate=DUB_OUTPUT_SAMPLE_RATE,
+            )
 
             event_log.record(event="mux_start", output_path=str(out))
             tmp_out = tmp_dir / out.name
             lang_tag = sidecar_language_tag(target_language)
-            copy_original_audio = await probe_has_audio_stream(media)
             mux_cmd = build_mux_command(
                 media,
-                tts_audio_wav,
+                audio_for_mux,
                 tmp_out,
                 lang_tag=lang_tag,
                 copy_original_audio=copy_original_audio,
+                dub_title=(
+                    "Dub (TTS + background)"
+                    if effective_mix_mode == DUB_MIX_BACKGROUND_PRESERVED
+                    else "Dub (TTS preview)"
+                ),
             )
             try:
                 await run_process_checked(
@@ -452,6 +588,8 @@ async def dub_media_from_srt_to_mkv(
     target_language: str,
     output_path: str | Path,
     voice_model: str | None = None,
+    mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
+    speaker_voice_overrides: dict[str, str] | None = None,
     event_log: JobEventLog,
     is_cancelled: CancelCheck,
     on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
@@ -462,6 +600,8 @@ async def dub_media_from_srt_to_mkv(
         target_language=target_language,
         output_path=output_path,
         voice_model=voice_model,
+        mix_mode=mix_mode,
+        speaker_voice_overrides=speaker_voice_overrides,
         event_log=event_log,
         is_cancelled=is_cancelled,
         on_progress=on_progress,

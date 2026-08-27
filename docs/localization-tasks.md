@@ -2,7 +2,7 @@
 
 v0.3 introduces a **media-centric** localization model on top of the existing job/worker stack.
 
-> **Scope:** subtitle localization tasks, on-demand subtitle requests, and manual TTS dub preview.  
+> **Scope:** subtitle localization tasks, on-demand subtitle requests, and manual TTS dubbing.
 > **Audio localization** uses `capability=audio` for dub preview sidecar MKV files (manual only; not on the automatic scanner).
 
 ## Mental model
@@ -41,9 +41,9 @@ Historical jobs without `task_id` remain valid legacy execution history.
 
 The dashboard ask bar talks to `POST /api/operator/sessions/{id}/messages`. The model may only mutate state by emitting OpenRouter `tool_calls` against a whitelist (`search_media`, `ensure_media`, `create_localization_task`, confirm-gated `transcribe_audio` / `start_dub` / `retry_task` / `cancel_task`, …). It must use a numeric `media_id` from `ensure_media`; it never enqueues extract/translate jobs directly. Configure the chat model under **Settings → Models** (`operator_model_id`).
 
-## Manual dub preview
+## Manual dubbing
 
-When a target-language SRT already exists, the media page offers **Dub preview** (manual Piper TTS, speech-only WAV timeline, then ffmpeg mux). This creates `{stem}.{lang}.dub.mkv` beside the original video; the source file is never overwritten. Completion is disk-only (no Bazarr verify). Use `capability=audio` on localization tasks; jobs use `job_kind=dub`.
+When a target-language SRT already exists, the media page offers **Dub**. The default `background_preserved` mode creates the Piper dialogue timeline, separates the original vocal stem with Demucs, and mixes the translated dialogue with the retained music, ambience, and effects. The output `{stem}.{lang}.dub.mkv` places the 48 kHz Portuguese track first and marks it default; the source audio remains as an alternate track. `voiceover_preview` keeps the previous speech-only timeline for quick previews. Subtitle speaker labels can map to optional per-speaker Piper model overrides; unlabelled cues retain the default voice. The source video is never overwritten. Completion is disk-only (no Bazarr verify). Use `capability=audio` on localization tasks; jobs use `job_kind=dub`.
 
 ## Automatic fallback
 

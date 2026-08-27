@@ -152,6 +152,16 @@ def init_db() -> None:
         _ensure_jobs_provider_id_nullable(conn)
         if "task_id" not in job_columns:
             conn.execute(text("ALTER TABLE jobs ADD COLUMN task_id INTEGER"))
+        if "dub_mix_mode" not in job_columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE jobs ADD COLUMN dub_mix_mode VARCHAR(32) "
+                    "NOT NULL DEFAULT 'background_preserved'"
+                )
+            )
+        if "dub_speaker_voices" not in job_columns:
+            conn.execute(
+                text("ALTER TABLE jobs ADD COLUMN dub_speaker_voices JSON NOT NULL DEFAULT '{}'"))
 
         # Active-task uniqueness (partial unique index) for deployments using create_all.
         task_indexes = {

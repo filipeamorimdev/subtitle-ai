@@ -6,7 +6,7 @@ import array
 import wave
 from pathlib import Path
 
-from app.localization.dubbing.dialogue import speech_segments_from_document
+from app.localization.dubbing.dialogue import speaker_id_from_text, speech_segments_from_document
 from app.localization.dubbing.models import SpeechSegment
 from app.localization.dubbing.timeline import AudioTimeline, CUE_SAMPLE_RATE
 from app.localization.dubbing.timing import TimingEngine
@@ -25,8 +25,13 @@ def test_speech_segments_are_not_raw_cues():
     segments = speech_segments_from_document(doc)
     assert len(segments) == 1
     assert segments[0].text == "Hello"
-    assert segments[0].speaker_id is None
+    assert segments[0].speaker_id == "John"
     assert segments[0].source_cues == [1]
+
+
+def test_speaker_label_is_preserved_after_subtitle_markup_is_removed():
+    assert speaker_id_from_text("- <i>Bo (voz off):</i> Aquele é o Angus.") == "Bo (voz off)"
+    assert speaker_id_from_text("♪ Música ♪") is None
 
 
 def test_timing_engine_uses_speed_only_within_cap():

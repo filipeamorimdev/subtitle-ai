@@ -52,7 +52,7 @@ docker compose exec subtitle-ai python -m app.localization.audio \
   --debug
 ```
 
-Outputs `dialogue.wav` and `background.wav` plus a trace under `/config/debug/audio-separation/`. This does not change the dubbing pipeline.
+Outputs `dialogue.wav` and `background.wav` plus a trace under `/config/debug/audio-separation/`. The default background-preserved dubbing mode uses the same service before it muxes the Portuguese audio.
 
 ## Docker
 

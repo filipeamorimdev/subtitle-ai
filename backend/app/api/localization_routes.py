@@ -439,6 +439,8 @@ async def dub_media(
             media,
             target_language=body.target_language,
             replace_existing=body.replace_existing,
+            mix_mode=body.mix_mode,
+            speaker_voice_overrides=body.speaker_voices,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

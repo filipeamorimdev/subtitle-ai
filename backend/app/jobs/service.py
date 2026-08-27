@@ -97,6 +97,11 @@ from app.services.ai_cost import effective_cost_micro, micro_price_to_per_millio
 from app.jobs.event_log import JobEventLog, job_event_log_path
 from app.localization.observability import merge_pipeline_metadata
 from app.dubbing.dub import DubError, dub_media_from_srt_to_mkv, resolve_voice_model_for_language
+from app.localization.dubbing.options import (
+    DUB_MIX_BACKGROUND_PRESERVED,
+    normalize_dub_mix_mode,
+    normalize_speaker_voice_overrides,
+)
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.service import (
     RetryableTranslationError,
@@ -141,6 +146,8 @@ class _JobIoSnapshot:
     extract_stream_index: int | None
     model: str | None
     task_id: int | None
+    dub_mix_mode: str
+    dub_speaker_voices: dict[str, str]
 
 
 def _job_io_snapshot(row: JobRow) -> _JobIoSnapshot:
@@ -158,6 +165,8 @@ def _job_io_snapshot(row: JobRow) -> _JobIoSnapshot:
         extract_stream_index=getattr(row, "extract_stream_index", None),
         model=row.model,
         task_id=getattr(row, "task_id", None),
+        dub_mix_mode=getattr(row, "dub_mix_mode", DUB_MIX_BACKGROUND_PRESERVED),
+        dub_speaker_voices=dict(getattr(row, "dub_speaker_voices", None) or {}),
     )
 
 
@@ -1347,6 +1356,8 @@ class JobService:
         *,
         target_language: str | None = None,
         replace_existing: bool = False,
+        mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
+        speaker_voice_overrides: dict[str, str] | None = None,
     ) -> JobOut:
         from app.languages import LanguageNormalizationError, normalize_language
         from app.localization.service import LocalizationTaskService
@@ -1357,6 +1368,11 @@ class JobService:
             language = normalize_language(raw_language)
         except LanguageNormalizationError as exc:
             raise ValueError(str(exc)) from exc
+        try:
+            mix_mode = normalize_dub_mix_mode(mix_mode)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        speaker_voice_overrides = normalize_speaker_voice_overrides(speaker_voice_overrides)
 
         # Gate: require a ready target SRT on disk.
         gate = await self.dub_gate_for_media(
@@ -1402,6 +1418,8 @@ class JobService:
             trigger_type="manual",
             task_id=task.id,
             replace_existing=replace_existing,
+            mix_mode=mix_mode,
+            speaker_voice_overrides=speaker_voice_overrides,
         )
         tasks.update_checkpoints(task.id, write="active")
         if task.status in {"requested", "planning", "waiting_for_source", "processing"}:
@@ -1416,6 +1434,8 @@ class JobService:
         trigger_type: str = "manual",
         task_id: int | None = None,
         replace_existing: bool = False,
+        mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
+        speaker_voice_overrides: dict[str, str] | None = None,
     ) -> JobOut:
         public = self.settings.get_public()
         trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
@@ -1453,6 +1473,11 @@ class JobService:
         ckey = candidate_key(media_type, path, target_language) if path else None
         model = resolve_voice_model_for_language(target_language)
         dkey = hashlib.sha256(f"dub|{path}|{target_language}".encode()).hexdigest()
+        try:
+            mix_mode = normalize_dub_mix_mode(mix_mode)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        speaker_voice_overrides = normalize_speaker_voice_overrides(speaker_voice_overrides)
 
         row = JobRow(
             candidate_key=ckey,
@@ -1473,6 +1498,8 @@ class JobService:
             progress=0,
             progress_detail="Queued for dubbing",
             dedupe_key=dkey,
+            dub_mix_mode=mix_mode,
+            dub_speaker_voices=speaker_voice_overrides,
         )
         self.db.add(row)
         self.db.commit()
@@ -2595,6 +2622,8 @@ class JobService:
                 is_cancelled=is_cancelled,
                 on_progress=on_progress,
                 voice_model=voice_model,
+                mix_mode=snapshot.dub_mix_mode,
+                speaker_voice_overrides=snapshot.dub_speaker_voices,
             )
 
             current = self._fresh_job(job_id)

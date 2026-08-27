@@ -162,10 +162,12 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 - Local `faster-whisper` (default model `small`, cached under `/config/whisper-models`) with optional OpenAI Whisper API fallback
 - First run downloads the model (~500MB for `small`); CPU transcription is slow and there is no GPU in the default image
 
-### TTS dub preview
+### TTS dubbing
 
-- Manual **Dub preview** on a media page when a target-language SRT already exists beside the file
-- Local Piper TTS via the Python API (voices cached under `/config/piper-voices`); builds a speech-only track from the SRT, then writes `{stem}.{lang}.dub.mkv` next to the original (video + original audio + TTS track)
+- Manual **Dub** on a media page when a target-language SRT already exists beside the file
+- Local Piper TTS via the Python API (voices cached under `/config/piper-voices`); by default separates the original vocal stem with Demucs, mixes the translated dialogue with the preserved music/ambience/effects, and writes `{stem}.{lang}.dub.mkv` next to the original
+- The Portuguese dub is the default audio track (48 kHz stereo); the original audio remains as an alternate track. **Voiceover preview** remains available when a speech-only timeline is wanted.
+- Subtitle labels such as `Ryder:` are retained as speaker identities. Optional per-speaker Piper model overrides can be set in the Dub dialog; unlabelled cues use the target-language default voice.
 - The source video is never overwritten; first run downloads the voice model; CPU synthesis is slow in the default image
 
 ### Translation

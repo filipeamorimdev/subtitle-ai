@@ -1,4 +1,4 @@
-"""TTS dub preview tests (mocked Piper/ffmpeg)."""
+"""TTS dubbing tests (mocked Piper/ffmpeg)."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from app.dubbing.dub import (
     write_tts_timeline_wav,
     _write_piper_wav,
 )
+from app.localization.dubbing.mixer import DUB_OUTPUT_SAMPLE_RATE, build_background_mix_command
 
 
 def test_piper_voice_download_urls_encode_unicode():
@@ -168,7 +169,7 @@ def test_timeline_places_clip_beyond_adelay_ms_limit(tmp_path):
     assert max(abs(sample) for sample in mixed[CUE_SAMPLE_RATE : CUE_SAMPLE_RATE * 2]) == 0
 
 
-def test_build_mux_command_copies_original_audio(tmp_path):
+def test_build_mux_command_makes_portuguese_dub_default_and_keeps_original_audio(tmp_path):
     media = tmp_path / "film.mkv"
     tts = tmp_path / "tts.wav"
     out = tmp_path / "out.mkv"
@@ -183,9 +184,11 @@ def test_build_mux_command_copies_original_audio(tmp_path):
         copy_original_audio=True,
     )
 
-    assert "-c:a:0" in cmd and "copy" in cmd[cmd.index("-c:a:0") + 1]
-    assert "-c:a:1" in cmd and "aac" in cmd[cmd.index("-c:a:1") + 1]
-    assert "-b:a:1" in cmd and "192k" in cmd[cmd.index("-b:a:1") + 1]
+    assert "-c:a:0" in cmd and "aac" in cmd[cmd.index("-c:a:0") + 1]
+    assert "-b:a:0" in cmd and "192k" in cmd[cmd.index("-b:a:0") + 1]
+    assert "-c:a:1" in cmd and "copy" in cmd[cmd.index("-c:a:1") + 1]
+    assert cmd[cmd.index("-disposition:a:0") + 1] == "default"
+    assert cmd[cmd.index("-disposition:a:1") + 1] == "0"
     assert "-map" in cmd and "0:a:0" in cmd
     assert "-map" in cmd and "1:a:0" in cmd
 
@@ -209,6 +212,19 @@ def test_build_mux_command_encodes_tts_when_no_original_audio(tmp_path):
     assert "-b:a:0" in cmd and "192k" in cmd[cmd.index("-b:a:0") + 1]
     assert "1:a:0" in cmd
     assert "-c:a:1" not in cmd
+
+
+def test_background_mix_command_outputs_stereo_48khz(tmp_path):
+    cmd = build_background_mix_command(
+        tmp_path / "background.wav",
+        tmp_path / "dialogue.wav",
+        tmp_path / "mix.wav",
+    )
+
+    assert "sidechaincompress" in cmd[cmd.index("-filter_complex") + 1]
+    assert "amix" in cmd[cmd.index("-filter_complex") + 1]
+    assert cmd[cmd.index("-ac") + 1] == "2"
+    assert cmd[cmd.index("-ar") + 1] == str(DUB_OUTPUT_SAMPLE_RATE)
 
 
 @pytest.fixture
@@ -330,6 +346,26 @@ async def test_start_manual_dub_creates_job(dub_env):
     assert row.source_subtitle_path.endswith(".pt.srt")
     assert row.target_subtitle_path.endswith(".pt.dub.mkv")
     assert row.status == "pending"
+    assert row.dub_mix_mode == "background_preserved"
+    assert row.dub_speaker_voices == {}
+
+
+@pytest.mark.asyncio
+async def test_start_manual_dub_persists_requested_mix_and_speaker_voices(dub_env):
+    db, _tmp_path, video, _target_srt = dub_env
+    media = _media(db, video)
+
+    created = await JobService(db).start_manual_dub(
+        media,
+        target_language="pt-PT",
+        mix_mode="voiceover_preview",
+        speaker_voice_overrides={"Ryder": "pt_PT-tugão-medium"},
+    )
+
+    row = db.get(JobRow, created.id)
+    assert row is not None
+    assert row.dub_mix_mode == "voiceover_preview"
+    assert row.dub_speaker_voices == {"ryder": "pt_PT-tugão-medium"}
 
 
 @pytest.mark.asyncio
@@ -338,7 +374,10 @@ async def test_process_dub_job_writes_mkv_and_log(dub_env, monkeypatch):
     media = _media(db, video)
     original_bytes = video.read_bytes()
 
+    captured: dict[str, object] = {}
+
     async def fake_dub(**kwargs):
+        captured.update(kwargs)
         out = Path(kwargs["output_path"])
         out.write_bytes(b"fake-dub-mkv")
         kwargs["event_log"].record(
@@ -373,6 +412,8 @@ async def test_process_dub_job_writes_mkv_and_log(dub_env, monkeypatch):
     log_out = JobService(db).get_job_log(created.id)
     assert log_out is not None
     assert any(entry.get("event") == "completed" for entry in log_out.entries)
+    assert captured["mix_mode"] == "background_preserved"
+    assert captured["speaker_voice_overrides"] == {}
 
 
 @pytest.mark.asyncio

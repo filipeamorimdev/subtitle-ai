@@ -294,6 +294,10 @@ class JobRow(Base):
     warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     extract_stream_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dub_mix_mode: Mapped[str] = mapped_column(
+        String(32), default="background_preserved", server_default="background_preserved"
+    )
+    dub_speaker_voices: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     trigger_type: Mapped[str] = mapped_column(String(16), default="manual", index=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -404,4 +408,3 @@ class OperatorChatMessageRow(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # user|assistant|tool|system
     content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-

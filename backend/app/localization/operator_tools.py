@@ -616,7 +616,7 @@ def _build_registry() -> dict[str, OperatorTool]:
             spec=ToolSpec(
                 name="start_dub",
                 description=(
-                    "Start a TTS dub preview when a target SRT already exists. "
+                    "Start a background-preserved TTS dub when a target SRT already exists. "
                     "Requires user confirmation."
                 ),
                 parameters={

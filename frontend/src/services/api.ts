@@ -192,7 +192,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),
     }),
-  dubMedia: (id: number, payload?: { target_language?: string; replace_existing?: boolean }) =>
+  dubMedia: (
+    id: number,
+    payload?: {
+      target_language?: string
+      replace_existing?: boolean
+      mix_mode?: 'background_preserved' | 'voiceover_preview'
+      speaker_voices?: Record<string, string>
+    },
+  ) =>
     request<Job>(`/api/media/${id}/dub`, {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),

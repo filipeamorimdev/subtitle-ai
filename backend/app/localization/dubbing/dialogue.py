@@ -15,14 +15,28 @@ SPEAKER_PREFIX_RE = re.compile(r"^(?:[-–—]\s*)*(?P<name>[^:]{1,40}):\s+")
 LEADING_DASH_RE = re.compile(r"(?:^|\s)[-–—]\s+")
 
 
-def clean_text_for_tts(text: str) -> str:
-    """Normalize cue text for TTS. Empty result means skip the cue."""
+def _normalized_cue_text(text: str) -> str:
+    """Remove subtitle presentation markup before extracting speech metadata."""
     stripped = TAG_RE.sub("", text or "")
     stripped = MUSIC_RE.sub(" ", stripped)
     stripped = stripped.replace("\n", " ")
     stripped = re.sub(r"\s+", " ", stripped).strip()
     stripped = LEADING_DASH_RE.sub(" ", stripped)
-    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def speaker_id_from_text(text: str) -> str | None:
+    """Read a human-labelled subtitle speaker, when the cue provides one."""
+    speaker = SPEAKER_PREFIX_RE.match(_normalized_cue_text(text))
+    if not speaker:
+        return None
+    name = re.sub(r"\s+", " ", speaker.group("name")).strip()
+    return name or None
+
+
+def clean_text_for_tts(text: str) -> str:
+    """Normalize cue text for TTS. Empty result means skip the cue."""
+    stripped = _normalized_cue_text(text)
     speaker = SPEAKER_PREFIX_RE.match(stripped)
     if speaker:
         stripped = stripped[speaker.end() :].strip()
@@ -32,7 +46,7 @@ def clean_text_for_tts(text: str) -> str:
 
 
 def speech_segments_from_document(document: SubtitleDocument) -> list[SpeechSegment]:
-    """Map subtitle cues to speech segments. speaker_id is reserved for later diarization."""
+    """Map subtitle cues to speech segments and retain any labelled speaker identity."""
     segments: list[SpeechSegment] = []
     for block in document.blocks:
         start_ms = parse_srt_timestamp(block.start) or 0
@@ -45,7 +59,7 @@ def speech_segments_from_document(document: SubtitleDocument) -> list[SpeechSegm
                 start=start_ms / 1000.0,
                 end=end_ms / 1000.0,
                 text=text,
-                speaker_id=None,
+                speaker_id=speaker_id_from_text(block.text),
                 source_cues=[block.index],
             )
         )

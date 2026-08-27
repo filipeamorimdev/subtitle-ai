@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.jobs.event_log import JobEventLog
 from app.localization.artifacts import MediaArtifact
 from app.localization.dubbing.pipeline import DubbingPipeline
+from app.localization.dubbing.options import DUB_MIX_BACKGROUND_PRESERVED
 from app.localization.source_resolver import SourceResolution, SourceResolver
 from app.localization.transcription.service import TranscriptionService
 from app.subtitles.transcribe import TranscriptResult, transcribe_media_to_srt
@@ -64,6 +65,8 @@ class LocalizationPipeline:
         target_language: str,
         output_path: str | Path,
         voice_model: str | None = None,
+        mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
+        speaker_voice_overrides: dict[str, str] | None = None,
         event_log: JobEventLog,
         is_cancelled: Callable[[], bool],
         on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
@@ -74,6 +77,8 @@ class LocalizationPipeline:
             target_language=target_language,
             output_path=output_path,
             voice_model=voice_model,
+            mix_mode=mix_mode,
+            speaker_voice_overrides=speaker_voice_overrides,
             event_log=event_log,
             is_cancelled=is_cancelled,
             on_progress=on_progress,

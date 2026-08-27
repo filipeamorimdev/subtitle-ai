@@ -52,7 +52,7 @@ See [localization-tasks.md](localization-tasks.md) for the media-centric task mo
 | `localization/operator_tools` | Whitelisted goal-level tools (search, create task, dub, …) |
 | `localization/source_resolver` | Scores subtitle / embedded / OCR / transcript sources (no hard gates) |
 | `localization/transcription` | Audio track selection, ASR providers, chunking, subtitle formatter |
-| `localization/audio` | Isolated Demucs vocals/accompaniment separation + optional debug traces (not wired into dubbing) |
+| `localization/audio` | Demucs vocals/accompaniment separation used by background-preserved dubbing, with optional debug traces |
 | `localization/dubbing` | SpeechSegments, TTS providers, timing, PCM timeline, mux |
 | `languages/` | Canonical language catalog + normalization |
 | `integrations/bazarr` | HTTP client, wanted normalization, rescan, target presence check |
@@ -132,13 +132,13 @@ Off by default. When enabled:
 
 Jobs record pipeline decisions in the job JSONL event log and task `metadata_json["pipeline"]`.
 
-## TTS dub preview
+## TTS dubbing
 
-When a target-language SRT already exists beside the media file, the media page can start a **dub** job. `DubbingPipeline` maps cues to `SpeechSegment`s (optional `speaker_id` for later voice mapping), synthesizes via a `TTSProvider` (Piper today), uses `TimingEngine` for limited speed-up or dialogue adaptation, mixes overlapping clips on an `AudioTimeline` with peak-normalize + limiter, and ffmpeg muxes a sidecar `{stem}.{lang}.dub.mkv`. The source video is never overwritten. Completion is verified with ffprobe. Dubbing is **not** auto-enqueued by TaskPlanner or automatic fallback.
+When a target-language SRT already exists beside the media file, the media page can start a **dub** job. `DubbingPipeline` maps labelled subtitle cues to `SpeechSegment`s and can assign Piper models per speaker; unlabelled cues fall back to the target-language voice. It synthesizes dialogue with bounded timing adaptation, builds a timeline, and normally calls `AudioSeparationService` (Demucs two-stem vocals) before sidechain-mixing translated dialogue into the retained music/ambience/effects. The generated 48 kHz stereo dub is the default muxed audio track and the original audio is preserved as an alternate. `voiceover_preview` keeps the prior speech-only path. The source video is never overwritten. Completion is verified with ffprobe. Dubbing is **not** auto-enqueued by TaskPlanner or automatic fallback.
 
 ## Isolated audio separation
 
-`AudioSeparationService` can split a selected audio stream into a dialogue/vocals stem and a background/accompaniment stem using local Demucs (`--two-stems vocals`). This is a foundation for later background-preserving dubbing. It is **not** connected to `DubbingPipeline`, TTS, translation, or muxing. Optional traces live under `/config/debug/audio-separation/<task-id>/trace.log` when `SUBTITLE_AI_DEBUG_TRACE=true`.
+`AudioSeparationService` splits the selected source audio stream into a dialogue/vocals stem and a background/accompaniment stem using local Demucs (`--two-stems vocals`). `DubbingPipeline` uses the background stem in `background_preserved` mode. Optional traces live under `/config/debug/audio-separation/<task-id>/trace.log` when `SUBTITLE_AI_DEBUG_TRACE=true`.
 
 ## Upgrade from v0.1 / v0.2.1
 

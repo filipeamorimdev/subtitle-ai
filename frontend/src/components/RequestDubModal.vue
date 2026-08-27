@@ -18,6 +18,8 @@ const emit = defineEmits<{
 
 const languages = ref<LanguageCatalogItem[]>([])
 const languageChoice = ref('')
+const mixMode = ref<'background_preserved' | 'voiceover_preview'>('background_preserved')
+const speakerVoiceOverrides = ref('')
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
 
@@ -28,6 +30,8 @@ watch(
   async (open) => {
     if (!open) return
     submitError.value = null
+    mixMode.value = 'background_preserved'
+    speakerVoiceOverrides.value = ''
     if (!languages.value.length) {
       try {
         languages.value = await api.getLanguages()
@@ -56,6 +60,20 @@ function mediaLabel(item: MediaRef) {
   return [item.title, item.year].filter(Boolean).join(' · ')
 }
 
+function parseSpeakerVoiceOverrides(raw: string): Record<string, string> {
+  const voices: Record<string, string> = {}
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const separator = trimmed.indexOf('=')
+    if (separator < 1 || !trimmed.slice(separator + 1).trim()) {
+      throw new Error('Use one speaker mapping per line: Speaker = piper-voice-model')
+    }
+    voices[trimmed.slice(0, separator).trim()] = trimmed.slice(separator + 1).trim()
+  }
+  return voices
+}
+
 async function submit() {
   if (!selected.value || !languageChoice.value || submitting.value) return
   submitting.value = true
@@ -79,6 +97,8 @@ async function submit() {
     await api.dubMedia(media.id, {
       target_language: languageChoice.value,
       replace_existing: true,
+      mix_mode: mixMode.value,
+      speaker_voices: parseSpeakerVoiceOverrides(speakerVoiceOverrides.value),
     })
     emit('created')
     emit('close')
@@ -106,8 +126,8 @@ async function submit() {
         <div>
           <h2 id="request-dub-title" class="font-display text-xl font-bold">Request dub</h2>
           <p class="mt-1 text-sm text-ink-500">
-            Creates a TTS dub preview (.dub.mkv) beside the original. An existing dub for the
-            selected language is replaced.
+            Creates a Portuguese dub (.dub.mkv) beside the original. The standard mode preserves
+            music, ambience, and effects; an existing dub for the selected language is replaced.
           </p>
         </div>
         <button
@@ -145,6 +165,47 @@ async function submit() {
             No recognized languages loaded.
           </p>
         </div>
+
+        <fieldset>
+          <legend class="block text-sm font-medium text-ink-700 dark:text-ink-200">Audio mix</legend>
+          <label
+            class="mt-1.5 flex cursor-pointer gap-2 rounded-md border border-ink-200 p-3 dark:border-ink-700"
+          >
+            <input v-model="mixMode" type="radio" value="background_preserved" />
+            <span>
+              <span class="block text-sm font-medium">Preserve background audio</span>
+              <span class="block text-xs text-ink-500">
+                Keeps music, ambience, and effects, and makes the Portuguese track the default.
+              </span>
+            </span>
+          </label>
+          <label
+            class="mt-2 flex cursor-pointer gap-2 rounded-md border border-ink-200 p-3 dark:border-ink-700"
+          >
+            <input v-model="mixMode" type="radio" value="voiceover_preview" />
+            <span>
+              <span class="block text-sm font-medium">Voiceover preview</span>
+              <span class="block text-xs text-ink-500">
+                Uses only the generated dialogue timeline, without background separation.
+              </span>
+            </span>
+          </label>
+        </fieldset>
+
+        <details>
+          <summary class="cursor-pointer text-sm font-medium text-ink-700 dark:text-ink-200">
+            Speaker voices (optional)
+          </summary>
+          <p class="mt-1 text-xs text-ink-500">
+            When subtitles use labels such as “Ryder:”, assign a Piper voice per label. Unlabelled
+            or unmapped cues use the language default.
+          </p>
+          <textarea
+            v-model="speakerVoiceOverrides"
+            class="mt-2 min-h-20 w-full rounded-md border border-ink-300 bg-white p-2 font-mono text-xs dark:border-ink-600 dark:bg-ink-800"
+            placeholder="Ryder = pt_PT-tugão-medium"
+          />
+        </details>
 
         <p v-if="submitError" class="text-sm text-red-600">{{ submitError }}</p>
 
