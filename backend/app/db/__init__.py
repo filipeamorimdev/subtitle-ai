@@ -131,10 +131,6 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # Lightweight SQLite column ensure for existing deployments without alembic upgrade.
     with engine.begin() as conn:
-        existing_tables = {
-            row[0]
-            for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
-        }
         # Keep legacy glossary tables until Alembic has copied their data into
         # ``glossary_entries`` (revision 0016).  Dropping them here used to
         # erase user-maintained terms before the migration could preserve them.
