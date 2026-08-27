@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import secrets
 from base64 import b64decode
+from ipaddress import ip_address, ip_network
+from typing import Iterable
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
@@ -45,7 +47,36 @@ def _basic_ok(request: Request, username: str, password: str) -> bool:
     return secrets.compare_digest(user, username) and secrets.compare_digest(pwd, password)
 
 
-def _forward_ok(request: Request, header_name: str) -> bool:
+def _from_trusted_proxy(request: Request, trusted_proxies: Iterable[str] | None) -> bool:
+    """Return true only when the direct ASGI peer is explicitly trusted.
+
+    Do not inspect ``X-Forwarded-For`` here: it is itself client-controlled
+    unless a trusted reverse proxy has already stripped it.
+    """
+    client = request.client
+    if client is None or not trusted_proxies:
+        return False
+    try:
+        peer = ip_address(client.host)
+    except ValueError:
+        return False
+    for raw_network in trusted_proxies:
+        try:
+            if peer in ip_network(raw_network, strict=False):
+                return True
+        except ValueError:
+            # An invalid configuration must fail closed.
+            continue
+    return False
+
+
+def _forward_ok(
+    request: Request,
+    header_name: str,
+    trusted_proxies: Iterable[str] | None,
+) -> bool:
+    if not _from_trusted_proxy(request, trusted_proxies):
+        return False
     value = request.headers.get(header_name)
     return bool(value and value.strip())
 
@@ -62,7 +93,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not password and not forward_header:
             return await call_next(request)
 
-        if forward_header and _forward_ok(request, forward_header):
+        if forward_header and _forward_ok(
+            request,
+            forward_header,
+            config.auth_forward_trusted_proxies,
+        ):
             return await call_next(request)
         if password and _basic_ok(request, config.auth_username, password):
             return await call_next(request)

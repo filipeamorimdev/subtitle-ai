@@ -278,6 +278,7 @@ class OpenRouterProvider(AIProvider):
         exchange_log: ExchangeRecorder | None = None,
         log_full_exchanges: bool = False,
         api_key_resolver: Callable[[], str | None] | None = None,
+        usage_hook: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.db = db
         self._api_key = api_key
@@ -285,6 +286,7 @@ class OpenRouterProvider(AIProvider):
         self.exchange_log = exchange_log
         self.log_full_exchanges = log_full_exchanges
         self._api_key_resolver = api_key_resolver
+        self.usage_hook = usage_hook
         self._health_cache: dict[str, tuple[datetime, ProviderHealth]] = {}
 
     def _resolve_api_key(self) -> str | None:
@@ -334,6 +336,7 @@ class OpenRouterProvider(AIProvider):
         kwargs: dict[str, Any] = {
             "exchange_log": self.exchange_log,
             "log_full_exchanges": self.log_full_exchanges,
+            "usage_hook": self.usage_hook,
         }
         base = self._resolve_base_url()
         if base:
@@ -398,6 +401,17 @@ class OpenRouterProvider(AIProvider):
 
         try:
             client = self._build_client()
+            # Ensure health pings are counted even when no job usage hook is attached.
+            if client.usage_hook is None and self.db is not None:
+                from app.services.ai_usage import AiUsageService, make_openrouter_http_usage_hook
+
+                client.usage_hook = make_openrouter_http_usage_hook(
+                    AiUsageService(self.db),
+                    job_id=None,
+                    trigger_type="system",
+                    default_operation="model_test",
+                    provider_id=PROVIDER_ID,
+                )
             result = await client.test_connection(ping_model)
             health = ProviderHealth(
                 status=ProviderStatus.CONNECTED,
@@ -436,8 +450,19 @@ class OpenRouterProvider(AIProvider):
     async def list_models(self) -> list[AIModel]:
         api_key = self._resolve_api_key()
         base = self._resolve_base_url()
+        hook = self.usage_hook
+        if hook is None and self.db is not None:
+            from app.services.ai_usage import AiUsageService, make_openrouter_http_usage_hook
+
+            hook = make_openrouter_http_usage_hook(
+                AiUsageService(self.db),
+                job_id=None,
+                trigger_type="system",
+                default_operation="catalog_list",
+                provider_id=PROVIDER_ID,
+            )
         try:
-            kwargs: dict[str, Any] = {"api_key": api_key or None}
+            kwargs: dict[str, Any] = {"api_key": api_key or None, "usage_hook": hook}
             if base:
                 kwargs["base_url"] = base
             infos = await OpenRouterClient.list_models(**kwargs)
@@ -469,6 +494,7 @@ class OpenRouterProvider(AIProvider):
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
+            client.usage_request_id = req_id
             openai_tools = _tools_to_openai(tools)
             if openai_tools:
                 client_kwargs["tools"] = openai_tools
@@ -567,6 +593,24 @@ class OpenRouterProvider(AIProvider):
             exchange_log=exchange_log,
             log_full_exchanges=log_full_exchanges,
             api_key_resolver=self._api_key_resolver,
+            usage_hook=self.usage_hook,
+        )
+        copy._health_cache = self._health_cache
+        return copy
+
+    def with_usage_hook(
+        self,
+        usage_hook: Callable[[dict[str, Any]], None] | None,
+    ) -> OpenRouterProvider:
+        """Return a shallow copy that records every OpenRouter HTTP attempt."""
+        copy = OpenRouterProvider(
+            self.db,
+            api_key=self._api_key,
+            base_url=self._base_url,
+            exchange_log=self.exchange_log,
+            log_full_exchanges=self.log_full_exchanges,
+            api_key_resolver=self._api_key_resolver,
+            usage_hook=usage_hook,
         )
         copy._health_cache = self._health_cache
         return copy

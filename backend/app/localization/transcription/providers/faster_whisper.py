@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -214,25 +215,57 @@ class FasterWhisperProvider:
                     logger.warning("Transcribe progress update failed: %s", exc)
 
         pump_task = asyncio.create_task(pump()) if on_progress else None
+        thread_cancel = threading.Event()
+
+        def thread_is_cancelled() -> bool:
+            return thread_cancel.is_set() or bool(is_cancelled and is_cancelled())
+
+        def observe_cancelled_thread(task: asyncio.Task[Transcript]) -> None:
+            """Consume the worker result after cooperative cancellation.
+
+            Python cannot kill a running thread.  Keeping an observer avoids an
+            unhandled exception and, importantly, the worker receives an event
+            that prevents it from returning a transcript into a retried job.
+            """
+
+            thread_cancel.set()
+
+            def _consume(done: asyncio.Task[Transcript]) -> None:
+                try:
+                    done.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("Cancelled local Whisper worker ended: %s", exc)
+
+            task.add_done_callback(_consume)
+
+        thread_task = asyncio.create_task(
+            asyncio.to_thread(
+                run_faster_whisper,
+                str(audio_path),
+                model_size=self.model_size,
+                language=language,
+                word_timestamps=word_timestamps,
+                duration=duration,
+                is_cancelled=thread_is_cancelled,
+                on_progress=on_sync_progress if on_progress else None,
+            )
+        )
         try:
             try:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        run_faster_whisper,
-                        str(audio_path),
-                        model_size=self.model_size,
-                        language=language,
-                        word_timestamps=word_timestamps,
-                        duration=duration,
-                        is_cancelled=is_cancelled,
-                        on_progress=on_sync_progress if on_progress else None,
-                    ),
+                    asyncio.shield(thread_task),
                     timeout=LOCAL_TRANSCRIBE_TIMEOUT,
                 )
             except TimeoutError as exc:
+                observe_cancelled_thread(thread_task)
                 raise TranscribeProviderError(
                     f"Local Whisper timed out after {int(LOCAL_TRANSCRIBE_TIMEOUT / 60)} minutes."
                 ) from exc
+            except asyncio.CancelledError:
+                observe_cancelled_thread(thread_task)
+                raise
             except TranscribeProviderError:
                 raise
             except MemoryError as exc:

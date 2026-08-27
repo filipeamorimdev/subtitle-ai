@@ -374,7 +374,19 @@ class ModelCatalogService:
                     from app.translation.openrouter.client import OpenRouterError as ORError
 
                     try:
-                        infos = await OpenRouterClient.list_models(api_key=key or None)
+                        from app.services.ai_usage import AiUsageService, make_openrouter_http_usage_hook
+
+                        hook = make_openrouter_http_usage_hook(
+                            AiUsageService(self.db),
+                            job_id=None,
+                            trigger_type="system",
+                            default_operation="catalog_list",
+                            provider_id=provider_id,
+                        )
+                        infos = await OpenRouterClient.list_models(
+                            api_key=key or None,
+                            usage_hook=hook,
+                        )
                         from app.ai.providers.openrouter import normalize_openrouter_model
 
                         models = [normalize_openrouter_model(info) for info in infos]

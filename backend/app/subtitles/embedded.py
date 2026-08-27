@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import threading
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from app.core.logging import get_logger
+from app.media.process_runner import ProcessError, ProcessOutcome, run_process_checked
 from app.subtitles.filenames import (
     is_origin_language,
     origin_language_rank,
@@ -49,6 +52,7 @@ IMAGE_CODECS = {
 
 TEXT_EXTRACT_TIMEOUT = 300.0
 PGS_EXTRACT_TIMEOUT = 1800.0
+CancelCheck = Callable[[], bool]
 
 
 class EmbeddedError(Exception):
@@ -111,7 +115,12 @@ def _parse_bool_tag(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes"}
 
 
-async def probe_subtitle_tracks(media_path: str | Path, *, timeout: float = 12.0) -> list[EmbeddedTrack]:
+async def probe_subtitle_tracks(
+    media_path: str | Path,
+    *,
+    timeout: float = 12.0,
+    is_cancelled: CancelCheck | None = None,
+) -> list[EmbeddedTrack]:
     path = Path(media_path)
     if not path.is_file():
         return []
@@ -131,18 +140,20 @@ async def probe_subtitle_tracks(media_path: str | Path, *, timeout: float = 12.0
         str(path),
     ]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await run_process_checked(
+            command,
+            timeout_s=timeout,
+            is_cancelled=is_cancelled,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError as exc:
-        raise EmbeddedError(f"ffprobe timed out for {path.name}") from exc
-    except FileNotFoundError as exc:
-        raise EmbeddedError("ffprobe is not installed") from exc
+    except ProcessError as exc:
+        if exc.outcome is ProcessOutcome.CANCELLED:
+            raise asyncio.CancelledError from exc
+        if exc.outcome is ProcessOutcome.TIMEOUT:
+            raise EmbeddedError(f"ffprobe timed out for {path.name}") from exc
+        raise EmbeddedError(f"ffprobe failed for {path.name}: {exc.stderr or 'unknown error'}") from exc
 
-    if proc.returncode != 0:
+    stdout, stderr = result.stdout, result.stderr
+    if result.returncode != 0:
         detail = (stderr or b"").decode("utf-8", errors="replace")[:300]
         raise EmbeddedError(f"ffprobe failed for {path.name}: {detail or 'unknown error'}")
 
@@ -223,9 +234,10 @@ async def extract_embedded_track(
     *,
     language: str | None = "en",
     timeout: float | None = None,
+    is_cancelled: CancelCheck | None = None,
 ) -> Path:
     """Extract a text track with ffmpeg, or OCR a PGS image track to SRT."""
-    tracks = await probe_subtitle_tracks(media_path)
+    tracks = await probe_subtitle_tracks(media_path, is_cancelled=is_cancelled)
     track = next((item for item in tracks if item.stream_index == stream_index), None)
     if track is None or track.kind == "text":
         return await extract_text_track(
@@ -233,6 +245,7 @@ async def extract_embedded_track(
             stream_index,
             output_path,
             timeout=timeout or TEXT_EXTRACT_TIMEOUT,
+            is_cancelled=is_cancelled,
         )
     codec = (track.codec or "").strip().lower()
     if codec in PGS_CODECS:
@@ -242,6 +255,7 @@ async def extract_embedded_track(
             output_path,
             language=language or track.language or "en",
             timeout=timeout or PGS_EXTRACT_TIMEOUT,
+            is_cancelled=is_cancelled,
         )
     raise EmbeddedError(
         f"Embedded subtitle codec {track.codec or 'unknown'} cannot be extracted."
@@ -255,6 +269,7 @@ async def extract_pgs_track(
     *,
     language: str | None = "en",
     timeout: float = PGS_EXTRACT_TIMEOUT,
+    is_cancelled: CancelCheck | None = None,
 ) -> Path:
     if not ocr_available():
         raise EmbeddedError(
@@ -269,27 +284,55 @@ async def extract_pgs_track(
 
     temp_dir = Path(tempfile.mkdtemp(prefix="subtitle-ai-pgs-"))
     sup_path = temp_dir / "track.sup"
+    cancel_flag = threading.Event()
+
+    def ocr_cancelled() -> bool:
+        return cancel_flag.is_set() or bool(is_cancelled and is_cancelled())
+
+    def observe_cancelled_ocr(task: asyncio.Task[Path]) -> None:
+        cancel_flag.set()
+
+        def _consume(done: asyncio.Task[Path]) -> None:
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Cancelled PGS OCR worker ended: %s", exc)
+
+        task.add_done_callback(_consume)
+
     try:
-        await _demux_pgs_stream(media, stream_index, sup_path, timeout=min(timeout, 180.0))
+        await _demux_pgs_stream(
+            media,
+            stream_index,
+            sup_path,
+            timeout=min(timeout, 180.0),
+            is_cancelled=is_cancelled,
+        )
         sup_bytes = sup_path.read_bytes()
         if not sup_bytes:
             raise EmbeddedError("Demuxed PGS track was empty.")
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    pgs_sup_to_srt,
-                    sup_bytes,
-                    output,
-                    language=language,
-                    overwrite=False,
-                ),
-                timeout=timeout,
+        ocr_task = asyncio.create_task(
+            asyncio.to_thread(
+                pgs_sup_to_srt,
+                sup_bytes,
+                output,
+                language=language,
+                overwrite=False,
+                is_cancelled=ocr_cancelled,
             )
+        )
+        try:
+            return await asyncio.wait_for(asyncio.shield(ocr_task), timeout=timeout)
         except TimeoutError as exc:
+            observe_cancelled_ocr(ocr_task)
             raise EmbeddedError(f"PGS OCR timed out for {media.name}") from exc
+        except asyncio.CancelledError:
+            observe_cancelled_ocr(ocr_task)
+            raise
         except OcrError as exc:
             raise EmbeddedError(str(exc)) from exc
-        return output
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -300,6 +343,7 @@ async def _demux_pgs_stream(
     sup_path: Path,
     *,
     timeout: float,
+    is_cancelled: CancelCheck | None = None,
 ) -> None:
     if not shutil.which("ffmpeg"):
         raise EmbeddedError("ffmpeg is not installed")
@@ -317,19 +361,21 @@ async def _demux_pgs_stream(
         str(sup_path),
     ]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await run_process_checked(
+            command,
+            timeout_s=timeout,
+            is_cancelled=is_cancelled,
+            output_paths=[sup_path],
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError as exc:
-        raise EmbeddedError(f"ffmpeg PGS demux timed out for {media.name}") from exc
-    except FileNotFoundError as exc:
-        raise EmbeddedError("ffmpeg is not installed") from exc
+    except ProcessError as exc:
+        if exc.outcome is ProcessOutcome.CANCELLED:
+            raise asyncio.CancelledError from exc
+        if exc.outcome is ProcessOutcome.TIMEOUT:
+            raise EmbeddedError(f"ffmpeg PGS demux timed out for {media.name}") from exc
+        raise EmbeddedError(f"ffmpeg PGS demux failed: {exc.stderr or 'empty output'}") from exc
 
-    if proc.returncode != 0 or not sup_path.exists() or sup_path.stat().st_size == 0:
-        detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
+    if result.returncode != 0 or not sup_path.exists() or sup_path.stat().st_size == 0:
+        detail = result.stderr_text[-400:]
         raise EmbeddedError(f"ffmpeg PGS demux failed: {detail or 'empty output'}")
 
 
@@ -339,6 +385,7 @@ async def extract_text_track(
     output_path: str | Path,
     *,
     timeout: float = TEXT_EXTRACT_TIMEOUT,
+    is_cancelled: CancelCheck | None = None,
 ) -> Path:
     media = Path(media_path)
     output = Path(output_path)
@@ -371,19 +418,21 @@ async def extract_text_track(
             str(temp_output),
         ]
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            result = await run_process_checked(
+                command,
+                timeout_s=timeout,
+                is_cancelled=is_cancelled,
+                output_paths=[temp_output],
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except TimeoutError as exc:
-            raise EmbeddedError(f"ffmpeg extraction timed out for {media.name}") from exc
-        except FileNotFoundError as exc:
-            raise EmbeddedError("ffmpeg is not installed") from exc
+        except ProcessError as exc:
+            if exc.outcome is ProcessOutcome.CANCELLED:
+                raise asyncio.CancelledError from exc
+            if exc.outcome is ProcessOutcome.TIMEOUT:
+                raise EmbeddedError(f"ffmpeg extraction timed out for {media.name}") from exc
+            raise EmbeddedError(f"ffmpeg extraction failed: {exc.stderr or 'empty output'}") from exc
 
-        if proc.returncode != 0 or not temp_output.exists() or temp_output.stat().st_size == 0:
-            detail = (stderr or b"").decode("utf-8", errors="replace")[-400:]
+        if result.returncode != 0 or not temp_output.exists() or temp_output.stat().st_size == 0:
+            detail = result.stderr_text[-400:]
             raise EmbeddedError(f"ffmpeg extraction failed: {detail or 'empty output'}")
 
         # Atomic-ish replace onto the media directory

@@ -147,6 +147,35 @@ def test_create_manual_and_duplicate(loc_env):
     assert reused.id == task.id
 
 
+@pytest.mark.asyncio
+async def test_audio_task_enqueues_a_dub_job_when_subtitle_is_ready(loc_env):
+    db, _tmp_path, media_dir, _source = loc_env
+    target_srt = media_dir / "The Matrix.pt-PT.srt"
+    target_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nOlá\n", encoding="utf-8")
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    task, _ = LocalizationTaskService(db).create_manual_task(
+        media_item=media,
+        target_language="pt-PT",
+        capability="audio",
+    )
+
+    planned = await TaskPlanner(db).plan(task.id)
+
+    assert planned is not None
+    assert planned.status == "processing"
+    job = db.scalar(select(JobRow).where(JobRow.task_id == task.id, JobRow.job_kind == "dub"))
+    assert job is not None
+    assert job.status == "pending"
+    assert job.source_subtitle_path == str(target_srt)
+
+
 def test_completed_does_not_block_new_request(loc_env):
     db, *_ = loc_env
     media = MediaItemService(db).upsert_from_candidate_fields(
@@ -1778,7 +1807,10 @@ async def test_extracted_source_kept_until_bazarr_verify(loc_env, monkeypatch):
     async def still_missing(self, media_row, target_language):
         return False
 
+    attempts = {"count": 0}
+
     async def fake_rescan(self, media, target_language):
+        attempts["count"] += 1
         return VerificationResult(
             ok=False,
             present=False,
@@ -1792,8 +1824,14 @@ async def test_extracted_source_kept_until_bazarr_verify(loc_env, monkeypatch):
     still = await TaskPlanner(db).plan(task.id)
     assert still is not None
     assert still.status == "verifying"
+    assert still.metadata_json["verify_retry"]["attempts"] == 1
     assert source.exists()
     assert target.exists()
+
+    # The periodic planner sees the active task again, but persisted backoff
+    # prevents it from hammering Bazarr every replan interval.
+    await TaskPlanner(db).plan(task.id)
+    assert attempts["count"] == 1
 
 
 @pytest.mark.asyncio

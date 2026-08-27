@@ -124,7 +124,9 @@ async def run_process(
             outcome=ProcessOutcome.FAILED,
         ) from exc
 
-    communicate = asyncio.create_task(proc.communicate(input=input_bytes))
+    communicate = asyncio.create_task(
+        proc.communicate(input=input_bytes) if input_bytes is not None else proc.communicate()
+    )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s if timeout_s is not None else None
     outcome: ProcessOutcome | None = None

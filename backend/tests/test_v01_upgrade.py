@@ -6,12 +6,13 @@ import json
 import sqlite3
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.core.config import get_app_config
 from app.db.models import (
     AiModelPreferenceRow,
     AiProviderAccountRow,
+    GlossaryEntryRow,
     JobRow,
     OpenRouterModelPreferenceRow,
     SettingsRow,
@@ -212,6 +213,22 @@ def _write_v01_database(path) -> None:
                 0,
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO glossary_scopes (kind, key, display_name, target_language)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("movie", "movie:10", "Example Movie", "pt-PT"),
+        )
+        scope_id = conn.execute("SELECT id FROM glossary_scopes WHERE key = ?", ("movie:10",)).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO glossary_terms (
+                scope_id, source, source_normalized, target, locked
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (scope_id, "Neo", "neo", "Neo", 1),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -245,7 +262,7 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
 
     from app.translation.openrouter.client import OpenRouterError
 
-    async def no_catalog(*, api_key=None, base_url=None, timeout=60.0):  # noqa: ARG001
+    async def no_catalog(*, api_key=None, base_url=None, timeout=60.0, usage_hook=None):  # noqa: ARG001
         raise OpenRouterError("catalog skipped in upgrade test")
 
     monkeypatch.setattr(
@@ -254,6 +271,15 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
     )
 
     init_db()
+
+    # ``init_db`` must preserve legacy glossary rows until Alembic performs
+    # the data migration during startup.
+    session = db_module.get_session_factory()()
+    try:
+        assert session.execute(select(GlossaryEntryRow)).all() == []
+        assert session.execute(text("SELECT count(*) FROM glossary_terms")).scalar_one() == 1
+    finally:
+        session.close()
 
     session = db_module.get_session_factory()()
     try:
@@ -359,3 +385,12 @@ def test_v01_database_upgrades_safely(tmp_path, monkeypatch):
         # Legacy job has token totals but no usage records / live reprice.
         assert job_usage.json()["totals"]["total_tokens"] == 2000
         assert job_usage.json()["totals"]["cost_usd"] is None
+
+    session = db_module.get_session_factory()()
+    try:
+        glossary = list(session.scalars(select(GlossaryEntryRow)).all())
+        assert [(row.scope_key, row.target_language, row.source, row.target) for row in glossary] == [
+            ("movie:10", "pt-PT", "Neo", "Neo")
+        ]
+    finally:
+        session.close()

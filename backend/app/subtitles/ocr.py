@@ -6,6 +6,7 @@ import functools
 import re
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image, ImageOps
 
@@ -54,6 +55,10 @@ _LETTER_RE = re.compile(r"[A-Za-zÀ-ÿ\u00c0-\u024f\u0400-\u04ff\u3040-\u30ff\u4
 
 class OcrError(Exception):
     pass
+
+
+CancelCheck = Callable[[], bool]
+OCR_IMAGE_TIMEOUT_SECONDS = 120.0
 
 
 def ocr_available() -> bool:
@@ -128,12 +133,17 @@ def prepare_for_ocr(image: Image.Image) -> Image.Image:
     return ImageOps.autocontrast(gray)
 
 
-def ocr_image(image: Image.Image, tess_lang: str) -> str:
+def ocr_image(
+    image: Image.Image,
+    tess_lang: str,
+    *,
+    timeout: float = OCR_IMAGE_TIMEOUT_SECONDS,
+) -> str:
     import pytesseract
 
     prepared = prepare_for_ocr(image)
     config = "--oem 1 --psm 6 -c preserve_interword_spaces=1"
-    raw = pytesseract.image_to_string(prepared, lang=tess_lang, config=config)
+    raw = pytesseract.image_to_string(prepared, lang=tess_lang, config=config, timeout=timeout)
     return _clean_ocr_text(raw)
 
 
@@ -143,6 +153,7 @@ def pgs_sup_to_srt(
     *,
     language: str | None = "en",
     overwrite: bool = False,
+    is_cancelled: CancelCheck | None = None,
 ) -> Path:
     """OCR a demuxed `.sup` stream and write a sidecar SRT."""
     if not ocr_available():
@@ -154,12 +165,16 @@ def pgs_sup_to_srt(
     blocks: list[SubtitleBlock] = []
     empty = 0
     for event in events:
+        if is_cancelled and is_cancelled():
+            raise OcrError("PGS OCR cancelled.")
         try:
             text = ocr_image(event.image, tess_lang)
         except Exception as exc:  # noqa: BLE001
             logger.warning("OCR failed for cue at %sms: %s", event.start_ms, exc)
             empty += 1
             continue
+        if is_cancelled and is_cancelled():
+            raise OcrError("PGS OCR cancelled.")
         if not text:
             empty += 1
             continue

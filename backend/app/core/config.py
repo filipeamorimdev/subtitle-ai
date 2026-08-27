@@ -51,6 +51,10 @@ class AppConfig(BaseSettings):
     auth_username: str = "admin"
     auth_password: str | None = None
     auth_forward_header: str | None = None
+    # CIDRs/IPs allowed to assert ``auth_forward_header``.  Forward-auth is
+    # disabled until this is configured, preventing clients from forging the
+    # identity header when the app is directly reachable.
+    auth_forward_trusted_proxies: Annotated[list[str] | None, NoDecode] = None
     # 0/unset = auto (half the cores, leaving headroom for the API).
     whisper_cpu_threads: int = 0
     # Per-task debug traces under {config_dir}/debug. Independent of log_level.
@@ -59,6 +63,11 @@ class AppConfig(BaseSettings):
     @field_validator("media_roots", mode="before")
     @classmethod
     def parse_media_roots(cls, value: object) -> list[str] | None:
+        return _parse_media_roots_override(value)
+
+    @field_validator("auth_forward_trusted_proxies", mode="before")
+    @classmethod
+    def parse_auth_forward_trusted_proxies(cls, value: object) -> list[str] | None:
         return _parse_media_roots_override(value)
 
     @cached_property

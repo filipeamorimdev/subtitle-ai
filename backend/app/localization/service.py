@@ -449,6 +449,9 @@ class LocalizationTaskService:
         task.substate = "retry"
         task.error_code = None
         task.error_message = None
+        metadata = dict(task.metadata_json or {})
+        metadata.pop("verify_retry", None)
+        task.metadata_json = metadata
         task.completed_at = None
         task.updated_at = utcnow()
         if task.started_at is None:

@@ -135,10 +135,9 @@ def init_db() -> None:
             row[0]
             for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
         }
-        if "glossary_terms" in existing_tables:
-            conn.execute(text("DROP TABLE glossary_terms"))
-        if "glossary_scopes" in existing_tables:
-            conn.execute(text("DROP TABLE glossary_scopes"))
+        # Keep legacy glossary tables until Alembic has copied their data into
+        # ``glossary_entries`` (revision 0016).  Dropping them here used to
+        # erase user-maintained terms before the migration could preserve them.
 
         job_rows = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
         job_columns = {row[1] for row in job_rows}

@@ -156,7 +156,15 @@ async def test_openrouter(db: Session = Depends(get_db)) -> ConnectionTestResult
     if candidate is None:
         return ConnectionTestResult(ok=False, message=NO_ELIGIBLE_PING_MODEL)
     try:
-        details = await OpenRouterClient(key).test_connection(candidate.model_id)
+        from app.services.ai_usage import AiUsageService, make_openrouter_http_usage_hook
+
+        hook = make_openrouter_http_usage_hook(
+            AiUsageService(db),
+            job_id=None,
+            trigger_type="manual",
+            default_operation="model_test",
+        )
+        details = await OpenRouterClient(key, usage_hook=hook).test_connection(candidate.model_id)
         return ConnectionTestResult(
             ok=True,
             message="Connected to OpenRouter.",

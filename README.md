@@ -226,7 +226,7 @@ Keep `/config` mounted across image upgrades. Recreate the container on the new 
 
 ## Security notes
 
-- Designed for a trusted local network. Optional HTTP Basic auth (`SUBTITLE_AI_AUTH_PASSWORD`) or reverse-proxy forward-auth (`SUBTITLE_AI_AUTH_FORWARD_HEADER`).
+- Designed for a trusted local network. Optional HTTP Basic auth (`SUBTITLE_AI_AUTH_PASSWORD`) or reverse-proxy forward-auth. Forward-auth requires both `SUBTITLE_AI_AUTH_FORWARD_HEADER` and an explicit comma-separated allow-list of proxy IPs/CIDRs in `SUBTITLE_AI_AUTH_FORWARD_TRUSTED_PROXIES`; the proxy must strip that header from client requests.
 - Live job/task updates stream over `GET /api/events` (SSE).
 - API keys are never returned in full from the API.
 - Paths are restricted to configured media roots.

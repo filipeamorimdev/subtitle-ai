@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, Protocol
 
 import httpx
 
@@ -14,6 +15,12 @@ from app.core.logging import get_logger
 from app.translation.openrouter.exchange_log import ExchangeRecorder
 
 logger = get_logger("openrouter")
+
+
+class UsageHook(Protocol):
+    """Called for every OpenRouter HTTP attempt (unredacted)."""
+
+    def __call__(self, record: dict[str, Any]) -> None: ...
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 BATCH_MODEL_SUFFIX = ":batch"
@@ -185,6 +192,7 @@ class OpenRouterClient:
         app_name: str = "Subtitle AI",
         exchange_log: ExchangeRecorder | None = None,
         log_full_exchanges: bool = False,
+        usage_hook: UsageHook | Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if not api_key:
             raise OpenRouterError("OpenRouter API key is not configured")
@@ -194,6 +202,11 @@ class OpenRouterClient:
         self.app_name = app_name
         self.exchange_log = exchange_log
         self.log_full_exchanges = log_full_exchanges
+        self.usage_hook = usage_hook
+        # Set by adapter callers that already own a correlation ID.  Keeping
+        # this out of the wire method signature preserves thin-client
+        # compatibility while still correlating retry records.
+        self.usage_request_id: str | None = None
 
     @property
     def beta_base_url(self) -> str:
@@ -252,6 +265,15 @@ class OpenRouterClient:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to write OpenRouter exchange log: %s", exc)
 
+    def _emit(self, record: dict[str, Any]) -> None:
+        """Notify usage hook (full payload) then append redacted exchange log."""
+        if self.usage_hook is not None:
+            try:
+                self.usage_hook(record)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to record OpenRouter usage: %s", exc)
+        self._record(record)
+
     async def test_connection(self, model: str) -> dict[str, Any]:
         # Connection tests always use sync completions with the base model slug.
         result = await self.chat_completion(
@@ -270,6 +292,7 @@ class OpenRouterClient:
         api_key: str | None = None,
         base_url: str = OPENROUTER_BASE_URL,
         timeout: float = 60.0,
+        usage_hook: UsageHook | Callable[[dict[str, Any]], None] | None = None,
     ) -> list[OpenRouterModelInfo]:
         """Fetch text models from OpenRouter, sorted cheapest prompt price first."""
         url = f"{base_url.rstrip('/')}/models"
@@ -286,25 +309,81 @@ class OpenRouterClient:
             "sort": "pricing-low-to-high",
         }
 
+        def _emit_catalog(record: dict[str, Any]) -> None:
+            if usage_hook is None:
+                return
+            try:
+                usage_hook(record)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to record OpenRouter catalog usage: %s", exc)
+
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 response = await client.get(url, headers=headers, params=params)
             except httpx.TimeoutException as exc:
+                _emit_catalog(
+                    {
+                        "event": "catalog_list",
+                        "url": url,
+                        "request": {"endpoint": "models"},
+                        "response": None,
+                        "error": "timeout",
+                        "error_detail": str(exc),
+                    }
+                )
                 raise OpenRouterError("OpenRouter request timed out", retryable=True) from exc
             except httpx.HTTPError as exc:
+                _emit_catalog(
+                    {
+                        "event": "catalog_list",
+                        "url": url,
+                        "request": {"endpoint": "models"},
+                        "response": None,
+                        "error": "connection_error",
+                        "error_detail": str(exc),
+                    }
+                )
                 raise OpenRouterError(f"OpenRouter connection error: {exc}", retryable=True) from exc
 
+        body = _response_body(response)
         if response.status_code == 401:
+            _emit_catalog(
+                {
+                    "event": "catalog_list",
+                    "url": url,
+                    "request": {"endpoint": "models"},
+                    "response": {"status_code": response.status_code, "body": body},
+                    "error": "auth",
+                }
+            )
             raise OpenRouterError("OpenRouter authentication failed.", status_code=401)
         if response.status_code >= 400:
             detail = response.text[:300]
+            _emit_catalog(
+                {
+                    "event": "catalog_list",
+                    "url": url,
+                    "request": {"endpoint": "models"},
+                    "response": {"status_code": response.status_code, "body": body},
+                    "error": f"http_{response.status_code}",
+                    "error_detail": detail,
+                }
+            )
             raise OpenRouterError(
                 f"OpenRouter request failed ({response.status_code}): {detail}",
                 status_code=response.status_code,
             )
 
-        body = _response_body(response)
         if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+            _emit_catalog(
+                {
+                    "event": "catalog_list",
+                    "url": url,
+                    "request": {"endpoint": "models"},
+                    "response": {"status_code": response.status_code, "body": body},
+                    "error": "malformed",
+                }
+            )
             raise OpenRouterError("Malformed OpenRouter models response.")
 
         models: list[OpenRouterModelInfo] = []
@@ -356,6 +435,18 @@ class OpenRouterClient:
                 m.name.lower(),
             )
         )
+        _emit_catalog(
+            {
+                "event": "catalog_list",
+                "url": url,
+                "request": {"endpoint": "models"},
+                "response": {
+                    "status_code": response.status_code,
+                    "body": {"model_count": len(models)},
+                },
+                "error": None,
+            }
+        )
         return models
 
     async def chat_completion(
@@ -367,6 +458,7 @@ class OpenRouterClient:
         max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        request_id: str | None = None,
     ) -> ChatResult:
         # Sync completions never use the :batch catalog slug.
         sync_model = batch_base_model(model)
@@ -386,6 +478,28 @@ class OpenRouterClient:
         last_error: Exception | None = None
         url = f"{self.base_url}/chat/completions"
         started = time.monotonic()
+        correlation_id = request_id or self.usage_request_id or str(uuid.uuid4())
+
+        def emit_response(
+            *,
+            attempt: int,
+            response: httpx.Response,
+            body: Any,
+            error: str | None,
+            error_detail: str | None = None,
+        ) -> None:
+            record: dict[str, Any] = {
+                "event": "exchange",
+                "attempt": attempt,
+                "request_id": correlation_id,
+                "url": url,
+                "request": payload,
+                "response": {"status_code": response.status_code, "body": body},
+                "error": error,
+            }
+            if error_detail:
+                record["error_detail"] = error_detail
+            self._emit(record)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for attempt, delay in enumerate(delays, start=1):
@@ -400,10 +514,11 @@ class OpenRouterClient:
                 except httpx.TimeoutException as exc:
                     last_error = OpenRouterError("OpenRouter request timed out", retryable=True)
                     logger.warning("OpenRouter timeout attempt=%s", attempt)
-                    self._record(
+                    self._emit(
                         {
                             "event": "exchange",
                             "attempt": attempt,
+                            "request_id": correlation_id,
                             "url": url,
                             "request": payload,
                             "response": None,
@@ -414,10 +529,11 @@ class OpenRouterClient:
                     continue
                 except httpx.HTTPError as exc:
                     last_error = OpenRouterError(f"OpenRouter connection error: {exc}", retryable=True)
-                    self._record(
+                    self._emit(
                         {
                             "event": "exchange",
                             "attempt": attempt,
+                            "request_id": correlation_id,
                             "url": url,
                             "request": payload,
                             "response": None,
@@ -428,25 +544,19 @@ class OpenRouterClient:
                     continue
 
                 body = _response_body(response)
-                self._record(
-                    {
-                        "event": "exchange",
-                        "attempt": attempt,
-                        "url": url,
-                        "request": payload,
-                        "response": {
-                            "status_code": response.status_code,
-                            "body": body,
-                        },
-                        "error": None,
-                    }
-                )
-
                 if response.status_code == 401:
+                    emit_response(attempt=attempt, response=response, body=body, error="http_401")
                     raise OpenRouterError("OpenRouter authentication failed.", status_code=401)
                 if response.status_code == 404:
+                    emit_response(attempt=attempt, response=response, body=body, error="http_404")
                     raise OpenRouterError("OpenRouter model not found.", status_code=404)
                 if response.status_code in (408, 429) or response.status_code >= 500:
+                    emit_response(
+                        attempt=attempt,
+                        response=response,
+                        body=body,
+                        error=f"http_{response.status_code}",
+                    )
                     retry_after = response.headers.get("Retry-After")
                     wait_s = (
                         float(retry_after)
@@ -470,6 +580,13 @@ class OpenRouterClient:
                     continue
                 if response.status_code >= 400:
                     detail = response.text[:300]
+                    emit_response(
+                        attempt=attempt,
+                        response=response,
+                        body=body,
+                        error=f"http_{response.status_code}",
+                        error_detail=detail,
+                    )
                     raise OpenRouterError(
                         f"OpenRouter request failed ({response.status_code}): {detail}",
                         status_code=response.status_code,
@@ -479,6 +596,12 @@ class OpenRouterClient:
                 if data is None:
                     last_error = OpenRouterError("Malformed OpenRouter response.", retryable=True)
                     logger.warning("Malformed OpenRouter response attempt=%s", attempt)
+                    emit_response(
+                        attempt=attempt,
+                        response=response,
+                        body=body,
+                        error="malformed",
+                    )
                     continue
                 try:
                     message = data["choices"][0]["message"]
@@ -496,6 +619,13 @@ class OpenRouterClient:
                         attempt,
                         exc,
                     )
+                    emit_response(
+                        attempt=attempt,
+                        response=response,
+                        body=body,
+                        error="malformed",
+                        error_detail=str(exc),
+                    )
                     continue
 
                 # Tool-call responses may have null content; plain text may omit tool_calls.
@@ -507,6 +637,13 @@ class OpenRouterClient:
                     logger.warning(
                         "Malformed OpenRouter response attempt=%s detail=empty message",
                         attempt,
+                    )
+                    emit_response(
+                        attempt=attempt,
+                        response=response,
+                        body=body,
+                        error="malformed",
+                        error_detail="empty message",
                     )
                     continue
 
@@ -539,6 +676,7 @@ class OpenRouterClient:
                     except (TypeError, ValueError):
                         cost_usd = None
                 latency_ms = int((time.monotonic() - started) * 1000)
+                emit_response(attempt=attempt, response=response, body=body, error=None)
                 return ChatResult(
                     content=content or "",
                     model=data.get("model") or sync_model,
@@ -595,6 +733,7 @@ class OpenRouterClient:
             ],
         }
         url = f"{self.beta_base_url}/batches"
+        request_id = str(uuid.uuid4())
         # Preserve key order when serializing large request arrays.
         body_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -602,9 +741,10 @@ class OpenRouterClient:
             try:
                 response = await client.post(url, headers=self._headers(), content=body_bytes)
             except httpx.TimeoutException as exc:
-                self._record(
+                self._emit(
                     {
                         "event": "batch_submit",
+                        "request_id": request_id,
                         "url": url,
                         "request": {"endpoint": endpoint, "model": base_model, "request_count": len(requests)},
                         "response": None,
@@ -614,9 +754,10 @@ class OpenRouterClient:
                 )
                 raise OpenRouterError("OpenRouter batch submit timed out", retryable=True) from exc
             except httpx.HTTPError as exc:
-                self._record(
+                self._emit(
                     {
                         "event": "batch_submit",
+                        "request_id": request_id,
                         "url": url,
                         "request": {"endpoint": endpoint, "model": base_model, "request_count": len(requests)},
                         "response": None,
@@ -627,48 +768,81 @@ class OpenRouterClient:
                 raise OpenRouterError(f"OpenRouter connection error: {exc}", retryable=True) from exc
 
         body = _response_body(response)
-        self._record(
-            {
-                "event": "batch_submit",
-                "url": url,
-                "request": {
-                    "endpoint": endpoint,
-                    "model": base_model,
-                    "request_count": len(requests),
-                    "custom_ids": [item.custom_id for item in requests],
-                },
-                "response": {"status_code": response.status_code, "body": body},
-                "error": None,
-            }
-        )
-        self._raise_for_batch_http(response, action="submit")
+        record = {
+            "event": "batch_submit",
+            "request_id": request_id,
+            "url": url,
+            "request": {
+                "endpoint": endpoint,
+                "model": base_model,
+                "request_count": len(requests),
+                "custom_ids": [item.custom_id for item in requests],
+            },
+            "response": {"status_code": response.status_code, "body": body},
+            "error": None,
+        }
+        if response.status_code >= 400:
+            record["error"] = f"http_{response.status_code}"
+            self._emit(record)
+            self._raise_for_batch_http(response, action="submit")
         if not isinstance(body, dict) or not body.get("id"):
+            record["error"] = "malformed"
+            self._emit(record)
             raise OpenRouterError("Malformed OpenRouter batch submit response.")
+        self._emit(record)
         return body
 
     async def get_batch(self, batch_id: str) -> dict[str, Any]:
         url = f"{self.beta_base_url}/batches/{batch_id}"
+        request_id = str(uuid.uuid4())
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 response = await client.get(url, headers=self._headers())
             except httpx.TimeoutException as exc:
+                self._emit(
+                    {
+                        "event": "batch_poll",
+                        "request_id": request_id,
+                        "url": url,
+                        "request": {"batch_id": batch_id},
+                        "response": None,
+                        "error": "timeout",
+                        "error_detail": str(exc),
+                    }
+                )
                 raise OpenRouterError("OpenRouter batch poll timed out", retryable=True) from exc
             except httpx.HTTPError as exc:
+                self._emit(
+                    {
+                        "event": "batch_poll",
+                        "request_id": request_id,
+                        "url": url,
+                        "request": {"batch_id": batch_id},
+                        "response": None,
+                        "error": "connection_error",
+                        "error_detail": str(exc),
+                    }
+                )
                 raise OpenRouterError(f"OpenRouter connection error: {exc}", retryable=True) from exc
 
         body = _response_body(response)
-        self._record(
-            {
-                "event": "batch_poll",
-                "url": url,
-                "request": {"batch_id": batch_id},
-                "response": {"status_code": response.status_code, "body": body},
-                "error": None,
-            }
-        )
-        self._raise_for_batch_http(response, action="poll")
+        record = {
+            "event": "batch_poll",
+            "request_id": request_id,
+            "url": url,
+            "request": {"batch_id": batch_id},
+            "response": {"status_code": response.status_code, "body": body},
+            "error": None,
+        }
+        if response.status_code >= 400:
+            record["error"] = f"http_{response.status_code}"
+            self._emit(record)
+            self._raise_for_batch_http(response, action="poll")
         if not isinstance(body, dict):
+            record["error"] = "malformed"
+            self._emit(record)
             raise OpenRouterError("Malformed OpenRouter batch poll response.")
+        self._emit(record)
         return body
 
     @staticmethod
@@ -704,6 +878,49 @@ class OpenRouterClient:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
             total_tokens=usage.get("total_tokens"),
+        )
+
+    def _emit_batch_item_result(self, item: dict[str, Any], *, fallback_model: str) -> None:
+        """Record a semantic outcome for every returned batch item.
+
+        Batch polling can succeed even when an individual generation failed;
+        that item must not disappear from usage/failure accounting.
+        """
+        custom_id = item.get("custom_id")
+        if not isinstance(custom_id, str) or not custom_id:
+            return
+        response = item.get("response") if isinstance(item.get("response"), dict) else None
+        body = response.get("body") if response and isinstance(response.get("body"), dict) else None
+        status_code = response.get("status_code") if response else None
+        error: str | None = None
+        if item.get("error"):
+            error = "batch_item_error"
+        elif response is None or not isinstance(body, dict):
+            error = "malformed"
+        else:
+            try:
+                code = int(status_code) if status_code is not None else 200
+            except (TypeError, ValueError):
+                code = 0
+            if code >= 400:
+                error = f"http_{code}"
+            else:
+                try:
+                    self._chat_result_from_batch_item(item, fallback_model=fallback_model)
+                except (OpenRouterError, TypeError, ValueError):
+                    error = "malformed"
+        self._emit(
+            {
+                "event": "batch_result",
+                "request_id": custom_id,
+                "request": {"model": fallback_model, "custom_id": custom_id},
+                "response": (
+                    {"status_code": status_code, "body": body}
+                    if response is not None
+                    else None
+                ),
+                "error": error,
+            }
         )
 
     async def run_chat_batch(
@@ -748,6 +965,16 @@ class OpenRouterClient:
             detail = ""
             if error:
                 detail = f" error={error!r}"
+            for request in requests:
+                self._emit(
+                    {
+                        "event": "batch_result",
+                        "request_id": request.custom_id,
+                        "request": {"model": base_model, "custom_id": request.custom_id},
+                        "response": None,
+                        "error": f"batch_{status or 'unknown'}",
+                    }
+                )
             raise OpenRouterError(
                 f"OpenRouter batch {batch_id} ended with status={status!r}.{detail}"
             )
@@ -760,6 +987,7 @@ class OpenRouterClient:
         for item in results:
             if not isinstance(item, dict):
                 continue
+            self._emit_batch_item_result(item, fallback_model=base_model)
             custom_id = item.get("custom_id")
             if not isinstance(custom_id, str) or not custom_id:
                 continue
@@ -769,8 +997,17 @@ class OpenRouterClient:
 
         missing = [item.custom_id for item in requests if item.custom_id not in by_custom_id]
         if missing:
+            for custom_id in missing:
+                self._emit(
+                    {
+                        "event": "batch_result",
+                        "request_id": custom_id,
+                        "request": {"model": base_model, "custom_id": custom_id},
+                        "response": None,
+                        "error": "missing_result",
+                    }
+                )
             raise OpenRouterError(
                 f"OpenRouter batch {batch_id} missing results for: {', '.join(missing[:10])}"
             )
         return by_custom_id
-

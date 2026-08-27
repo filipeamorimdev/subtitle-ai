@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,6 @@ from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID
 from app.db.models import AiUsageRecordRow
 from app.services.ai_cost import estimate_cost_micro_usd, usd_to_micro
 from app.services.ai_ranking import TRANSLATION_RANKING_OPS
-from app.services.model_catalog import ModelCatalogService
 from app.translation.openrouter.client import ChatResult, batch_base_model
 
 
@@ -61,6 +60,110 @@ def job_stats_action_label(operation_type: str) -> str:
     return operation_type
 
 
+def _as_int(value: Any) -> int:
+    try:
+        if value is None:
+            return 0
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def make_openrouter_http_usage_hook(
+    usage: AiUsageService,
+    *,
+    job_id: int | None,
+    trigger_type: str,
+    default_operation: str = "translation",
+    tier: str | None = None,
+    attempt_number: int | None = None,
+    provider_id: str = OPENROUTER_PROVIDER_ID,
+) -> Callable[[dict[str, Any]], None]:
+    """Persist one ai_usage_records row per OpenRouter HTTP attempt."""
+
+    def _hook(record: dict[str, Any]) -> None:
+        event = record.get("event")
+        request = record.get("request") if isinstance(record.get("request"), dict) else {}
+        response = record.get("response") if isinstance(record.get("response"), dict) else None
+        error = record.get("error")
+        status_code = response.get("status_code") if response else None
+        body = response.get("body") if response and isinstance(response.get("body"), dict) else {}
+        usage_body = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+
+        model_id = (
+            (body.get("model") if isinstance(body.get("model"), str) else None)
+            or (request.get("model") if isinstance(request.get("model"), str) else None)
+            or "unknown"
+        )
+
+        if event == "exchange":
+            messages = request.get("messages") if isinstance(request.get("messages"), list) else None
+            operation = operation_from_messages(messages, default=default_operation)
+            http_attempt = record.get("attempt") if isinstance(record.get("attempt"), int) else None
+        elif event == "batch_submit":
+            operation = "batch_submit"
+            http_attempt = None
+        elif event == "batch_poll":
+            operation = "batch_poll"
+            http_attempt = None
+            batch_id = request.get("batch_id") if isinstance(request.get("batch_id"), str) else "unknown"
+            model_id = f"batch:{batch_id}"
+        elif event == "batch_result":
+            operation = "translation"
+            http_attempt = None
+        elif event == "catalog_list":
+            operation = "catalog_list"
+            http_attempt = None
+            model_id = "openrouter/catalog"
+        else:
+            return
+
+        ok = error is None and isinstance(status_code, int) and 200 <= status_code < 300
+        # Transport failures have no status; treat as failed.
+        if error is not None:
+            ok = False
+        input_tokens = _as_int(usage_body.get("prompt_tokens"))
+        output_tokens = _as_int(usage_body.get("completion_tokens"))
+        total_tokens = _as_int(usage_body.get("total_tokens")) or (input_tokens + output_tokens)
+        actual_cost = _as_float(usage_body.get("cost"))
+
+        usage.record(
+            model_id=str(model_id),
+            operation_type=operation,
+            trigger_type=trigger_type,
+            job_id=job_id,
+            status="success" if ok else "failed",
+            failure_category=str(error) if error else None,
+            outcome=None if ok else "technical_failure",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            actual_cost_usd=actual_cost,
+            tier=tier,
+            provider_id=provider_id,
+            request_id=(
+                record.get("request_id")
+                if isinstance(record.get("request_id"), str)
+                else request.get("custom_id")
+                if isinstance(request.get("custom_id"), str)
+                else None
+            ),
+            attempt_number=http_attempt if http_attempt is not None else attempt_number,
+        )
+        usage.db.commit()
+
+    return _hook
+
+
 def _cost_usd_value(value: Decimal | float | None) -> float | None:
     if value is None:
         return None
@@ -69,6 +172,8 @@ def _cost_usd_value(value: Decimal | float | None) -> float | None:
 
 class AiUsageService:
     def __init__(self, db: Session) -> None:
+        from app.services.model_catalog import ModelCatalogService
+
         self.db = db
         self.catalog = ModelCatalogService(db)
 
@@ -236,7 +341,13 @@ class AiUsageService:
 
 
 class RecordingAIProvider:
-    """Wrap an AIProvider to persist ai_usage_records without changing HTTP behavior."""
+    """Wrap an AIProvider to persist ai_usage_records without changing HTTP behavior.
+
+    For OpenRouter, installs an HTTP usage hook so every API attempt (including
+    retries, batch submit/poll) is counted. Chat completions and semantic batch
+    item results are recorded by the hook.
+    Non-OpenRouter providers keep the legacy per-call recording path.
+    """
 
     def __init__(
         self,
@@ -250,7 +361,6 @@ class RecordingAIProvider:
         attempt_number: int | None = None,
         provider_id: str | None = None,
     ) -> None:
-        self._inner = inner
         self._usage = usage
         self._job_id = job_id
         self._trigger_type = trigger_type
@@ -258,6 +368,22 @@ class RecordingAIProvider:
         self._tier = tier
         self._attempt_number = attempt_number
         self._provider_id = provider_id or getattr(inner, "provider_id", OPENROUTER_PROVIDER_ID)
+        self._http_hook_active = False
+
+        hook = make_openrouter_http_usage_hook(
+            usage,
+            job_id=job_id,
+            trigger_type=trigger_type,
+            default_operation=default_operation,
+            tier=tier,
+            attempt_number=attempt_number,
+            provider_id=self._provider_id,
+        )
+        if hasattr(inner, "with_usage_hook"):
+            self._inner = inner.with_usage_hook(hook)  # type: ignore[call-arg]
+            self._http_hook_active = True
+        else:
+            self._inner = inner
 
     @property
     def provider_id(self) -> str:
@@ -287,6 +413,11 @@ class RecordingAIProvider:
             model_id = kwargs["model_id"]
         request_id = kwargs.get("request_id") or str(uuid.uuid4())
         kwargs["request_id"] = request_id
+
+        if self._http_hook_active:
+            # Each OpenRouter HTTP attempt is persisted by the usage hook.
+            return await self._inner.chat_completion(*args, **kwargs)
+
         operation = operation_from_messages(
             messages if isinstance(messages, list) else None,
             default=self._default_operation,
@@ -362,6 +493,8 @@ class RecordingAIProvider:
 
     async def run_chat_batch(self, *args: Any, **kwargs: Any):
         results = await self._inner.run_chat_batch(*args, **kwargs)
+        if self._http_hook_active:
+            return results
         model_id = kwargs.get("model_id") or kwargs.get("model") or "unknown"
         if isinstance(results, dict):
             for result in results.values():

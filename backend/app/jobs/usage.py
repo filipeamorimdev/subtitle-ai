@@ -80,22 +80,47 @@ def parse_exchanges(
     fallback_model: str,
     pricing_by_model: dict[str, ModelPricing],
 ) -> list[dict[str, Any]]:
-    """Turn exchange-log entries into normalized usage rows."""
+    """Turn exchange-log entries into normalized usage rows.
+
+    Counts every OpenRouter HTTP attempt: chat exchanges, batch submit/poll,
+    and catalog fetches (when present in the log).
+    """
     rows: list[dict[str, Any]] = []
     index = 0
     for entry in entries:
-        if entry.get("event") != "exchange":
+        event = entry.get("event")
+        if event not in {"exchange", "batch_submit", "batch_poll", "batch_result", "catalog_list"}:
             continue
         request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
         response = entry.get("response") if isinstance(entry.get("response"), dict) else None
         body = response.get("body") if response and isinstance(response.get("body"), dict) else {}
+        # Redacted logs store usage on response.usage; full logs on response.body.usage.
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        if not usage and response and isinstance(response.get("usage"), dict):
+            usage = response["usage"]
 
-        model = (
-            (body.get("model") if isinstance(body.get("model"), str) else None)
-            or (request.get("model") if isinstance(request.get("model"), str) else None)
-            or fallback_model
-        )
+        if event in {"exchange", "batch_result"}:
+            action = classify_exchange(request)
+            model = (
+                (body.get("model") if isinstance(body.get("model"), str) else None)
+                or (response.get("model") if response and isinstance(response.get("model"), str) else None)
+                or (request.get("model") if isinstance(request.get("model"), str) else None)
+                or fallback_model
+            )
+        elif event == "batch_submit":
+            action = "batch_submit"
+            model = (
+                (request.get("model") if isinstance(request.get("model"), str) else None)
+                or fallback_model
+            )
+        elif event == "batch_poll":
+            action = "batch_poll"
+            batch_id = request.get("batch_id") if isinstance(request.get("batch_id"), str) else "unknown"
+            model = f"batch:{batch_id}"
+        else:
+            action = "catalog_list"
+            model = "openrouter/catalog"
+
         input_tokens = _as_int(usage.get("prompt_tokens"))
         output_tokens = _as_int(usage.get("completion_tokens"))
         total_tokens = _as_int(usage.get("total_tokens")) or (input_tokens + output_tokens)
@@ -127,7 +152,7 @@ def parse_exchanges(
                 "index": index,
                 "ts": entry.get("ts"),
                 "model": model,
-                "action": classify_exchange(request),
+                "action": action,
                 "attempt": entry.get("attempt") if isinstance(entry.get("attempt"), int) else None,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,

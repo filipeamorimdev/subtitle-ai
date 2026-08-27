@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -55,6 +56,10 @@ MSG_TRANSCRIBE_FAILED = "Audio transcription failed."
 MSG_TRANSLATE_FAILED = "Translation failed."
 MSG_DUB_FAILED = "Dubbing failed."
 MSG_WAITING_SUBTITLES = "Localize subtitles first."
+VERIFY_RETRY_METADATA_KEY = "verify_retry"
+VERIFY_MAX_ATTEMPTS = 5
+VERIFY_RETRY_BASE_SECONDS = 30
+VERIFY_RETRY_MAX_SECONDS = 15 * 60
 
 
 def _readable_request_source(job: JobRow) -> Path | None:
@@ -225,6 +230,8 @@ class TaskPlanner:
         # later replan used to sit in verifying forever without calling Bazarr.
         latest_translate = self._latest_job(task.id, "translate")
         if self._needs_verify(task, latest_translate):
+            if not self._verify_retry_due(task):
+                return task
             return await self._advance_verify(task, media)
 
         # Failed translate → fail task unless this is an explicit retry (planning)
@@ -516,6 +523,14 @@ class TaskPlanner:
 
     def _clear_verify_failure(self, task_id: int) -> None:
         """Drop stale verify-failed markers once the target is actually present."""
+        task = self.tasks.get(task_id)
+        if task is not None:
+            metadata = dict(task.metadata_json or {})
+            if VERIFY_RETRY_METADATA_KEY in metadata:
+                metadata.pop(VERIFY_RETRY_METADATA_KEY, None)
+                task.metadata_json = metadata
+                self.db.add(task)
+                self.db.commit()
         row = self._latest_job(task_id, "translate")
         if row is None or row.reason_code not in {"bazarr_verify_failed", "bazarr_rescan_failed"}:
             return
@@ -523,6 +538,75 @@ class TaskPlanner:
         row.reason_code = None
         self.db.add(row)
         self.db.commit()
+
+    @staticmethod
+    def _parse_retry_time(value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _verify_retry_due(self, task: LocalizationTaskRow) -> bool:
+        metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+        state = metadata.get(VERIFY_RETRY_METADATA_KEY)
+        if not isinstance(state, dict):
+            return True
+        next_retry = self._parse_retry_time(state.get("next_retry_at"))
+        return next_retry is None or datetime.now(timezone.utc) >= next_retry
+
+    def _record_verify_failure(
+        self,
+        task: LocalizationTaskRow,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> LocalizationTaskRow:
+        """Persist bounded exponential retry state for Bazarr verification."""
+        metadata = dict(task.metadata_json or {})
+        previous = metadata.get(VERIFY_RETRY_METADATA_KEY)
+        prior_attempts = previous.get("attempts", 0) if isinstance(previous, dict) else 0
+        try:
+            attempts = max(0, int(prior_attempts)) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+
+        delay_seconds = min(
+            VERIFY_RETRY_MAX_SECONDS,
+            VERIFY_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+        )
+        metadata[VERIFY_RETRY_METADATA_KEY] = {
+            "attempts": attempts,
+            "next_retry_at": (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat(),
+        }
+        task.metadata_json = metadata
+        self.db.add(task)
+        self.db.commit()
+        self.db.refresh(task)
+        self.tasks.update_checkpoints(task.id, verify="failed")
+
+        if attempts >= VERIFY_MAX_ATTEMPTS:
+            return self.tasks.transition(
+                task,
+                "blocked",
+                substate="bazarr_sync",
+                error_code=error_code,
+                error_message=(
+                    f"{error_message} Automatic verification stopped after "
+                    f"{attempts} attempts; retry Bazarr sync manually."
+                ),
+            )
+        return self.tasks.transition(
+            task,
+            "verifying",
+            substate="bazarr_sync",
+            error_code=error_code,
+            error_message=error_message,
+        )
 
     def _needs_verify(self, task: LocalizationTaskRow, latest_translate: JobRow | None) -> bool:
         if task.status == "verifying":
@@ -559,11 +643,8 @@ class TaskPlanner:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Verify retry failed task=%s error=%s", task.id, exc)
-            self.tasks.update_checkpoints(task.id, verify="failed")
-            return self.tasks.transition(
+            return self._record_verify_failure(
                 task,
-                "verifying",
-                substate="bazarr_sync",
                 error_code="bazarr_rescan_failed",
                 error_message=USER_RESCAN_FAILED,
             )
@@ -578,11 +659,8 @@ class TaskPlanner:
                     target_path=latest_written.target_subtitle_path if latest_written else None,
                 )
                 return self.tasks.transition(task, "completed", substate=None, clear_error=True)
-        self.tasks.update_checkpoints(task.id, verify="failed")
-        return self.tasks.transition(
+        return self._record_verify_failure(
             task,
-            "verifying",
-            substate="bazarr_sync",
             error_code=result.reason_code or "bazarr_verify_failed",
             error_message=result.message or USER_VERIFY_FAILED,
         )
@@ -669,14 +747,41 @@ class TaskPlanner:
                 error_message=MSG_WAITING_SUBTITLES,
             )
 
-        # Manual dub jobs are created by POST /media/{id}/dub; planner waits for work.
-        if task.status in {"planning", "requested"}:
-            return self.tasks.transition(
-                task,
-                "processing",
-                substate="dubbing",
-                clear_error=True,
-            )
+        # The task planner owns task-backed work.  Creating an audio task via
+        # the generic endpoint used to set this state without creating a job,
+        # leaving the task active forever.  Also repairs already-stuck tasks
+        # from earlier versions, where ``latest_dub`` is absent.
+        if latest_dub is None:
+            if task.status != "processing":
+                task = self.tasks.transition(
+                    task,
+                    "processing",
+                    substate="dubbing",
+                    clear_error=True,
+                )
+            try:
+                job = await JobService(self.db).create_dub_job(
+                    media,
+                    target_language=task.target_language_code,
+                    trigger_type="manual" if task.origin == "manual" else "automatic",
+                    task_id=task.id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Dub enqueue failed task=%s error=%s", task.id, exc)
+                self.tasks.update_checkpoints(task.id, write="failed")
+                return self.tasks.transition(
+                    task,
+                    "failed",
+                    error_code="enqueue_failed",
+                    error_message=MSG_DUB_FAILED,
+                )
+            self.tasks.update_checkpoints(task.id, write="active")
+            row = self.db.get(JobRow, job.id)
+            if row:
+                self.tasks.attach_job(row, task.id)
+            refreshed = self.tasks.get(task.id)
+            assert refreshed is not None
+            return refreshed
         return task
 
     def _local_media_path(self, media: MediaItemRow) -> Path | None:
@@ -1043,4 +1148,3 @@ class TaskPlanner:
             result["can_translate"] = False
             result["can_extract"] = False
             result["source_path"] = None
-

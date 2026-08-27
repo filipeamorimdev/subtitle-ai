@@ -16,6 +16,16 @@ logger = get_logger("worker")
 
 JOB_KINDS = ("translate", "extract", "request", "transcribe", "dub")
 TASK_REPLAN_INTERVAL_SECONDS = 30.0
+# Upper bounds are deliberately above the normal operational timeouts in each
+# provider.  They are a last-resort circuit breaker for a coroutine that never
+# returns and would otherwise retain a worker slot forever.
+JOB_MAX_RUNTIME_SECONDS = {
+    "translate": 6 * 60 * 60.0,
+    "extract": 2 * 60 * 60.0,
+    "request": 15 * 60.0,
+    "transcribe": 9 * 60 * 60.0,
+    "dub": 6 * 60 * 60.0,
+}
 
 
 class JobWorker:
@@ -25,6 +35,8 @@ class JobWorker:
         self._stop = asyncio.Event()
         self._inflight: dict[str, set[asyncio.Task]] = {kind: set() for kind in JOB_KINDS}
         self._tasks_by_job: dict[int, asyncio.Task] = {}
+        self._started_at: dict[int, float] = {}
+        self._kinds_by_job: dict[int, str] = {}
         self._last_task_replan = 0.0
         self._limits_cache: tuple[float, dict[str, int]] = (0.0, {})
 
@@ -55,6 +67,8 @@ class JobWorker:
         for kind in JOB_KINDS:
             self._inflight[kind].clear()
         self._tasks_by_job.clear()
+        self._started_at.clear()
+        self._kinds_by_job.clear()
         logger.info("Job worker stopped")
 
     def cancel_job(self, job_id: int) -> bool:
@@ -85,6 +99,8 @@ class JobWorker:
         done_ids = [job_id for job_id, task in self._tasks_by_job.items() if task.done()]
         for job_id in done_ids:
             self._tasks_by_job.pop(job_id, None)
+            self._started_at.pop(job_id, None)
+            self._kinds_by_job.pop(job_id, None)
         for kind in JOB_KINDS:
             self._inflight[kind] = {task for task in self._inflight[kind] if not task.done()}
 
@@ -118,6 +134,32 @@ class JobWorker:
             logger.warning(
                 "Releasing worker slot for cancelled job_id=%s",
                 job_id,
+            )
+            task.cancel()
+
+    def _cancel_overdue_jobs(self) -> None:
+        now = time.monotonic()
+        for job_id, task in list(self._tasks_by_job.items()):
+            if task.done():
+                continue
+            started = self._started_at.get(job_id, now)
+            kind = self._kinds_by_job.get(job_id, "translate")
+            limit = JOB_MAX_RUNTIME_SECONDS.get(kind or "translate", JOB_MAX_RUNTIME_SECONDS["translate"])
+            if now - started < limit:
+                continue
+            elapsed = int(now - started)
+            logger.error(
+                "Job exceeded runtime limit job_id=%s kind=%s elapsed=%ss limit=%ss",
+                job_id,
+                kind,
+                elapsed,
+                int(limit),
+            )
+            # Persist terminal state before cancelling.  This prevents an
+            # orphan recovery loop from immediately retrying a hung operation.
+            JobService.fail_job_from_worker(
+                job_id,
+                TimeoutError(f"Job exceeded its {int(limit)} second runtime limit."),
             )
             task.cancel()
 
@@ -192,6 +234,7 @@ class JobWorker:
     async def _tick(self) -> None:
         self._prune_inflight()
         self._reconcile_cancelled_slots()
+        self._cancel_overdue_jobs()
         self._prune_inflight()
         now = time.monotonic()
         if now - self._last_task_replan >= TASK_REPLAN_INTERVAL_SECONDS:
@@ -209,6 +252,8 @@ class JobWorker:
                 task = asyncio.create_task(self._process(job_id), name=f"job-{kind}-{job_id}")
                 self._inflight[kind].add(task)
                 self._tasks_by_job[job_id] = task
+                self._started_at[job_id] = time.monotonic()
+                self._kinds_by_job[job_id] = kind
 
 
 worker = JobWorker()

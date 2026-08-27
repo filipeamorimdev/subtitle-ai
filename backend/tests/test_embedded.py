@@ -13,6 +13,7 @@ from app.subtitles.embedded import (
     extract_text_track,
     pick_extractable_track,
 )
+from app.media.process_runner import ProcessOutcome, ProcessResult
 from app.subtitles.filenames import build_external_subtitle_path
 
 
@@ -98,21 +99,13 @@ async def test_extract_text_track_handles_plus_in_filename(tmp_path, monkeypatch
     output = tmp_path / "Show - S01E01 + S01E02.en.srt"
     seen: dict[str, list[str]] = {}
 
-    async def fake_exec(*command, **kwargs):
+    async def fake_run(command, **kwargs):
         seen["command"] = [str(c) for c in command]
+        # ffmpeg writes to the last arg
+        Path(command[-1]).write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
+        return ProcessResult(ProcessOutcome.COMPLETED, 0, b"", b"")
 
-        class Proc:
-            returncode = 0
-
-            async def communicate(self):
-                # ffmpeg writes to the last arg
-                out = Path(command[-1])
-                out.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
-                return b"", b""
-
-        return Proc()
-
-    monkeypatch.setattr("app.subtitles.embedded.asyncio.create_subprocess_exec", fake_exec)
+    monkeypatch.setattr("app.subtitles.embedded.run_process_checked", fake_run)
     monkeypatch.setattr("app.subtitles.embedded.shutil.which", lambda _: "/usr/bin/ffmpeg")
 
     result = await extract_text_track(media, 2, output)
@@ -132,25 +125,17 @@ async def test_extract_pgs_track_demuxes_then_ocrs(tmp_path, monkeypatch):
     output = tmp_path / "Show - S01E01.en.srt"
     seen: dict[str, list[str]] = {}
 
-    async def fake_exec(*command, **kwargs):
+    async def fake_run(command, **kwargs):
         seen["command"] = [str(c) for c in command]
-
-        class Proc:
-            returncode = 0
-
-            async def communicate(self):
-                out = Path(command[-1])
-                out.write_bytes(b"PG")
-                return b"", b""
-
-        return Proc()
+        Path(command[-1]).write_bytes(b"PG")
+        return ProcessResult(ProcessOutcome.COMPLETED, 0, b"", b"")
 
     def fake_ocr(sup_bytes, output_path, **kwargs):
         path = Path(output_path)
         path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
         return path
 
-    monkeypatch.setattr("app.subtitles.embedded.asyncio.create_subprocess_exec", fake_exec)
+    monkeypatch.setattr("app.subtitles.embedded.run_process_checked", fake_run)
     monkeypatch.setattr("app.subtitles.embedded.shutil.which", lambda _: "/usr/bin/ffmpeg")
     monkeypatch.setattr("app.subtitles.embedded.ocr_available", lambda: True)
     monkeypatch.setattr("app.subtitles.embedded.pgs_sup_to_srt", fake_ocr)

@@ -161,6 +161,48 @@ def test_estimate_and_parse_exchanges():
     assert {a["action"] for a in agg["by_action"]} == {"translate", "glossary_extract"}
 
 
+def test_parse_exchanges_counts_batch_http_events():
+    entries = [
+        {
+            "event": "batch_submit",
+            "request": {"model": "openai/gpt-4o-mini", "request_count": 3},
+            "response": {"status_code": 200, "body": {"id": "batch_1"}},
+            "error": None,
+        },
+        {
+            "event": "batch_poll",
+            "request": {"batch_id": "batch_1"},
+            "response": {"status_code": 200, "body": {"status": "in_progress"}},
+            "error": None,
+        },
+        {
+            "event": "batch_poll",
+            "request": {"batch_id": "batch_1"},
+            "response": {"status_code": 200, "body": {"status": "completed"}},
+            "error": None,
+        },
+        {
+            "event": "catalog_list",
+            "request": {"endpoint": "models"},
+            "response": {"status_code": 200, "body": {"model_count": 10}},
+            "error": None,
+        },
+    ]
+    rows = parse_exchanges(
+        entries,
+        fallback_model="openai/gpt-4o-mini",
+        pricing_by_model={},
+    )
+    assert len(rows) == 4
+    assert [r["action"] for r in rows] == [
+        "batch_submit",
+        "batch_poll",
+        "batch_poll",
+        "catalog_list",
+    ]
+    assert aggregate_usage(rows)["requests"] == 4
+
+
 def test_legacy_parse_without_live_catalog_does_not_reprice():
     entries = [
         {

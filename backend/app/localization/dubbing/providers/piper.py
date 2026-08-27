@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import wave
 from pathlib import Path
 from typing import Any
@@ -175,8 +176,34 @@ class PiperTTSProvider:
             raise TTSError("Piper voice is not loaded")
         if is_cancelled and is_cancelled():
             raise TTSError("Dub cancelled")
-        await asyncio.to_thread(write_piper_wav, self.voice, text, output_path)
+        cancelled = threading.Event()
+        synth_task = asyncio.create_task(
+            asyncio.to_thread(write_piper_wav, self.voice, text, output_path)
+        )
+
+        def discard_cancelled_output(done: asyncio.Task[None]) -> None:
+            if not cancelled.is_set():
+                return
+            try:
+                done.result()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove cancelled Piper output %s", output_path)
+
+        try:
+            await asyncio.shield(synth_task)
+        except asyncio.CancelledError:
+            # Piper synthesis is synchronous inside a thread.  Let it finish
+            # without leaking its late output into a cancelled/retried job.
+            cancelled.set()
+            synth_task.add_done_callback(discard_cancelled_output)
+            raise
         if is_cancelled and is_cancelled():
+            cancelled.set()
+            discard_cancelled_output(synth_task)
             raise TTSError("Dub cancelled")
         if not output_path.is_file() or output_path.stat().st_size < 64:
             raise TTSError("piper produced no audio for cue")

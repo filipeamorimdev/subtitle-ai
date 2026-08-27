@@ -520,7 +520,13 @@ class JobService:
             return None
         log = self.get_job_log(job_id)
         assert log is not None
-        exchanges = [entry for entry in (log.entries or []) if entry.get("event") == "exchange"]
+        exchanges = [entry for entry in (log.entries or []) if entry.get("event") in {
+            "exchange",
+            "batch_submit",
+            "batch_poll",
+            "batch_result",
+            "catalog_list",
+        }]
         if index < 1 or index > len(exchanges):
             return None
         return JobRequestLogOut(
@@ -2446,6 +2452,11 @@ class JobService:
                     event_cb=on_pipeline_event,
                 )
             finally:
+                # `to_thread` cannot be forcibly cancelled.  Set the
+                # cooperative flag before stopping its DB watcher so a worker
+                # shutdown/cancellation is visible to local Whisper at its
+                # next cancellation checkpoint.
+                cancel_flag.set()
                 watch_task.cancel()
                 try:
                     await watch_task
@@ -2504,6 +2515,9 @@ class JobService:
                 result.engine,
                 result.language,
             )
+        except asyncio.CancelledError:
+            cancel_flag.set()
+            raise
         except Exception as exc:  # noqa: BLE001
             log.error("Transcribe job failed job_id=%s error=%s", job_id, exc)
             self._rollback_quietly()
@@ -3277,6 +3291,8 @@ class JobService:
 
 
 def _public_error(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "The job exceeded its maximum runtime and was stopped. Retry it if needed."
     if isinstance(exc, RoutingBlockedError):
         return str(exc)
     if isinstance(exc, BudgetBlockedError):
@@ -3307,6 +3323,8 @@ def _public_error(exc: Exception) -> str:
 
 
 def _reason_code(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "job_timeout"
     if isinstance(exc, RoutingBlockedError):
         return exc.reason_code
     if isinstance(exc, BudgetBlockedError):
