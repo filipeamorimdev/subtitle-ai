@@ -11,7 +11,6 @@ import base64
 import json
 import re
 import tempfile
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -296,17 +295,37 @@ async def _build_audio_sample(media_path: Path, sampled_cues: list[_SampledCue])
         if not clips:
             raise VoiceCastError("No dialogue audio could be extracted for voice analysis.")
 
+        # Do not join WAV payloads with Python's ``wave`` module here.  FFmpeg
+        # can emit WAV variants (including extensible headers) that Python's
+        # reader does not consistently accept across the supported runtimes.
+        # It already owns both extraction and encoding, so let it concatenate
+        # the normalised clips as well.
         combined = tmp_dir / "voice-cast-sample.wav"
+        command = ["ffmpeg", "-nostdin", "-v", "error"]
+        for clip in clips:
+            command.extend(["-i", str(clip)])
+        inputs = "".join(f"[{index}:a]" for index in range(len(clips)))
+        command.extend(
+            [
+                "-filter_complex",
+                f"{inputs}concat=n={len(clips)}:v=0:a=1[combined]",
+                "-map",
+                "[combined]",
+                "-ac",
+                "1",
+                "-ar",
+                str(AUDIO_SAMPLE_RATE),
+                "-c:a",
+                "pcm_s16le",
+                "-y",
+                str(combined),
+            ]
+        )
         try:
-            with wave.open(str(combined), "wb") as destination:
-                for clip in clips:
-                    with wave.open(str(clip), "rb") as source:
-                        if destination.getnchannels() == 0:
-                            destination.setparams(source.getparams())
-                        destination.writeframes(source.readframes(source.getnframes()))
+            await run_process_checked(command, timeout_s=30, output_paths=[combined])
             return combined.read_bytes()
-        except (OSError, wave.Error) as exc:
-            raise VoiceCastError("Could not combine dialogue audio for analysis.") from exc
+        except (OSError, ProcessError) as exc:
+            raise VoiceCastError(f"Could not combine dialogue audio for analysis: {exc}") from exc
 
 
 class VoiceCastService:
