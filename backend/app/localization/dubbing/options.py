@@ -39,7 +39,7 @@ def cue_key(cue_index: int | None) -> str:
 
 
 def normalize_speaker_voice_overrides(values: Mapping[str, str] | None) -> dict[str, str]:
-    """Validate label or ``cue:N`` → Piper model mappings for a dub job."""
+    """Validate label or ``cue:N`` → Chatterbox profile mappings for a dub job."""
     normalized: dict[str, str] = {}
     for raw_speaker, raw_model in (values or {}).items():
         key = speaker_key(raw_speaker)

@@ -30,13 +30,13 @@ from app.localization.dubbing.options import (
     cue_key,
     speaker_key,
 )
-from app.localization.dubbing.providers.piper import (
-    PiperTTSProvider,
+from app.localization.dubbing.providers.chatterbox import (
+    ChatterboxTTSProvider,
     TTSError,
-    ensure_piper_voice_available,
-    load_piper_voice,
-    piper_output_ignores_text,
+    load_chatterbox_model,
     resolve_voice_model_for_language,
+    resolve_voice_profile,
+    tts_output_ignores_text,
     wav_duration_seconds,
 )
 from app.localization.dubbing.timeline import AudioTimeline, CUE_SAMPLE_RATE
@@ -248,14 +248,11 @@ class DubbingPipeline:
         event_log: JobEventLog,
         is_cancelled: CancelCheck,
         on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
-        voices_dir: Path | None = None,
         use_loudnorm: bool = True,
     ) -> MediaArtifact:
         media = Path(media_path)
         source_srt = Path(source_srt_path)
         out = Path(output_path)
-        voices_dir = voices_dir or Path("/config/piper-voices")
-
         if not media.is_file():
             raise DubError(f"Media file is not readable: {media}")
         if not source_srt.is_file():
@@ -287,27 +284,37 @@ class DubbingPipeline:
         )
         logger.info("dub_speech_segments count=%s cues=%s", len(segments), len(document.blocks))
 
-        voice_model = voice_model or resolve_voice_model_for_language(target_language)
-        tts_by_model: dict[str, PiperTTSProvider] = {}
+        try:
+            voice_model = resolve_voice_profile(
+                voice_model or resolve_voice_model_for_language(target_language),
+                target_language,
+            ).id
+        except TTSError as exc:
+            raise DubError(str(exc)) from exc
+        tts_by_model: dict[str, ChatterboxTTSProvider] = {}
+        chatterbox_model = None
 
-        async def tts_for(model: str) -> PiperTTSProvider:
-            cached = tts_by_model.get(model)
+        async def tts_for(model: str) -> ChatterboxTTSProvider:
+            profile = resolve_voice_profile(model, target_language)
+            cached = tts_by_model.get(profile.id)
             if cached is not None:
                 return cached
             try:
-                model_path = await ensure_piper_voice_available(
-                    voice_model=model,
-                    voices_dir=voices_dir,
-                    is_cancelled=is_cancelled,
-                )
+                nonlocal chatterbox_model
                 if is_cancelled():
                     raise TTSError("Dub cancelled")
-                voice = await asyncio.to_thread(load_piper_voice, model_path)
+                if chatterbox_model is None:
+                    chatterbox_model = await asyncio.to_thread(load_chatterbox_model)
             except TTSError as exc:
                 raise DubError(str(exc)) from exc
-            tts = PiperTTSProvider(voice)
-            tts_by_model[model] = tts
-            event_log.record(event="voice_loaded", voice_model=model, path=str(model_path))
+            tts = ChatterboxTTSProvider(chatterbox_model, profile)
+            tts_by_model[profile.id] = tts
+            event_log.record(
+                event="voice_loaded",
+                voice_model=profile.id,
+                provider="chatterbox",
+                device=getattr(chatterbox_model, "device", "unknown"),
+            )
             return tts
 
         await tts_for(voice_model)
@@ -332,6 +339,8 @@ class DubbingPipeline:
                 segment_cue_key = cue_key(segment.source_cues[0] if segment.source_cues else None)
                 override_key = segment_cue_key if segment_cue_key in speaker_voice_overrides else speaker_key(segment.speaker_id)
                 segment_voice_model = speaker_voice_overrides.get(override_key, voice_model)
+                profile = resolve_voice_profile(segment_voice_model, target_language)
+                segment_voice_model = profile.id
                 tts = await tts_for(segment_voice_model)
                 voice_config = VoiceConfig(
                     voice_id=segment_voice_model,
@@ -409,9 +418,9 @@ class DubbingPipeline:
 
             if not timeline.clips:
                 raise DubError("No cue text was synthesized; dub output would be silence.")
-            if any(piper_output_ignores_text(samples) for samples in synth_samples_by_model.values()):
+            if any(tts_output_ignores_text(samples) for samples in synth_samples_by_model.values()):
                 raise DubError(
-                    "Piper produced nearly the same clip length for every subtitle. "
+                    "Chatterbox produced nearly the same clip length for every subtitle. "
                     "The voice is not reading cue text; refusing to mux a looping track."
                 )
 
@@ -571,7 +580,7 @@ class DubbingPipeline:
             event_log.record(
                 event="completed",
                 output_path=str(out),
-                piper_inputs=len(timeline.clips),
+                chatterbox_inputs=len(timeline.clips),
                 verified=verified.verified,
                 duration=verified.duration,
             )

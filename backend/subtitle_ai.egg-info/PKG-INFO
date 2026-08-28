@@ -15,7 +15,7 @@ Requires-Dist: python-multipart>=0.0.17
 Requires-Dist: pillow>=10.0.0
 Requires-Dist: pytesseract>=0.3.13
 Requires-Dist: faster-whisper>=1.1.0
-Requires-Dist: piper-tts
+Requires-Dist: chatterbox-tts==0.1.7
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"

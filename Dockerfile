@@ -11,7 +11,8 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     SUBTITLE_AI_CONFIG_DIR=/config \
-    SUBTITLE_AI_FRONTEND_DIST=/app/frontend/dist
+    SUBTITLE_AI_FRONTEND_DIST=/app/frontend/dist \
+    HF_HOME=/config/huggingface
 
 WORKDIR /app
 
@@ -36,12 +37,13 @@ WORKDIR /app/backend
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         g++ \
+        git \
         make \
         python3-dev \
+    && pip install --no-cache-dir torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir . \
-    && pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir demucs \
-    && apt-get purge -y gcc g++ make python3-dev \
+    && apt-get purge -y gcc g++ git make python3-dev \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* /root/.cache/pip
 

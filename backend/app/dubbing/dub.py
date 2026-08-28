@@ -17,13 +17,15 @@ from app.localization.dubbing.pipeline import (
     probe_duration_seconds,
     probe_has_audio_stream,
 )
-from app.localization.dubbing.providers.piper import (
-    ensure_piper_voice_available,
-    load_piper_voice,
-    piper_output_ignores_text,
-    piper_voice_download_urls,
+from app.localization.dubbing.providers.chatterbox import (
+    ChatterboxTTSProvider,
+    ChatterboxVoiceProfile,
+    load_chatterbox_model,
+    recommended_voice_models_for_language,
     resolve_voice_model_for_language,
-    write_piper_wav,
+    resolve_voice_profile,
+    tts_output_ignores_text,
+    write_chatterbox_wav,
 )
 from app.localization.dubbing.timeline import (
     CUE_SAMPLE_RATE,
@@ -37,8 +39,7 @@ TTS_CUE_GAIN_DB = 0.0
 TTS_MIX_GAIN_DB = 0.0
 TTS_LIMITER_CEILING = 0.99
 
-_piper_voice_download_urls = piper_voice_download_urls
-_write_piper_wav = write_piper_wav
+_write_chatterbox_wav = write_chatterbox_wav
 
 
 async def run_process_checked(
@@ -66,16 +67,18 @@ __all__ = [
     "build_mux_command",
     "clean_text_for_tts",
     "dub_media_from_srt_to_mkv",
-    "ensure_piper_voice_available",
-    "load_piper_voice",
-    "piper_output_ignores_text",
+    "ChatterboxTTSProvider",
+    "ChatterboxVoiceProfile",
+    "load_chatterbox_model",
+    "recommended_voice_models_for_language",
     "probe_duration_seconds",
     "probe_has_audio_stream",
     "resolve_voice_model_for_language",
+    "resolve_voice_profile",
     "run_process_checked",
+    "tts_output_ignores_text",
     "write_tts_timeline_wav",
-    "_piper_voice_download_urls",
-    "_write_piper_wav",
+    "_write_chatterbox_wav",
 ]
 
 _ = (Any, Awaitable, Callable, JobEventLog, Path, ProcessError)

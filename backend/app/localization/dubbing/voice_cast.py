@@ -25,7 +25,10 @@ from app.db.models import MediaItemRow, VoiceCastDraftRow
 from app.localization.dubbing.options import cue_key, normalize_dub_mix_mode
 from app.integrations.bazarr.paths import apply_path_mapping, is_under_roots, mappings_from_settings
 from app.localization.dubbing.dialogue import speech_segments_from_document
-from app.localization.dubbing.providers.piper import resolve_voice_model_for_language
+from app.localization.dubbing.providers.chatterbox import (
+    resolve_voice_model_for_language,
+    suggest_voice_model_for_style,
+)
 from app.media.process_runner import ProcessError, run_process_checked
 from app.services.ai_usage import AiUsageService, RecordingAIProvider
 from app.services.model_catalog import ModelCatalogService, check_audio_analysis_compatibility
@@ -137,7 +140,7 @@ class VoiceCastDraftService:
             if not speaker_id:
                 raise VoiceCastError(f"Speaker {position} needs a name.")
             if not voice_model:
-                raise VoiceCastError(f"Speaker {position} needs a Piper voice model.")
+                raise VoiceCastError(f"Speaker {position} needs a Chatterbox voice profile.")
             if not cues:
                 raise VoiceCastError(f"Speaker {position} needs at least one sampled cue.")
             overlap = assigned_cues.intersection(cues)
@@ -330,7 +333,7 @@ def _suggestions_from_response(
                 voice_style=style,
                 cue_indices=sorted(indices),
                 confidence=confidence,
-                voice_model=default_voice_model,
+                voice_model=suggest_voice_model_for_style(default_voice_model, style),
             )
         )
 
@@ -340,7 +343,7 @@ def _suggestions_from_response(
         suggestions.append(
             VoiceCastSuggestion(
                 speaker_id="Unidentified speaker",
-                voice_style="Use the language default until you choose another Piper voice",
+                voice_style="Use the language default until you choose another Chatterbox profile",
                 cue_indices=[cue_index],
                 confidence=None,
                 voice_model=default_voice_model,

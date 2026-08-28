@@ -252,13 +252,16 @@ onMounted(() => {
                 <textarea v-model="suggestion.voice_style" rows="2" class="mt-1 w-full rounded border border-ink-300 bg-white px-2 py-1.5 text-sm dark:border-ink-600 dark:bg-ink-800" />
               </label>
               <label class="mt-3 block text-xs font-medium text-ink-600 dark:text-ink-300">
-                Piper speech voice
-                <input
+                Chatterbox delivery profile
+                <select
                   v-model="suggestion.voice_model"
-                  list="piper-voice-models"
                   class="mt-1 w-full rounded border border-ink-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-ink-600 dark:bg-ink-800"
                   :disabled="!suggestion.enabled"
-                />
+                >
+                  <option v-for="model in draft.available_voice_models" :key="model.id" :value="model.id">
+                    {{ model.label }}
+                  </option>
+                </select>
               </label>
             </article>
           </section>
@@ -266,17 +269,14 @@ onMounted(() => {
 
         <aside class="space-y-4">
           <section class="rounded-lg border border-ink-200 bg-ink-50 p-4 text-sm dark:border-ink-700 dark:bg-ink-800/50">
-            <h2 class="font-semibold">Why the same Piper voice?</h2>
+            <h2 class="font-semibold">Chatterbox voices</h2>
             <p class="mt-2 text-ink-600 dark:text-ink-300">
               {{ draft.model_id }} analyses and groups speakers. It does not synthesize their speech.
-              The fields below use Piper, whose verified European Portuguese catalogue currently has one supported voice, so it is prefilled for every speaker.
+              The fields below use the local Chatterbox Multilingual V3 model. The analyser preselects a calm, natural, expressive, or dramatic delivery profile from each style note.
             </p>
             <p class="mt-2 text-xs text-ink-500">
-              You can type a different valid Piper model ID, but use a compatible Portuguese voice; it is downloaded when the dub starts.
+              Profiles tune delivery rather than selecting a different real-person voice. Chatterbox downloads its shared model once and keeps it on this server.
             </p>
-            <datalist id="piper-voice-models">
-              <option v-for="model in draft.available_voice_models" :key="model.id" :value="model.id">{{ model.label }}</option>
-            </datalist>
             <ul class="mt-3 space-y-1 text-xs text-ink-500">
               <li v-for="model in draft.available_voice_models" :key="model.id">
                 {{ model.label }} — <code>{{ model.id }}</code>

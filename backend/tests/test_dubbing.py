@@ -1,8 +1,10 @@
-"""TTS dubbing tests (mocked Piper/ffmpeg)."""
+"""TTS dubbing tests (mocked Chatterbox/ffmpeg)."""
 
 from __future__ import annotations
 
 import array
+import sys
+import types
 import wave
 from pathlib import Path
 
@@ -26,22 +28,26 @@ from app.services.settings import SettingsService
 from app.subtitles.filenames import build_dub_preview_path
 from app.dubbing.dub import (
     CUE_SAMPLE_RATE,
-    _piper_voice_download_urls,
+    ChatterboxVoiceProfile,
     build_mux_command,
     clean_text_for_tts,
-    piper_output_ignores_text,
+    resolve_voice_model_for_language,
+    resolve_voice_profile,
+    tts_output_ignores_text,
     write_tts_timeline_wav,
-    _write_piper_wav,
+    _write_chatterbox_wav,
 )
 from app.localization.dubbing.mixer import DUB_OUTPUT_SAMPLE_RATE, build_background_mix_command
 from app.localization.dubbing.options import cue_key, normalize_speaker_voice_overrides
 
 
-def test_piper_voice_download_urls_encode_unicode():
-    _voice_code, model_url, config_url = _piper_voice_download_urls("pt_PT-tugão-medium")
-    assert "tug%C3%A3o" in model_url
-    assert model_url.endswith(".onnx?download=true")
-    assert config_url.endswith(".onnx.json?download=true")
+def test_chatterbox_profiles_are_language_aware_and_reject_arbitrary_models():
+    model = resolve_voice_model_for_language("pt-PT")
+    profile = resolve_voice_profile(model, "pt-PT")
+    assert profile.language_id == "pt"
+    assert profile.id.endswith(":natural")
+    with pytest.raises(Exception, match="Unknown Chatterbox"):
+        resolve_voice_profile("some-random-model", "pt-PT")
 
 
 def test_clean_text_for_tts_strips_music_speaker_and_sfx():
@@ -61,12 +67,14 @@ def test_clean_text_for_tts_strips_music_speaker_and_sfx():
 
 
 def test_cue_voice_override_keys_are_normalized_for_ai_cast_assignments():
-    overrides = normalize_speaker_voice_overrides({"Cue:42": " pt_PT-tugão-medium "})
+    overrides = normalize_speaker_voice_overrides(
+        {"Cue:42": " chatterbox-multilingual-v3:pt-PT:expressive "}
+    )
     assert cue_key(42) == "cue:42"
-    assert overrides[cue_key(42)] == "pt_PT-tugão-medium"
+    assert overrides[cue_key(42)] == "chatterbox-multilingual-v3:pt-PT:expressive"
 
 
-def test_piper_output_ignores_text_detects_fixed_length_clips():
+def test_tts_output_ignores_text_detects_fixed_length_clips():
     # Job 763 pattern: 3–64 chars, every clip ~1.5s.
     samples = [
         (61, 1.544),
@@ -78,7 +86,7 @@ def test_piper_output_ignores_text_detects_fixed_length_clips():
         (10, 1.486),
         (38, 1.498),
     ]
-    assert piper_output_ignores_text(samples) is True
+    assert tts_output_ignores_text(samples) is True
     varying = [
         (8, 0.6),
         (20, 1.4),
@@ -89,27 +97,52 @@ def test_piper_output_ignores_text_detects_fixed_length_clips():
         (18, 1.2),
         (48, 3.0),
     ]
-    assert piper_output_ignores_text(varying) is False
+    assert tts_output_ignores_text(varying) is False
 
 
-class _FakePiperVoice:
+class _FakeTensor:
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+
+class _FakeChatterboxModel:
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.sr = 24_000
 
-    def synthesize_wav(self, text: str, wav_file) -> None:
+    def generate(self, text: str, **kwargs):
         self.texts.append(text)
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(16000)
-        wav_file.writeframes(b"\x00\x10" * 200)
+        return _FakeTensor()
 
 
-def test_write_piper_wav_sends_cue_text_not_cli_flags(tmp_path):
-    voice = _FakePiperVoice()
+def test_write_chatterbox_wav_sends_cue_text_and_profile(tmp_path, monkeypatch):
+    voice = _FakeChatterboxModel()
     out = tmp_path / "cue.wav"
-    _write_piper_wav(voice, "Para! Para!", out)
+    captured: dict[str, object] = {}
+
+    def save(path, audio, sample_rate):
+        captured.update({"path": path, "audio": audio, "sample_rate": sample_rate})
+        Path(path).write_bytes(b"wav" * 24)
+
+    monkeypatch.setitem(sys.modules, "torchaudio", types.SimpleNamespace(save=save))
+    _write_chatterbox_wav(
+        voice,
+        ChatterboxVoiceProfile(
+            id="chatterbox-multilingual-v3:pt-PT:expressive",
+            label="Expressive",
+            language_id="pt",
+            exaggeration=0.72,
+            cfg_weight=0.35,
+            temperature=0.8,
+        ),
+        "Para! Para!",
+        out,
+    )
     assert voice.texts == ["Para! Para!"]
-    assert "--download-dir" not in voice.texts[0]
+    assert captured["sample_rate"] == 24_000
     assert out.stat().st_size > 64
 
 
@@ -366,13 +399,13 @@ async def test_start_manual_dub_persists_requested_mix_and_speaker_voices(dub_en
         media,
         target_language="pt-PT",
         mix_mode="voiceover_preview",
-        speaker_voice_overrides={"Ryder": "pt_PT-tugão-medium"},
+        speaker_voice_overrides={"Ryder": "chatterbox-multilingual-v3:pt-PT:expressive"},
     )
 
     row = db.get(JobRow, created.id)
     assert row is not None
     assert row.dub_mix_mode == "voiceover_preview"
-    assert row.dub_speaker_voices == {"ryder": "pt_PT-tugão-medium"}
+    assert row.dub_speaker_voices == {"ryder": "chatterbox-multilingual-v3:pt-PT:expressive"}
 
 
 @pytest.mark.asyncio
@@ -465,7 +498,7 @@ def test_claim_dub_independent_of_translate(dub_env):
             media_path=str(video),
             source_subtitle_path=str(video.parent / "Film.pt.srt"),
             target_subtitle_path=str(build_dub_preview_path(video, "pt-PT")),
-            model="pt_PT-tugão-medium",
+            model="chatterbox-multilingual-v3:pt-PT:natural",
             status="pending",
         )
     )

@@ -1,4 +1,4 @@
 from app.localization.dubbing.providers.base import TTSProvider
-from app.localization.dubbing.providers.piper import PiperTTSProvider
+from app.localization.dubbing.providers.chatterbox import ChatterboxTTSProvider
 
-__all__ = ["PiperTTSProvider", "TTSProvider"]
+__all__ = ["ChatterboxTTSProvider", "TTSProvider"]

@@ -107,9 +107,6 @@ async def test_smoke_select_transcribe_format_dub_mux(tmp_path, monkeypatch):
         overwrite=True,
     )
 
-    async def fake_ensure(**kwargs):
-        return Path("/tmp/fake.onnx")
-
     async def fake_synth(self, text, voice, language, *, output_path, is_cancelled=None):
         from app.localization.artifacts import AudioArtifact
         from tests.fixtures.media import write_sine_wav
@@ -124,14 +121,10 @@ async def test_smoke_select_transcribe_format_dub_mux(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "app.localization.dubbing.providers.piper.PiperTTSProvider.synthesize",
+        "app.localization.dubbing.providers.chatterbox.ChatterboxTTSProvider.synthesize",
         fake_synth,
     )
-    monkeypatch.setattr(
-        "app.localization.dubbing.pipeline.ensure_piper_voice_available",
-        fake_ensure,
-    )
-    monkeypatch.setattr("app.localization.dubbing.pipeline.load_piper_voice", lambda _path: object())
+    monkeypatch.setattr("app.localization.dubbing.pipeline.load_chatterbox_model", lambda: object())
 
     event_log = JobEventLog(tmp_path / "job.jsonl", job_id=1)
     out = tmp_path / "Movie.pt.dub.mkv"

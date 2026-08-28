@@ -165,10 +165,10 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 ### TTS dubbing
 
 - Manual **Dub** on a media page when a target-language SRT already exists beside the file
-- Local Piper TTS via the Python API (voices cached under `/config/piper-voices`); by default separates the original vocal stem with Demucs, mixes the translated dialogue with the preserved music/ambience/effects, and writes `{stem}.{lang}.dub.mkv` next to the original
+- Local Chatterbox Multilingual V3 TTS (checkpoint cached under `/config/huggingface`); by default separates the original vocal stem with Demucs, mixes the translated dialogue with the preserved music/ambience/effects, and writes `{stem}.{lang}.dub.mkv` next to the original
 - The Portuguese dub is the default audio track (48 kHz stereo); the original audio remains as an alternate track. **Voiceover preview** remains available when a speech-only timeline is wanted.
-- Subtitle labels such as `Ryder:` are retained as speaker identities. Optional per-speaker Piper model overrides can be set in the Dub dialog; unlabelled cues use the target-language default voice.
-- The source video is never overwritten; first run downloads the voice model; CPU synthesis is slow in the default image
+- Subtitle labels such as `Ryder:` are retained as speaker identities. Optional per-speaker Chatterbox expressive profiles can be set in the Dub dialog; unlabelled cues use the target-language natural profile.
+- The source video is never overwritten; the first run downloads the Chatterbox checkpoint (about 2 GB). The supplied image uses CPU synthesis; a GPU-enabled image can set `SUBTITLE_AI_CHATTERBOX_DEVICE=cuda`.
 
 ### Translation
 

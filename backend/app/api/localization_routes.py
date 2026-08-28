@@ -42,7 +42,12 @@ from app.localization.service import (
     LocalizationTaskService,
     UnsupportedCapabilityError,
 )
-from app.localization.dubbing.providers.piper import recommended_voice_models_for_language
+from app.localization.dubbing.providers.chatterbox import (
+    TTSError,
+    recommended_voice_models_for_language,
+    resolve_voice_model_for_language,
+    resolve_voice_profile,
+)
 from app.localization.dubbing.voice_cast import (
     VoiceCastDraftService,
     VoiceCastError,
@@ -91,13 +96,18 @@ def _voice_cast_out(row: VoiceCastDraftRow) -> VoiceCastOut:
             continue
         raw_cues = raw.get("cue_indices")
         cues = [int(item) for item in raw_cues if isinstance(item, int)] if isinstance(raw_cues, list) else []
+        raw_voice_model = str(raw.get("voice_model") or "")
+        try:
+            voice_model = resolve_voice_profile(raw_voice_model, row.target_language).id
+        except TTSError:
+            voice_model = resolve_voice_model_for_language(row.target_language)
         suggestions.append(
             VoiceCastSuggestionOut(
                 speaker_id=str(raw.get("speaker_id") or "Unidentified speaker"),
                 voice_style=str(raw.get("voice_style") or "No voice style note"),
                 cue_indices=cues,
                 confidence=raw.get("confidence") if isinstance(raw.get("confidence"), (int, float)) else None,
-                voice_model=str(raw.get("voice_model") or ""),
+                voice_model=voice_model,
                 enabled=bool(raw.get("enabled", True)),
             )
         )

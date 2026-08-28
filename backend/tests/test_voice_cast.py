@@ -29,7 +29,7 @@ def test_voice_cast_parser_keeps_only_sampled_cues_and_fills_gaps():
           ]
         }''',
         allowed_cues={3, 8, 14, 21},
-        default_voice_model="pt_PT-tugão-medium",
+        default_voice_model="chatterbox-multilingual-v3:pt-PT:natural",
     )
 
     assert suggestions[0].speaker_id == "Ryder"
@@ -38,7 +38,9 @@ def test_voice_cast_parser_keeps_only_sampled_cues_and_fills_gaps():
     assert suggestions[1].cue_indices == [14]
     assert suggestions[-1].speaker_id == "Unidentified speaker"
     assert suggestions[-1].cue_indices == [21]
-    assert all(item.voice_model == "pt_PT-tugão-medium" for item in suggestions)
+    assert suggestions[0].voice_model.endswith(":expressive")
+    assert suggestions[1].voice_model.endswith(":expressive")
+    assert suggestions[-1].voice_model.endswith(":natural")
 
 
 def test_voice_cast_sampling_is_bounded_and_evenly_spread():
@@ -107,8 +109,14 @@ def test_voice_cast_draft_is_persisted_and_uses_only_enabled_assignments(tmp_pat
             analysed_cue_count=3,
             metadata_used={"season": 1},
             suggestions=[
-                VoiceCastSuggestion("Speaker 1", "Warm", [3, 9], 0.8, "pt_PT-tugão-medium"),
-                VoiceCastSuggestion("Speaker 2", "Bright", [15], 0.6, "pt_PT-tugão-medium"),
+                VoiceCastSuggestion(
+                    "Speaker 1", "Warm", [3, 9], 0.8,
+                    "chatterbox-multilingual-v3:pt-PT:expressive",
+                ),
+                VoiceCastSuggestion(
+                    "Speaker 2", "Bright", [15], 0.6,
+                    "chatterbox-multilingual-v3:pt-PT:expressive",
+                ),
             ],
         ),
     )
@@ -126,7 +134,7 @@ def test_voice_cast_draft_is_persisted_and_uses_only_enabled_assignments(tmp_pat
                 "voice_style": "Calm",
                 "cue_indices": [3, 9],
                 "confidence": 0.75,
-                "voice_model": "pt_PT-tugão-medium",
+                "voice_model": "chatterbox-multilingual-v3:pt-PT:calm",
                 "enabled": True,
             },
             {
@@ -134,7 +142,7 @@ def test_voice_cast_draft_is_persisted_and_uses_only_enabled_assignments(tmp_pat
                 "voice_style": "Bright",
                 "cue_indices": [15],
                 "confidence": 0.6,
-                "voice_model": "pt_PT-tugão-medium",
+                "voice_model": "chatterbox-multilingual-v3:pt-PT:expressive",
                 "enabled": False,
             },
         ],
@@ -142,10 +150,10 @@ def test_voice_cast_draft_is_persisted_and_uses_only_enabled_assignments(tmp_pat
 
     assert saved.mix_mode == "background_preserved"
     assert service.speaker_voice_overrides(saved) == {
-        "cue:3": "pt_PT-tugão-medium",
-        "cue:9": "pt_PT-tugão-medium",
+        "cue:3": "chatterbox-multilingual-v3:pt-PT:calm",
+        "cue:9": "chatterbox-multilingual-v3:pt-PT:calm",
     }
     public_draft = _voice_cast_out(saved)
     assert public_draft.id == draft.id
     assert public_draft.suggestions[0].speaker_id == "Narrator"
-    assert public_draft.available_voice_models[0].id == "pt_PT-tugão-medium"
+    assert any(item.id.endswith(":natural") for item in public_draft.available_voice_models)

@@ -54,6 +54,7 @@ app/languages/countries.py
 app/languages/iso.py
 app/localization/__init__.py
 app/localization/checkpoints.py
+app/localization/dubbing/providers/chatterbox.py
 app/localization/extracted_source.py
 app/localization/glossary.py
 app/localization/locale_notes.py

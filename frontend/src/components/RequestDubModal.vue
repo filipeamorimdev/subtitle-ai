@@ -71,7 +71,7 @@ function parseSpeakerVoiceOverrides(raw: string): Record<string, string> {
     if (!trimmed || trimmed.startsWith('#')) continue
     const separator = trimmed.indexOf('=')
     if (separator < 1 || !trimmed.slice(separator + 1).trim()) {
-      throw new Error('Use one speaker mapping per line: Speaker = piper-voice-model')
+      throw new Error('Use one speaker mapping per line: Speaker = Chatterbox-profile')
     }
     voices[trimmed.slice(0, separator).trim()] = trimmed.slice(separator + 1).trim()
   }
@@ -250,13 +250,13 @@ async function submit() {
             Advanced manual voice overrides
           </summary>
           <p class="mt-1 text-xs text-ink-500">
-            Optional label-to-Piper mappings, for example when subtitle lines include “Ryder:”.
+            Optional label-to-Chatterbox profile mappings, for example when subtitle lines include “Ryder:”.
             These override any auto-cast assignment for the same label.
           </p>
           <textarea
             v-model="speakerVoiceOverrides"
             class="mt-2 min-h-20 w-full rounded-md border border-ink-300 bg-white p-2 font-mono text-xs dark:border-ink-600 dark:bg-ink-800"
-            placeholder="Ryder = pt_PT-tugão-medium"
+            placeholder="Ryder = chatterbox-multilingual-v3:pt-PT:expressive"
           />
         </details>
 

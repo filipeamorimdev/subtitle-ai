@@ -43,7 +43,7 @@ The dashboard ask bar talks to `POST /api/operator/sessions/{id}/messages`. The 
 
 ## Manual dubbing
 
-When a target-language SRT already exists, the media page offers **Dub**. The default `background_preserved` mode creates the Piper dialogue timeline, separates the original vocal stem with Demucs, and mixes the translated dialogue with the retained music, ambience, and effects. The output `{stem}.{lang}.dub.mkv` places the 48 kHz Portuguese track first and marks it default; the source audio remains as an alternate track. `voiceover_preview` keeps the previous speech-only timeline for quick previews. Subtitle speaker labels can map to optional per-speaker Piper model overrides; unlabelled cues retain the default voice. The source video is never overwritten. Completion is disk-only (no Bazarr verify). Use `capability=audio` on localization tasks; jobs use `job_kind=dub`.
+When a target-language SRT already exists, the media page offers **Dub**. The default `background_preserved` mode creates the local Chatterbox dialogue timeline, separates the original vocal stem with Demucs, and mixes the translated dialogue with the retained music, ambience, and effects. The output `{stem}.{lang}.dub.mkv` places the 48 kHz Portuguese track first and marks it default; the source audio remains as an alternate track. `voiceover_preview` keeps the previous speech-only timeline for quick previews. Subtitle speaker labels can map to optional per-speaker Chatterbox delivery profiles; unlabelled cues retain the natural profile. The source video is never overwritten. Completion is disk-only (no Bazarr verify). Use `capability=audio` on localization tasks; jobs use `job_kind=dub`.
 
 ## Automatic fallback
 
