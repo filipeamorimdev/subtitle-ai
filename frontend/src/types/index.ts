@@ -432,6 +432,8 @@ export interface OpenRouterModel {
   input_modalities?: string[] | null
   output_modalities?: string[] | null
   capabilities?: string[] | null
+  audio_analysis_compatible?: boolean
+  audio_analysis_compatibility_reason?: string
 }
 
 export interface AiRouting {
@@ -453,6 +455,7 @@ export interface AiPreference {
   provider_name?: string
   model_id: string
   tier: string
+  purpose?: 'translation' | 'audio_analysis'
   priority: number
   enabled: boolean
   name?: string
@@ -478,6 +481,8 @@ export interface AiPreference {
   average_cost_per_clean_success_usd?: number | null
   average_latency_ms?: number | null
   last_used_at?: string | null
+  audio_analysis_compatible?: boolean
+  audio_analysis_compatibility_reason?: string
 }
 
 export interface AiProviderInfo {

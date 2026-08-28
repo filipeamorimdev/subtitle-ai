@@ -442,7 +442,8 @@ class AiRoutingUpdate(BaseModel):
 
 class AiModelPreferenceIn(BaseModel):
     model_id: str
-    tier: Literal["free", "paid"]
+    tier: Literal["free", "paid"] | None = None
+    purpose: Literal["translation", "audio_analysis"] = "translation"
     enabled: bool = True
 
 
@@ -452,7 +453,8 @@ class AiModelPatch(BaseModel):
 
 
 class AiModelReorderIn(BaseModel):
-    tier: Literal["free", "paid"]
+    tier: Literal["free", "paid"] | None = None
+    purpose: Literal["translation", "audio_analysis"] = "translation"
     ordered_ids: list[int]
 
 

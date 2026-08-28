@@ -78,6 +78,18 @@ export const api = {
   getCandidates: () => request<Candidate[]>('/api/candidates'),
   refreshCandidates: () =>
     request<Candidate[]>('/api/candidates/refresh', { method: 'POST' }),
+  getJobs: (params: {
+    status?: string
+    limit?: number
+    sort?: 'created_at' | 'completed_at'
+  } = {}) => {
+    const query = new URLSearchParams()
+    if (params.status) query.set('status', params.status)
+    if (params.limit != null) query.set('limit', String(params.limit))
+    if (params.sort) query.set('sort', params.sort)
+    const suffix = query.toString() ? `?${query}` : ''
+    return request<Job[]>(`/api/jobs${suffix}`)
+  },
   getJob: (id: number) => request<Job>(`/api/jobs/${id}`),
   getJobLog: (id: number) => request<JobLog>(`/api/jobs/${id}/log`),
   getJobRequests: (id: number) => request<JobUsageExchange[]>(`/api/jobs/${id}/requests`),
@@ -126,18 +138,26 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ model_id }),
     }),
-  addAiModel: (model_id: string, tier: 'free' | 'paid') =>
+  addAiModel: (
+    model_id: string,
+    tier?: 'free' | 'paid',
+    purpose: 'translation' | 'audio_analysis' = 'translation',
+  ) =>
     request<{ id: number }>(`/api/ai/models`, {
       method: 'POST',
-      body: JSON.stringify({ model_id, tier }),
+      body: JSON.stringify({ model_id, tier, purpose }),
     }),
   patchAiModel: (id: number, payload: { enabled?: boolean; tier?: 'free' | 'paid' }) =>
     request(`/api/ai/models/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteAiModel: (id: number) => request(`/api/ai/models/${id}`, { method: 'DELETE' }),
-  reorderAiModels: (tier: 'free' | 'paid', ordered_ids: number[]) =>
+  reorderAiModels: (
+    tier: 'free' | 'paid' | null,
+    ordered_ids: number[],
+    purpose: 'translation' | 'audio_analysis' = 'translation',
+  ) =>
     request('/api/ai/models/reorder', {
       method: 'POST',
-      body: JSON.stringify({ tier, ordered_ids }),
+      body: JSON.stringify({ tier, ordered_ids, purpose }),
     }),
   getAiRouting: () => request<AiRouting>('/api/ai/routing'),
   updateAiRouting: (payload: Partial<AiRouting> & {

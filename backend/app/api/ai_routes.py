@@ -32,7 +32,11 @@ from app.services.ai_cost import estimate_request_cost_micro, micro_to_usd
 from app.services.ai_ranking import AiRankingService
 from app.services.ai_stats import AiStatsService, period_bounds
 from app.services.ai_usage import AiUsageService
-from app.services.model_catalog import ModelCatalogService, check_compatibility
+from app.services.model_catalog import (
+    ModelCatalogService,
+    check_audio_analysis_compatibility,
+    check_compatibility,
+)
 from app.services.model_preferences import ModelPreferenceService
 from app.services.settings import SettingsService
 from app.translation.openrouter.client import OpenRouterError, batch_base_model
@@ -284,6 +288,7 @@ async def ai_models(db: Session = Depends(get_db)) -> dict:
     if snapshot:
         for model in snapshot.models:
             compatible, reason = check_compatibility(model, batch_size=public.batch_size)
+            audio_compatible, audio_reason = check_audio_analysis_compatibility(model)
             catalog_models.append(
                 {
                     "provider_id": model.provider_id,
@@ -298,6 +303,8 @@ async def ai_models(db: Session = Depends(get_db)) -> dict:
                     "pricing_tier": _tier_value(model.pricing_tier),
                     "compatible": compatible,
                     "compatibility_reason": reason,
+                    "audio_analysis_compatible": audio_compatible,
+                    "audio_analysis_compatibility_reason": audio_reason,
                     "stale": snapshot.stale,
                     "pricing_freshness": snapshot.freshness.value,
                     "unavailable": not model.available,
@@ -315,6 +322,11 @@ async def ai_models(db: Session = Depends(get_db)) -> dict:
         meta = catalog.annotate_model(
             pref.model_id, batch_size=public.batch_size, provider_id=provider_id
         )
+        catalog_model = catalog.get_model(provider_id, pref.model_id)
+        if catalog_model is not None:
+            audio_compatible, audio_reason = check_audio_analysis_compatibility(catalog_model)
+        else:
+            audio_compatible, audio_reason = False, "Model metadata is not in the catalog"
         rank = ranking.get((provider_id, pref.model_id)) or ranking.get(
             (provider_id, batch_base_model(pref.model_id))
         ) or ranking_by_model.get(pref.model_id)
@@ -325,6 +337,9 @@ async def ai_models(db: Session = Depends(get_db)) -> dict:
                 "provider_name": _provider_display(provider_id),
                 "model_id": pref.model_id,
                 "tier": pref.tier,
+                "purpose": getattr(pref, "purpose", "translation"),
+                "audio_analysis_compatible": audio_compatible,
+                "audio_analysis_compatibility_reason": audio_reason,
                 "priority": pref.priority,
                 "enabled": pref.enabled,
                 **meta,
@@ -478,8 +493,13 @@ def add_model(payload: AiModelPreferenceIn, db: Session = Depends(get_db)) -> di
     public = SettingsService(db).get_public()
     provider_id = OPENROUTER_PROVIDER_ID
     info = catalog.get_model(provider_id, payload.model_id)
+    purpose = payload.purpose
+    tier = payload.tier
     if info is not None:
-        compatible, reason = check_compatibility(info, batch_size=public.batch_size)
+        if purpose == "audio_analysis":
+            compatible, reason = check_audio_analysis_compatibility(info)
+        else:
+            compatible, reason = check_compatibility(info, batch_size=public.batch_size)
         if not compatible:
             raise HTTPException(status_code=400, detail=reason)
         if _tier_value(info.pricing_tier) == "unknown" and not public.allow_unknown_pricing:
@@ -487,12 +507,17 @@ def add_model(payload: AiModelPreferenceIn, db: Session = Depends(get_db)) -> di
                 status_code=400,
                 detail="Unknown pricing is blocked unless you enable unknown-priced models.",
             )
+        if purpose == "audio_analysis" and tier is None:
+            tier = "free" if _tier_value(info.pricing_tier) == "free" else "paid"
+    if tier is None:
+        raise HTTPException(status_code=400, detail="Choose a free or paid translation pool")
     try:
         row = ModelPreferenceService(db).add(
             model_id=payload.model_id,
-            tier=payload.tier,
+            tier=tier,
             enabled=payload.enabled,
             provider_id=provider_id,
+            purpose=purpose,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -501,6 +526,7 @@ def add_model(payload: AiModelPreferenceIn, db: Session = Depends(get_db)) -> di
         "provider_id": row.provider_id,
         "model_id": row.model_id,
         "tier": row.tier,
+        "purpose": row.purpose,
         "priority": row.priority,
     }
 
@@ -518,6 +544,7 @@ def patch_model(pref_id: int, payload: AiModelPatch, db: Session = Depends(get_d
         "provider_id": row.provider_id,
         "model_id": row.model_id,
         "tier": row.tier,
+        "purpose": getattr(row, "purpose", "translation"),
         "enabled": row.enabled,
         "priority": row.priority,
     }
@@ -535,7 +562,11 @@ def delete_model(pref_id: int, db: Session = Depends(get_db)) -> dict:
 @router.post("/models/reorder")
 def reorder_models(payload: AiModelReorderIn, db: Session = Depends(get_db)) -> dict:
     try:
-        rows = ModelPreferenceService(db).reorder(tier=payload.tier, ordered_ids=payload.ordered_ids)
+        rows = ModelPreferenceService(db).reorder(
+            tier=payload.tier,
+            ordered_ids=payload.ordered_ids,
+            purpose=payload.purpose,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ids": [r.id for r in rows]}

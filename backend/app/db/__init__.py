@@ -122,6 +122,85 @@ def _ensure_jobs_provider_id_nullable(conn) -> None:
     conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
+def _ensure_ai_model_preferences_purpose(conn) -> None:
+    """Upgrade the preference uniqueness rule for the audio-analysis pool.
+
+    ``create_all`` cannot alter a SQLite unique constraint. Existing installs
+    therefore need a small table rebuild so the same multimodal model may be
+    selected for translation and audio analysis independently.
+    """
+    from sqlalchemy import text
+
+    tables = {
+        row[0]
+        for row in conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+    }
+    if "ai_model_preferences" not in tables:
+        return
+
+    info = conn.execute(text("PRAGMA table_info(ai_model_preferences)")).fetchall()
+    columns = {row[1] for row in info}
+    target_unique = False
+    for index in conn.execute(text("PRAGMA index_list(ai_model_preferences)")).fetchall():
+        if not int(index[2] or 0):
+            continue
+        index_name = str(index[1]).replace("'", "''")
+        indexed_columns = [
+            row[2]
+            for row in conn.execute(text(f"PRAGMA index_info('{index_name}')")).fetchall()
+        ]
+        if indexed_columns == ["provider_id", "model_id", "purpose"]:
+            target_unique = True
+            break
+    if "purpose" in columns and target_unique:
+        return
+
+    purpose_value = 'COALESCE("purpose", \'translation\')' if "purpose" in columns else "'translation'"
+    conn.execute(text("PRAGMA foreign_keys=OFF"))
+    conn.execute(
+        text(
+            """
+            CREATE TABLE ai_model_preferences__p18 (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                provider_id VARCHAR(64) NOT NULL,
+                model_id VARCHAR(256) NOT NULL,
+                tier VARCHAR(16) NOT NULL,
+                purpose VARCHAR(32) NOT NULL DEFAULT 'translation',
+                priority INTEGER NOT NULL DEFAULT 1,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_ai_model_preferences_provider_model_purpose
+                    UNIQUE (provider_id, model_id, purpose)
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            f"""
+            INSERT INTO ai_model_preferences__p18
+                (id, provider_id, model_id, tier, purpose, priority, enabled, created_at, updated_at)
+            SELECT id, provider_id, model_id, tier, {purpose_value}, priority, enabled,
+                   created_at, updated_at
+            FROM ai_model_preferences
+            """
+        )
+    )
+    conn.execute(text("DROP TABLE ai_model_preferences"))
+    conn.execute(text("ALTER TABLE ai_model_preferences__p18 RENAME TO ai_model_preferences"))
+    for name, columns_sql in (
+        ("ix_ai_model_preferences_provider_id", "provider_id"),
+        ("ix_ai_model_preferences_model_id", "model_id"),
+        ("ix_ai_model_preferences_tier", "tier"),
+        ("ix_ai_model_preferences_purpose", "purpose"),
+    ):
+        conn.execute(text(f"CREATE INDEX {name} ON ai_model_preferences ({columns_sql})"))
+    conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
 def init_db() -> None:
     # Import models so metadata is registered.
     from app.db import models  # noqa: F401
@@ -131,6 +210,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # Lightweight SQLite column ensure for existing deployments without alembic upgrade.
     with engine.begin() as conn:
+        _ensure_ai_model_preferences_purpose(conn)
         # Keep legacy glossary tables until Alembic has copied their data into
         # ``glossary_entries`` (revision 0016).  Dropping them here used to
         # erase user-maintained terms before the migration could preserve them.

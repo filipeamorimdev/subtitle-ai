@@ -109,17 +109,27 @@ class AiProviderAccountRow(Base):
 
 
 class AiModelPreferenceRow(Base):
-    """Provider-neutral free/paid model pools with explicit priority."""
+    """Provider-neutral model pools, scoped to their intended workload."""
 
     __tablename__ = "ai_model_preferences"
     __table_args__ = (
-        UniqueConstraint("provider_id", "model_id", name="uq_ai_model_preferences_provider_model"),
+        UniqueConstraint(
+            "provider_id",
+            "model_id",
+            "purpose",
+            name="uq_ai_model_preferences_provider_model_purpose",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     model_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
     tier: Mapped[str] = mapped_column(String(16), nullable=False, index=True)  # free | paid
+    # ``audio_analysis`` is deliberately separate from translation routing so a
+    # multimodal model can be configured for both workloads independently.
+    purpose: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="translation", index=True
+    )  # translation | audio_analysis
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

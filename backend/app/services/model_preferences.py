@@ -16,6 +16,10 @@ from app.translation.openrouter.client import batch_base_model
 
 logger = get_logger("model_preferences")
 
+TRANSLATION_PURPOSE = "translation"
+AUDIO_ANALYSIS_PURPOSE = "audio_analysis"
+MODEL_PURPOSES = frozenset({TRANSLATION_PURPOSE, AUDIO_ANALYSIS_PURPOSE})
+
 
 def _invalidate_ai_health() -> None:
     try:
@@ -97,7 +101,10 @@ def seed_legacy_model_preference(db: Session) -> OpenRouterModelPreferenceRow | 
 
 def _mirror_to_legacy(db: Session, row: AiModelPreferenceRow) -> None:
     """Keep openrouter_model_preferences in sync for OpenRouter during alpha1."""
-    if row.provider_id != OPENROUTER_PROVIDER_ID:
+    if (
+        row.provider_id != OPENROUTER_PROVIDER_ID
+        or getattr(row, "purpose", TRANSLATION_PURPOSE) != TRANSLATION_PURPOSE
+    ):
         return
     legacy = db.scalar(
         select(OpenRouterModelPreferenceRow).where(
@@ -136,24 +143,30 @@ def list_preferences(
     tier: str | None = None,
     enabled_only: bool = False,
     provider_id: str | None = None,
+    purpose: str | None = TRANSLATION_PURPOSE,
 ) -> list[AiModelPreferenceRow]:
-    """Prefer generic preferences; fall back to legacy OpenRouter rows if empty."""
+    """Return preferences, keeping audio-analysis models out of text routing by default."""
     query = select(AiModelPreferenceRow)
     if provider_id:
         query = query.where(AiModelPreferenceRow.provider_id == provider_id)
     if tier:
         query = query.where(AiModelPreferenceRow.tier == tier)
+    if purpose is not None:
+        query = query.where(AiModelPreferenceRow.purpose == purpose)
     if enabled_only:
         query = query.where(AiModelPreferenceRow.enabled.is_(True))
-    query = query.order_by(
-        AiModelPreferenceRow.provider_id.asc(),
-        AiModelPreferenceRow.tier.asc(),
-        AiModelPreferenceRow.priority.asc(),
-        AiModelPreferenceRow.id.asc(),
-    )
+    query = query.order_by(AiModelPreferenceRow.provider_id.asc())
+    if purpose != AUDIO_ANALYSIS_PURPOSE:
+        query = query.order_by(AiModelPreferenceRow.tier.asc())
+    query = query.order_by(AiModelPreferenceRow.priority.asc(), AiModelPreferenceRow.id.asc())
     rows = list(db.scalars(query).all())
     if rows:
         return rows
+
+    # Audio analysis has no legacy representation. It should never fall back
+    # to a translation pool merely because it has not been configured yet.
+    if purpose == AUDIO_ANALYSIS_PURPOSE:
+        return []
 
     # Compatibility fallback: legacy OpenRouter preferences not yet migrated.
     legacy_query = select(OpenRouterModelPreferenceRow)
@@ -183,7 +196,12 @@ def sync_legacy_openrouter_model(db: Session) -> None:
     settings = db.get(SettingsRow, 1)
     if settings is None:
         return
-    prefs = list_preferences(db, enabled_only=True, provider_id=OPENROUTER_PROVIDER_ID)
+    prefs = list_preferences(
+        db,
+        enabled_only=True,
+        provider_id=OPENROUTER_PROVIDER_ID,
+        purpose=TRANSLATION_PURPOSE,
+    )
     if not prefs:
         return
     free = [p for p in prefs if p.tier == "free"]
@@ -210,9 +228,15 @@ class ModelPreferenceService:
         *,
         enabled_only: bool = False,
         provider_id: str | None = None,
+        purpose: str | None = None,
     ) -> list[AiModelPreferenceRow]:
         self.ensure_seeded()
-        return list_preferences(self.db, enabled_only=enabled_only, provider_id=provider_id)
+        return list_preferences(
+            self.db,
+            enabled_only=enabled_only,
+            provider_id=provider_id,
+            purpose=purpose,
+        )
 
     def add(
         self,
@@ -221,10 +245,13 @@ class ModelPreferenceService:
         tier: str,
         enabled: bool = True,
         provider_id: str = OPENROUTER_PROVIDER_ID,
+        purpose: str = TRANSLATION_PURPOSE,
     ) -> AiModelPreferenceRow:
         model_id = model_id.strip()
         if tier not in ("free", "paid"):
             raise ValueError("tier must be free or paid")
+        if purpose not in MODEL_PURPOSES:
+            raise ValueError(f"Unsupported model purpose: {purpose}")
         catalog_tier = _classify_tier_from_cache(
             self.db, batch_base_model(model_id), provider_id=provider_id
         )
@@ -240,21 +267,25 @@ class ModelPreferenceService:
             select(AiModelPreferenceRow).where(
                 AiModelPreferenceRow.provider_id == provider_id,
                 AiModelPreferenceRow.model_id == model_id,
+                AiModelPreferenceRow.purpose == purpose,
             )
         )
         if existing:
-            raise ValueError(f"Model {model_id} is already in the {existing.tier} pool")
+            label = "audio analysis" if purpose == AUDIO_ANALYSIS_PURPOSE else existing.tier
+            raise ValueError(f"Model {model_id} is already in the {label} pool")
 
-        max_priority = self.db.scalar(
-            select(func.max(AiModelPreferenceRow.priority)).where(
-                AiModelPreferenceRow.provider_id == provider_id,
-                AiModelPreferenceRow.tier == tier,
-            )
+        priority_query = select(func.max(AiModelPreferenceRow.priority)).where(
+            AiModelPreferenceRow.provider_id == provider_id,
+            AiModelPreferenceRow.purpose == purpose,
         )
+        if purpose == TRANSLATION_PURPOSE:
+            priority_query = priority_query.where(AiModelPreferenceRow.tier == tier)
+        max_priority = self.db.scalar(priority_query)
         row = AiModelPreferenceRow(
             provider_id=provider_id,
             model_id=model_id,
             tier=tier,
+            purpose=purpose,
             priority=int(max_priority or 0) + 1,
             enabled=enabled,
         )
@@ -287,17 +318,20 @@ class ModelPreferenceService:
                     select(AiModelPreferenceRow).where(
                         AiModelPreferenceRow.provider_id == row.provider_id,
                         AiModelPreferenceRow.model_id == row.model_id,
+                        AiModelPreferenceRow.purpose
+                        == getattr(row, "purpose", TRANSLATION_PURPOSE),
                         AiModelPreferenceRow.id != row.id,
                     )
                 )
                 if conflict:
                     raise ValueError("Model already exists in the other pool")
-                max_priority = self.db.scalar(
-                    select(func.max(AiModelPreferenceRow.priority)).where(
-                        AiModelPreferenceRow.provider_id == row.provider_id,
-                        AiModelPreferenceRow.tier == tier,
-                    )
+                priority_query = select(func.max(AiModelPreferenceRow.priority)).where(
+                    AiModelPreferenceRow.provider_id == row.provider_id,
+                    AiModelPreferenceRow.purpose == getattr(row, "purpose", TRANSLATION_PURPOSE),
                 )
+                if getattr(row, "purpose", TRANSLATION_PURPOSE) == TRANSLATION_PURPOSE:
+                    priority_query = priority_query.where(AiModelPreferenceRow.tier == tier)
+                max_priority = self.db.scalar(priority_query)
                 row.tier = tier
                 row.priority = int(max_priority or 0) + 1
         self.db.add(row)
@@ -314,17 +348,33 @@ class ModelPreferenceService:
             raise LookupError("Model preference not found")
         model_id = row.model_id
         provider_id = row.provider_id
+        purpose = getattr(row, "purpose", TRANSLATION_PURPOSE)
         self.db.delete(row)
         self.db.flush()
-        _delete_legacy(self.db, model_id, provider_id)
+        if purpose == TRANSLATION_PURPOSE:
+            _delete_legacy(self.db, model_id, provider_id)
         sync_legacy_openrouter_model(self.db)
         self.db.commit()
         _invalidate_ai_health()
 
-    def reorder(self, *, tier: str, ordered_ids: list[int], provider_id: str | None = None) -> list[AiModelPreferenceRow]:
-        if tier not in ("free", "paid"):
-            raise ValueError("tier must be free or paid")
-        rows = list_preferences(self.db, tier=tier, provider_id=provider_id)
+    def reorder(
+        self,
+        *,
+        tier: str | None,
+        ordered_ids: list[int],
+        provider_id: str | None = None,
+        purpose: str = TRANSLATION_PURPOSE,
+    ) -> list[AiModelPreferenceRow]:
+        if purpose not in MODEL_PURPOSES:
+            raise ValueError(f"Unsupported model purpose: {purpose}")
+        if purpose == TRANSLATION_PURPOSE and tier not in ("free", "paid"):
+            raise ValueError("tier must be free or paid for translation models")
+        rows = list_preferences(
+            self.db,
+            tier=tier if purpose == TRANSLATION_PURPOSE else None,
+            provider_id=provider_id,
+            purpose=purpose,
+        )
         by_id = {r.id: r for r in rows}
         if set(ordered_ids) != set(by_id.keys()):
             raise ValueError("ordered_ids must include every model in the pool exactly once")
@@ -336,4 +386,9 @@ class ModelPreferenceService:
         sync_legacy_openrouter_model(self.db)
         self.db.commit()
         _invalidate_ai_health()
-        return list_preferences(self.db, tier=tier, provider_id=provider_id)
+        return list_preferences(
+            self.db,
+            tier=tier if purpose == TRANSLATION_PURPOSE else None,
+            provider_id=provider_id,
+            purpose=purpose,
+        )

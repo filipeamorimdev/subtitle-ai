@@ -12,7 +12,8 @@ const loading = ref(true)
 const pickerOpen = ref(false)
 const pickerQuery = ref('')
 const pickerError = ref<string | null>(null)
-const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid'>('compatible')
+const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid' | 'audio'>('compatible')
+const pickerPurpose = ref<'translation' | 'audio_analysis'>('translation')
 const testResult = ref<Record<number, string>>({})
 const batchSize = ref(25)
 const operatorModelId = ref<string>('')
@@ -64,10 +65,20 @@ function badge(tier?: string | null, stale?: boolean, unavailable?: boolean) {
 }
 
 type ModelTier = 'free' | 'paid'
+type ModelPurpose = 'translation' | 'audio_analysis'
 
-const freePool = computed(() => poolItems('free'))
-const paidPool = computed(() => poolItems('paid'))
-const usedIds = computed(() => new Set((data.value?.preferences || []).map((p) => p.model_id)))
+type ModelPool = {
+  purpose: ModelPurpose
+  tier: ModelTier | null
+  title: string
+  empty: string
+  badge: string
+  items: AiPreference[]
+}
+
+const freePool = computed(() => poolItems('translation', 'free'))
+const paidPool = computed(() => poolItems('translation', 'paid'))
+const audioPool = computed(() => poolItems('audio_analysis'))
 const toolModels = computed(() =>
   (data.value?.catalog || []).filter(
     (m: OpenRouterModel) =>
@@ -76,28 +87,61 @@ const toolModels = computed(() =>
       m.unavailable !== true,
   ),
 )
-const modelPools = computed(() => [
-  { tier: 'free' as const, title: 'Free models', empty: 'No free models configured.', badge: 'FREE', items: freePool.value },
-  { tier: 'paid' as const, title: 'Paid models', empty: 'No paid models configured.', badge: 'PAID', items: paidPool.value },
+const modelPools = computed<ModelPool[]>(() => [
+  {
+    purpose: 'translation',
+    tier: 'free',
+    title: 'Free models',
+    empty: 'No free models configured.',
+    badge: 'FREE',
+    items: freePool.value,
+  },
+  {
+    purpose: 'translation',
+    tier: 'paid',
+    title: 'Paid models',
+    empty: 'No paid models configured.',
+    badge: 'PAID',
+    items: paidPool.value,
+  },
+  {
+    purpose: 'audio_analysis',
+    tier: null,
+    title: 'Audio analysis models',
+    empty: 'No audio analysis models configured.',
+    badge: 'AUDIO',
+    items: audioPool.value,
+  },
 ])
 
-const drag = ref<{ tier: ModelTier; id: number; originalIds: number[] } | null>(null)
-const dropAt = ref<{ tier: ModelTier; index: number } | null>(null)
+const drag = ref<{ pool: ModelPool; id: number; originalIds: number[] } | null>(null)
+const dropAt = ref<{ pool: ModelPool; index: number } | null>(null)
 
-function poolItems(tier: ModelTier): AiPreference[] {
+function poolItems(purpose: ModelPurpose, tier: ModelTier | null = null): AiPreference[] {
   return (data.value?.preferences || [])
-    .filter((p) => p.tier === tier)
+    .filter((p) => (p.purpose || 'translation') === purpose && (purpose === 'audio_analysis' || p.tier === tier))
     .sort((a, b) => a.priority - b.priority)
+}
+
+function samePool(a: ModelPool, b: ModelPool) {
+  return a.purpose === b.purpose && a.tier === b.tier
+}
+
+function selectedForPurpose(modelId: string, purpose: ModelPurpose) {
+  return (data.value?.preferences || []).some(
+    (pref) => pref.model_id === modelId && (pref.purpose || 'translation') === purpose,
+  )
 }
 
 const filteredCatalog = computed(() => {
   const models = data.value?.catalog || []
   const q = pickerQuery.value.trim().toLowerCase()
   return models.filter((m) => {
-    if (usedIds.value.has(m.id)) return false
+    if (selectedForPurpose(m.id, pickerPurpose.value)) return false
     if (pickerFilter.value === 'compatible' && m.compatible === false) return false
     if (pickerFilter.value === 'free' && m.pricing_tier !== 'free') return false
     if (pickerFilter.value === 'paid' && m.pricing_tier !== 'paid') return false
+    if (pickerFilter.value === 'audio' && m.audio_analysis_compatible !== true) return false
     if (!q) return true
     return m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)
   })
@@ -180,10 +224,11 @@ async function refresh() {
   await refreshCatalog({ force: true, notify: true })
 }
 
-function openPicker(tier: ModelTier) {
+function openPicker(purpose: ModelPurpose) {
   pickerQuery.value = ''
   pickerError.value = null
-  pickerFilter.value = tier
+  pickerPurpose.value = purpose
+  pickerFilter.value = purpose === 'audio_analysis' ? 'audio' : 'compatible'
   pickerOpen.value = true
 }
 
@@ -192,10 +237,21 @@ function closePicker() {
   pickerError.value = null
 }
 
-async function addModel(model: OpenRouterModel, tier: 'free' | 'paid') {
+async function addModel(model: OpenRouterModel, tier: ModelTier) {
   pickerError.value = null
   try {
-    await api.addAiModel(model.id, tier)
+    await api.addAiModel(model.id, tier, 'translation')
+    closePicker()
+    await load()
+  } catch (err) {
+    pickerError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
+async function addAudioModel(model: OpenRouterModel) {
+  pickerError.value = null
+  try {
+    await api.addAiModel(model.id, undefined, 'audio_analysis')
     closePicker()
     await load()
   } catch (err) {
@@ -219,16 +275,22 @@ async function test(pref: AiPreference) {
   testResult.value[pref.id] = result.message
 }
 
-function applyLocalOrder(tier: ModelTier, orderedIds: number[]) {
+function applyLocalOrder(pool: ModelPool, orderedIds: number[]) {
   if (!data.value) return
   const rank = new Map(orderedIds.map((id, i) => [id, i + 1]))
   for (const pref of data.value.preferences) {
     const next = rank.get(pref.id)
-    if (pref.tier === tier && next != null) pref.priority = next
+    if (
+      (pref.purpose || 'translation') === pool.purpose &&
+      (pool.purpose === 'audio_analysis' || pref.tier === pool.tier) &&
+      next != null
+    ) {
+      pref.priority = next
+    }
   }
 }
 
-function onDragStart(event: DragEvent, tier: ModelTier, pref: AiPreference) {
+function onDragStart(event: DragEvent, pool: ModelPool, pref: AiPreference) {
   const target = event.target as HTMLElement | null
   if (target?.closest('button')) {
     event.preventDefault()
@@ -238,36 +300,35 @@ function onDragStart(event: DragEvent, tier: ModelTier, pref: AiPreference) {
   if (!transfer) return
   transfer.effectAllowed = 'move'
   transfer.setData('text/plain', String(pref.id))
-  drag.value = { tier, id: pref.id, originalIds: poolItems(tier).map((item) => item.id) }
-  dropAt.value = { tier, index: poolItems(tier).findIndex((item) => item.id === pref.id) }
+  drag.value = { pool, id: pref.id, originalIds: pool.items.map((item) => item.id) }
+  dropAt.value = { pool, index: pool.items.findIndex((item) => item.id === pref.id) }
 }
 
-function onDragOverCard(event: DragEvent, tier: ModelTier, index: number) {
+function onDragOverCard(event: DragEvent, pool: ModelPool, index: number) {
   event.preventDefault()
   event.stopPropagation()
-  if (!drag.value || drag.value.tier !== tier) return
+  if (!drag.value || !samePool(drag.value.pool, pool)) return
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
   const el = event.currentTarget as HTMLElement
   const rect = el.getBoundingClientRect()
   const insert = event.clientY > rect.top + rect.height / 2 ? index + 1 : index
-  if (dropAt.value?.tier !== tier || dropAt.value.index !== insert) {
-    dropAt.value = { tier, index: insert }
+  if (!dropAt.value || !samePool(dropAt.value.pool, pool) || dropAt.value.index !== insert) {
+    dropAt.value = { pool, index: insert }
   }
 }
 
-function onDragOverList(event: DragEvent, tier: ModelTier) {
+function onDragOverList(event: DragEvent, pool: ModelPool) {
   event.preventDefault()
-  if (!drag.value || drag.value.tier !== tier) return
+  if (!drag.value || !samePool(drag.value.pool, pool)) return
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
-  const items = poolItems(tier)
-  if (!dropAt.value || dropAt.value.tier !== tier) {
-    dropAt.value = { tier, index: items.length }
+  if (!dropAt.value || !samePool(dropAt.value.pool, pool)) {
+    dropAt.value = { pool, index: pool.items.length }
   }
 }
 
-function showDropSlot(tier: ModelTier, index: number) {
+function showDropSlot(pool: ModelPool, index: number) {
   if (!drag.value || !dropAt.value) return false
-  if (drag.value.tier !== tier || dropAt.value.tier !== tier) return false
+  if (!samePool(drag.value.pool, pool) || !samePool(dropAt.value.pool, pool)) return false
   const from = drag.value.originalIds.indexOf(drag.value.id)
   if (index === from || index === from + 1) return false
   return dropAt.value.index === index
@@ -278,15 +339,17 @@ function onDragEnd() {
   dropAt.value = null
 }
 
-async function onDrop(event: DragEvent, tier: ModelTier) {
+async function onDrop(event: DragEvent, pool: ModelPool) {
   event.preventDefault()
   event.stopPropagation()
   const state = drag.value
-  if (!state || state.tier !== tier) {
+  if (!state || !samePool(state.pool, pool)) {
     onDragEnd()
     return
   }
-  const insertAt = dropAt.value?.tier === tier ? dropAt.value.index : state.originalIds.indexOf(state.id)
+  const insertAt = dropAt.value && samePool(dropAt.value.pool, pool)
+    ? dropAt.value.index
+    : state.originalIds.indexOf(state.id)
   const from = state.originalIds.indexOf(state.id)
   onDragEnd()
   if (from < 0 || insertAt < 0) return
@@ -296,11 +359,11 @@ async function onDrop(event: DragEvent, tier: ModelTier) {
   const ids = [...state.originalIds]
   const [item] = ids.splice(from, 1)
   ids.splice(to, 0, item)
-  applyLocalOrder(tier, ids)
+  applyLocalOrder(pool, ids)
   try {
-    await api.reorderAiModels(tier, ids)
+    await api.reorderAiModels(pool.tier, ids, pool.purpose)
   } catch (err) {
-    applyLocalOrder(tier, state.originalIds)
+    applyLocalOrder(pool, state.originalIds)
     error.value = err instanceof Error ? err.message : String(err)
   }
 }
@@ -313,11 +376,15 @@ function catalogAge(seconds: number | null): string {
 }
 
 function canAddFree(model: OpenRouterModel) {
-  return model.compatible !== false && model.pricing_tier === 'free'
+  return !selectedForPurpose(model.id, 'translation') && model.compatible !== false && model.pricing_tier === 'free'
 }
 
 function canAddPaid(model: OpenRouterModel) {
-  return model.compatible !== false && (model.pricing_tier === 'paid' || model.pricing_tier === 'unknown')
+  return !selectedForPurpose(model.id, 'translation') && model.compatible !== false && (model.pricing_tier === 'paid' || model.pricing_tier === 'unknown')
+}
+
+function canAddAudio(model: OpenRouterModel) {
+  return !selectedForPurpose(model.id, 'audio_analysis') && model.audio_analysis_compatible === true
 }
 
 onMounted(async () => {
@@ -472,31 +539,34 @@ onMounted(async () => {
       <div class="grid gap-4 lg:grid-cols-2">
         <section
           v-for="pool in modelPools"
-          :key="pool.tier"
+          :key="`${pool.purpose}:${pool.tier || 'all'}`"
           class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
         >
           <div class="flex items-center justify-between">
             <h2 class="font-display text-lg font-semibold">{{ pool.title }}</h2>
-            <button class="text-sm font-semibold text-accent" type="button" @click="openPicker(pool.tier)">Add model</button>
+            <button class="text-sm font-semibold text-accent" type="button" @click="openPicker(pool.purpose)">Add model</button>
           </div>
+          <p v-if="pool.purpose === 'audio_analysis'" class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+            Used for AI analysis of source dialogue before a dub is created. It does not affect translation routing.
+          </p>
           <ul
             class="mt-3 flex flex-col gap-3"
-            @dragover="onDragOverList($event, pool.tier)"
-            @drop="onDrop($event, pool.tier)"
+            @dragover="onDragOverList($event, pool)"
+            @drop="onDrop($event, pool)"
           >
             <li
               v-for="(pref, index) in pool.items"
               :key="pref.id"
               class="contents"
             >
-              <div v-show="showDropSlot(pool.tier, index)" class="h-1.5 rounded-full bg-accent" aria-hidden="true" />
+              <div v-show="showDropSlot(pool, index)" class="h-1.5 rounded-full bg-accent" aria-hidden="true" />
               <div
                 class="cursor-grab rounded-md border border-ink-200 p-3 select-none active:cursor-grabbing dark:border-ink-700"
                 :class="drag?.id === pref.id ? 'opacity-40' : ''"
                 draggable="true"
-                @dragstart="onDragStart($event, pool.tier, pref)"
-                @dragover="onDragOverCard($event, pool.tier, index)"
-                @drop="onDrop($event, pool.tier)"
+                @dragstart="onDragStart($event, pool, pref)"
+                @dragover="onDragOverCard($event, pool, index)"
+                @drop="onDrop($event, pool)"
                 @dragend="onDragEnd"
               >
                 <div class="flex items-start gap-2">
@@ -516,8 +586,8 @@ onMounted(async () => {
                       >Adaptive #{{ pref.adaptive_rank }}</span>
                       <span v-else class="text-ink-500">Adaptive: insufficient data ({{ pref.sample_count || 0 }} samples)</span>
                       <span class="rounded border px-1.5 py-0.5">{{ pool.badge }}</span>
-                      <span :class="pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
-                        {{ pref.compatibility_reason || 'Compatible' }}
+                      <span :class="pool.purpose === 'audio_analysis' && pref.audio_analysis_compatible === false ? 'text-red-700' : pool.purpose === 'translation' && pref.compatible === false ? 'text-red-700' : 'text-emerald-700'">
+                        {{ pool.purpose === 'audio_analysis' ? pref.audio_analysis_compatibility_reason || 'Audio compatible' : pref.compatibility_reason || 'Compatible' }}
                       </span>
                     </div>
                     <div class="mt-2 text-xs text-ink-600 dark:text-ink-300">
@@ -540,7 +610,7 @@ onMounted(async () => {
                 </div>
               </div>
             </li>
-            <li v-show="showDropSlot(pool.tier, pool.items.length)" class="h-1.5 rounded-full bg-accent" aria-hidden="true" />
+            <li v-show="showDropSlot(pool, pool.items.length)" class="h-1.5 rounded-full bg-accent" aria-hidden="true" />
             <li v-if="!pool.items.length" class="text-sm text-ink-500">{{ pool.empty }}</li>
           </ul>
         </section>
@@ -558,7 +628,14 @@ onMounted(async () => {
           class="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
         >
           <div class="flex items-start justify-between gap-3">
-            <h2 id="add-model-title" class="font-display text-lg font-semibold">Add model</h2>
+            <div>
+              <h2 id="add-model-title" class="font-display text-lg font-semibold">
+                Add {{ pickerPurpose === 'audio_analysis' ? 'audio analysis model' : 'model' }}
+              </h2>
+              <p v-if="pickerPurpose === 'audio_analysis'" class="mt-1 text-sm text-ink-500">
+                Only models that accept audio input can be added to this pool.
+              </p>
+            </div>
             <button
               class="rounded-md px-2 py-1 text-sm text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800"
               type="button"
@@ -574,12 +651,12 @@ onMounted(async () => {
           />
           <div class="mt-2 flex flex-wrap gap-2 text-sm">
             <button
-              v-for="f in ['all', 'compatible', 'free', 'paid']"
+              v-for="f in ['all', 'compatible', 'free', 'paid', 'audio']"
               :key="f"
               type="button"
               class="rounded-md px-2 py-1"
               :class="pickerFilter === f ? 'bg-ink-100 dark:bg-ink-800' : ''"
-              @click="pickerFilter = f as typeof pickerFilter"
+              @click="pickerFilter = f as 'all' | 'compatible' | 'free' | 'paid' | 'audio'"
             >
               {{ f }}
             </button>
@@ -605,8 +682,12 @@ onMounted(async () => {
               <div class="text-xs" :class="model.compatible === false ? 'text-red-700' : 'text-emerald-700'">
                 {{ model.compatibility_reason }}
               </div>
+              <div class="text-xs" :class="model.audio_analysis_compatible === true ? 'text-emerald-700' : 'text-ink-500'">
+                {{ model.audio_analysis_compatibility_reason }}
+              </div>
               <div class="mt-2 flex gap-2">
                 <button
+                  v-if="pickerPurpose === 'translation'"
                   class="rounded border px-2 py-1 text-xs disabled:opacity-40"
                   type="button"
                   :disabled="!canAddFree(model)"
@@ -615,12 +696,22 @@ onMounted(async () => {
                   Add to Free
                 </button>
                 <button
+                  v-if="pickerPurpose === 'translation'"
                   class="rounded border px-2 py-1 text-xs disabled:opacity-40"
                   type="button"
                   :disabled="!canAddPaid(model)"
                   @click="addModel(model, 'paid')"
                 >
                   Add to Paid
+                </button>
+                <button
+                  v-if="pickerPurpose === 'audio_analysis'"
+                  class="rounded border px-2 py-1 text-xs disabled:opacity-40"
+                  type="button"
+                  :disabled="!canAddAudio(model)"
+                  @click="addAudioModel(model)"
+                >
+                  Add to Audio analysis
                 </button>
               </div>
             </li>

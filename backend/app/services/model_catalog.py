@@ -30,6 +30,8 @@ SYSTEM_PROMPT_TOKEN_BUDGET = 2_000
 TOKENS_PER_BLOCK_ESTIMATE = 80
 COMPATIBLE_REASON = "Compatible with Subtitle AI translation"
 INCOMPATIBLE_REASON = "Not compatible with Subtitle AI translation"
+AUDIO_ANALYSIS_COMPATIBLE_REASON = "Compatible with Subtitle AI audio analysis"
+AUDIO_ANALYSIS_INCOMPATIBLE_REASON = "Does not accept audio input for Subtitle AI analysis"
 
 # Per-provider in-flight refresh locks (process-local; no Redis).
 _refresh_locks: dict[str, asyncio.Lock] = {}
@@ -101,6 +103,29 @@ def check_compatibility(
         return False, INCOMPATIBLE_REASON
 
     return True, COMPATIBLE_REASON
+
+
+def check_audio_analysis_compatibility(model: AIModel | Any) -> tuple[bool, str]:
+    """Return whether a catalog model can analyse source dialogue audio.
+
+    Audio analysis is a chat-completion workload: the model must explicitly
+    accept audio and, when its response modalities are advertised, be able to
+    return text for the casting proposal. It intentionally does not use the
+    translation context-size heuristic.
+    """
+    if not isinstance(model, AIModel):
+        from app.ai.providers.openrouter import normalize_openrouter_model
+
+        model = normalize_openrouter_model(model)
+
+    metadata = model.metadata or {}
+    inputs = {str(m).lower() for m in (metadata.get("input_modalities") or [])}
+    outputs = {str(m).lower() for m in (metadata.get("output_modalities") or [])}
+    if "audio" not in inputs:
+        return False, AUDIO_ANALYSIS_INCOMPATIBLE_REASON
+    if outputs and "text" not in outputs:
+        return False, AUDIO_ANALYSIS_INCOMPATIBLE_REASON
+    return True, AUDIO_ANALYSIS_COMPATIBLE_REASON
 
 
 def _batch_base_model(model_id: str) -> str:

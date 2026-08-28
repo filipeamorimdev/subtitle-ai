@@ -13,6 +13,7 @@ from app.db import Base
 from app.db.models import OpenRouterCatalogCacheRow
 from app.services.model_catalog import (
     ModelCatalogService,
+    check_audio_analysis_compatibility,
     check_compatibility,
     classify_pricing_tier,
 )
@@ -68,6 +69,23 @@ def test_compatibility_text_and_context():
     assert reason == "Not compatible with Subtitle AI translation"
     tiny, reason = check_compatibility(_info(context_length=100), batch_size=25)
     assert not tiny
+
+
+def test_audio_analysis_requires_audio_input_and_text_output():
+    ok, reason = check_audio_analysis_compatibility(
+        _info(input_modalities=["text", "audio"], output_modalities=["text"])
+    )
+    assert ok
+    assert "audio analysis" in reason
+
+    no_audio, reason = check_audio_analysis_compatibility(_info())
+    assert not no_audio
+    assert "audio input" in reason
+
+    no_text, _ = check_audio_analysis_compatibility(
+        _info(input_modalities=["audio"], output_modalities=["audio"])
+    )
+    assert not no_text
 
 
 @pytest.mark.asyncio
