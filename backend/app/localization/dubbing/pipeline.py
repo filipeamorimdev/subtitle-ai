@@ -27,6 +27,7 @@ from app.localization.dubbing.options import (
     DUB_MIX_VOICEOVER_PREVIEW,
     normalize_dub_mix_mode,
     normalize_speaker_voice_overrides,
+    cue_key,
     speaker_key,
 )
 from app.localization.dubbing.providers.piper import (
@@ -328,7 +329,9 @@ class DubbingPipeline:
                     return None
                 text = segment.spoken_text
                 cue_wav = tmp_dir / f"seg-{index}.wav"
-                segment_voice_model = speaker_voice_overrides.get(speaker_key(segment.speaker_id), voice_model)
+                segment_cue_key = cue_key(segment.source_cues[0] if segment.source_cues else None)
+                override_key = segment_cue_key if segment_cue_key in speaker_voice_overrides else speaker_key(segment.speaker_id)
+                segment_voice_model = speaker_voice_overrides.get(override_key, voice_model)
                 tts = await tts_for(segment_voice_model)
                 voice_config = VoiceConfig(
                     voice_id=segment_voice_model,
@@ -341,7 +344,7 @@ class DubbingPipeline:
                         event="speaker_voice_assigned",
                         speaker_id=segment.speaker_id,
                         voice_model=segment_voice_model,
-                        source="override" if speaker_key(segment.speaker_id) in speaker_voice_overrides else "default",
+                        source="override" if override_key in speaker_voice_overrides else "default",
                     )
                 event_log.record(
                     event="speech",

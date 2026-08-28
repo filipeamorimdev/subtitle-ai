@@ -29,6 +29,7 @@ import type {
   OperatorSessionDetail,
   OperatorStatus,
   OperatorTurn,
+  VoiceCast,
 } from '../types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -224,6 +225,11 @@ export const api = {
     request<Job>(`/api/media/${id}/dub`, {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),
+    }),
+  suggestDubVoiceCast: (id: number, target_language: string) =>
+    request<VoiceCast>(`/api/media/${id}/dub/voice-cast`, {
+      method: 'POST',
+      body: JSON.stringify({ target_language }),
     }),
   getMediaActions: (id: number) => request<JobAction[]>(`/api/media/${id}/actions`),
   createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {

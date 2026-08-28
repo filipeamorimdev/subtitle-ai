@@ -22,6 +22,8 @@ from app.api.schemas import (
     TaskAiSummaryOut,
     TranscribeCreate,
     DubCreate,
+    VoiceCastOut,
+    VoiceCastSuggestionOut,
     GlossaryEntryIn,
     GlossaryOut,
     GlossaryEntryOut,
@@ -38,6 +40,7 @@ from app.localization.service import (
     LocalizationTaskService,
     UnsupportedCapabilityError,
 )
+from app.localization.dubbing.voice_cast import VoiceCastError, VoiceCastService
 from app.media import MediaRef
 from app.media.bazarr_provider import (
     BAZARR_PROVIDER_ID,
@@ -75,6 +78,9 @@ def _media_item_out(row: MediaItemRow) -> MediaItemOut:
 
 def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str]]:
     """Authoritative checkpoints when present; otherwise infer from executions."""
+    if (task.capability or "subtitles").lower() == "audio":
+        return _audio_progress_steps(task, jobs)
+
     from app.localization.checkpoints import (
         has_checkpoint_data,
         progress_steps,
@@ -151,6 +157,62 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
         steps[0]["state"] = "failed"
         if steps[1]["state"] == "pending":
             steps[1]["state"] = "skipped"
+    return steps
+
+
+def _audio_progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str]]:
+    """Return live progress that reflects the actual dubbing pipeline."""
+    steps = [
+        {"id": "subtitles", "label": "Localized subtitles", "state": "pending"},
+        {"id": "voice", "label": "Preparing voice", "state": "pending"},
+        {"id": "speech", "label": "Generating speech", "state": "pending"},
+        {"id": "mix", "label": "Mixing and saving dub", "state": "pending"},
+        {"id": "verify", "label": "Checking output", "state": "pending"},
+    ]
+    by_id = {step["id"]: step for step in steps}
+    job = next((item for item in reversed(jobs) if item.job_kind == "dub"), None)
+
+    if task.status == "completed":
+        for step in steps:
+            step["state"] = "done"
+        return steps
+
+    if job is None:
+        by_id["subtitles"]["state"] = (
+            "failed"
+            if task.status == "blocked" and task.error_code == "subtitle_missing"
+            else "active"
+        )
+        return steps
+
+    by_id["subtitles"]["state"] = "done"
+    detail = (job.progress_detail or "").lower()
+    progress = job.progress or 0
+
+    if job.status == "completed":
+        for step in steps:
+            step["state"] = "done"
+        return steps
+
+    if job.status in {"failed", "cancelled", "skipped"}:
+        failed_step = "voice"
+        if "synthesizing" in detail or progress > 5:
+            failed_step = "speech"
+        if progress >= 90:
+            failed_step = "mix"
+        by_id[failed_step]["state"] = "failed"
+        return steps
+
+    if job.status == "pending" or (progress <= 5 and "synthesizing" not in detail):
+        by_id["voice"]["state"] = "active"
+        return steps
+
+    by_id["voice"]["state"] = "done"
+    if progress >= 90:
+        by_id["speech"]["state"] = "done"
+        by_id["mix"]["state"] = "active"
+    else:
+        by_id["speech"]["state"] = "active"
     return steps
 
 
@@ -444,6 +506,39 @@ async def dub_media(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/media/{media_id}/dub/voice-cast", response_model=VoiceCastOut)
+async def suggest_dub_voice_cast(
+    media_id: int,
+    payload: DubCreate | None = None,
+    db: Session = Depends(get_db),
+) -> VoiceCastOut:
+    """Analyse a compact source-audio sample and return editable cast suggestions."""
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    target_language = (payload.target_language if payload else None) or "pt-PT"
+    try:
+        result = await VoiceCastService(db).suggest(media, target_language=target_language)
+        return VoiceCastOut(
+            provider_id=result.provider_id,
+            model_id=result.model_id,
+            suggestions=[
+                VoiceCastSuggestionOut(
+                    speaker_id=suggestion.speaker_id,
+                    voice_style=suggestion.voice_style,
+                    cue_indices=suggestion.cue_indices,
+                    confidence=suggestion.confidence,
+                    voice_model=suggestion.voice_model,
+                )
+                for suggestion in result.suggestions
+            ],
+            analysed_cue_count=result.analysed_cue_count,
+            metadata_used=result.metadata_used,
+        )
+    except VoiceCastError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/media/{media_id}/localization-tasks", response_model=LocalizationTaskOut)

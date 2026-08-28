@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
+from typing import Literal
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -337,8 +338,15 @@ class JobService:
         self.db = db
         self.settings = SettingsService(db)
 
-    def list_jobs(self, *, status: str | None = None, limit: int = 100) -> list[JobOut]:
-        query = select(JobRow).order_by(JobRow.created_at.desc())
+    def list_jobs(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+        sort: Literal["created_at", "completed_at"] = "created_at",
+    ) -> list[JobOut]:
+        order_column = JobRow.completed_at if sort == "completed_at" else JobRow.created_at
+        query = select(JobRow).order_by(order_column.desc(), JobRow.id.desc())
         if status:
             query = query.where(JobRow.status == status)
         rows = self.db.scalars(query.limit(limit)).all()

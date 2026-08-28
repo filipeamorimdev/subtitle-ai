@@ -69,6 +69,30 @@ def _year_from(raw: dict[str, Any]) -> int | None:
     return None
 
 
+def _metadata_from(raw: dict[str, Any]) -> dict[str, Any]:
+    """Keep compact casting context and external IDs from a Bazarr response.
+
+    Bazarr may proxy Radarr/Sonarr identifiers, but it does not guarantee that
+    every endpoint returns them.  We preserve what is present and leave any
+    external lookup to a future, explicitly configured metadata provider.
+    """
+    metadata: dict[str, Any] = {"raw_keys": sorted(raw.keys())[:20]}
+    aliases = {
+        "imdb_id": ("imdbId", "imdb_id", "imdbid", "imdb"),
+        "tmdb_id": ("tmdbId", "tmdb_id", "tmdbid", "tmdb"),
+        "tvdb_id": ("tvdbId", "tvdb_id", "tvdbid", "tvdb"),
+        "overview": ("overview", "plot", "description"),
+    }
+    for target, keys in aliases.items():
+        for key in keys:
+            value = raw.get(key)
+            if not isinstance(value, (str, int)) or not str(value).strip():
+                continue
+            metadata[target] = str(value)[:800] if target == "overview" else value
+            break
+    return metadata
+
+
 def _movie_ref(raw: dict[str, Any]) -> MediaRef | None:
     radarr_id = _as_int(
         raw.get("radarrId") or raw.get("radarrid") or raw.get("id")
@@ -84,7 +108,7 @@ def _movie_ref(raw: dict[str, Any]) -> MediaRef | None:
         year=_year_from(raw),
         path=str(raw.get("path") or raw.get("movie_path") or "") or None,
         bazarr_movie_id=radarr_id,
-        metadata={"raw_keys": sorted(raw.keys())[:20]},
+        metadata=_metadata_from(raw),
     )
 
 
@@ -103,6 +127,7 @@ def _series_ref(raw: dict[str, Any]) -> MediaRef | None:
         year=_year_from(raw),
         path=str(raw.get("path") or "") or None,
         bazarr_series_id=series_id,
+        metadata=_metadata_from(raw),
     )
 
 
@@ -144,6 +169,7 @@ def _episode_ref(raw: dict[str, Any], *, series_title: str | None = None) -> Med
         parent_external_id=series_external_id(series_id) if series_id is not None else None,
         bazarr_series_id=series_id,
         bazarr_episode_id=episode_id,
+        metadata=_metadata_from(raw),
     )
 
 

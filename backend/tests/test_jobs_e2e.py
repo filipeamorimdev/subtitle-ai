@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +14,7 @@ from app.api.schemas import JobCreate, PathMappingIn, SettingsUpdate
 from app.core.config import get_app_config
 from app.core.secrets import load_or_create_fernet
 from app.db import Base, get_db
+from app.db.models import JobRow
 from app.jobs.service import JobService
 from app.main import create_app
 from app.services.settings import SettingsService
@@ -26,6 +29,32 @@ Hello
 00:00:04,000 --> 00:00:06,000
 World
 """
+
+
+def test_completed_jobs_can_be_sorted_by_completion_time(app_env):
+    session = app_env["SessionLocal"]()
+    now = datetime.now(timezone.utc)
+    older = JobRow(
+        media_path="/media/older.mkv",
+        source_subtitle_path="/media/older.en.srt",
+        target_subtitle_path="/media/older.pt-PT.srt",
+        status="completed",
+        completed_at=now - timedelta(hours=2),
+    )
+    newer = JobRow(
+        media_path="/media/newer.mkv",
+        source_subtitle_path="/media/newer.en.srt",
+        target_subtitle_path="/media/newer.pt-PT.srt",
+        status="completed",
+        completed_at=now - timedelta(minutes=10),
+    )
+    session.add_all([older, newer])
+    session.commit()
+
+    rows = JobService(session).list_jobs(status="completed", limit=2, sort="completed_at")
+
+    assert [job.id for job in rows] == [newer.id, older.id]
+    session.close()
 
 
 @pytest.fixture

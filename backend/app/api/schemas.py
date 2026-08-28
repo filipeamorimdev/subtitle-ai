@@ -208,6 +208,22 @@ class DubCreate(BaseModel):
     speaker_voices: dict[str, str] = Field(default_factory=dict)
 
 
+class VoiceCastSuggestionOut(BaseModel):
+    speaker_id: str
+    voice_style: str
+    cue_indices: list[int] = Field(default_factory=list)
+    confidence: float | None = None
+    voice_model: str
+
+
+class VoiceCastOut(BaseModel):
+    provider_id: str
+    model_id: str
+    suggestions: list[VoiceCastSuggestionOut] = Field(default_factory=list)
+    analysed_cue_count: int = 0
+    metadata_used: dict[str, str | int] = Field(default_factory=dict)
+
+
 class RequestSubtitleCreate(BaseModel):
     candidate_key: str
     language: str | None = None

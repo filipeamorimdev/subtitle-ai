@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -291,9 +293,10 @@ async def batch_translate(db: Session = Depends(get_db)) -> BatchJobsOut:
 def list_jobs(
     status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
+    sort: Literal["created_at", "completed_at"] = Query(default="created_at"),
     db: Session = Depends(get_db),
 ) -> list[JobOut]:
-    return JobService(db).list_jobs(status=status, limit=limit)
+    return JobService(db).list_jobs(status=status, limit=limit, sort=sort)
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)

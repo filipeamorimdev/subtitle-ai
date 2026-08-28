@@ -165,6 +165,22 @@ export interface Job {
   completed_at: string | null
 }
 
+export interface VoiceCastSuggestion {
+  speaker_id: string
+  voice_style: string
+  cue_indices: number[]
+  confidence: number | null
+  voice_model: string
+}
+
+export interface VoiceCast {
+  provider_id: string
+  model_id: string
+  suggestions: VoiceCastSuggestion[]
+  analysed_cue_count: number
+  metadata_used: Record<string, string | number>
+}
+
 export interface LanguageCatalogItem {
   code: string
   display_name: string

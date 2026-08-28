@@ -5,7 +5,7 @@ import { api } from '../services/api'
 import type { Job, JobLog, LocalizationTask } from '../types'
 import { formatElapsed } from '../utils/datetime'
 import { formatJobLog } from '../utils/formatJobLog'
-import { localizationTaskTitle, withReturnTo } from '../utils/mediaNav'
+import { localizationTaskTitle, mediaHref, withReturnTo } from '../utils/mediaNav'
 import {
   canPauseJob,
   canResumeJob,
@@ -85,6 +85,14 @@ function stepClass(state: string) {
   if (state === 'failed') return 'text-red-700 dark:text-red-300'
   if (state === 'skipped') return 'text-ink-400 line-through'
   return 'text-ink-400'
+}
+
+function isDubTask(task: LocalizationTask) {
+  return (task.capability || 'subtitles').toLowerCase() === 'audio'
+}
+
+function capabilityLabel(task: LocalizationTask) {
+  return isDubTask(task) ? 'Audio dub' : 'Subtitles'
 }
 
 async function toggleLog(jobId: number) {
@@ -179,19 +187,26 @@ function statsHref(jobId: number) {
       <li
         v-for="{ task, job } in rows"
         :key="task.id"
-        class="rounded-md border border-ink-200 bg-ink-50/50 p-3 dark:border-ink-800 dark:bg-ink-950/40"
+        class="rounded-md border p-3"
+        :class="
+          isDubTask(task)
+            ? 'border-sky-200 bg-sky-50/60 dark:border-sky-900/70 dark:bg-sky-950/20'
+            : 'border-ink-200 bg-ink-50/50 dark:border-ink-800 dark:bg-ink-950/40'
+        "
       >
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div class="min-w-0">
-            <p v-if="showTitle" class="truncate font-medium">
+            <RouterLink
+              v-if="showTitle"
+              class="block truncate font-medium text-accent hover:underline"
+              :to="mediaHref(task.media_item_id)"
+            >
               {{ localizationTaskTitle(task) }}
-            </p>
+            </RouterLink>
             <p class="text-sm" :class="showTitle ? 'mt-0.5 text-ink-600 dark:text-ink-300' : 'font-medium'">
               {{ task.target_language_name }}
               <span class="font-normal text-ink-500">({{ task.target_language_code }})</span>
-              <span class="capitalize text-ink-500">
-                · {{ task.capability || 'subtitles' }}
-              </span>
+              <span class="text-ink-500"> · {{ capabilityLabel(task) }}</span>
             </p>
             <p class="mt-1 text-sm text-accent">
               {{ taskStatusLabel(task.status, task.substate) }}
@@ -328,7 +343,8 @@ function statsHref(jobId: number) {
           >{{ formatJobLog(logByJob[job.id] || null) }}</pre>
         </div>
         <p v-else class="mt-3 text-sm text-ink-500">
-          No execution has been queued yet. Subtitle AI will create the next job shortly.
+          <template v-if="isDubTask(task)">Dubbing will start shortly.</template>
+          <template v-else>Subtitle processing will start shortly.</template>
         </p>
       </li>
     </ul>

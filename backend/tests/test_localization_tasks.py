@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.api.schemas import PathMappingIn, SettingsUpdate
+from app.api.localization_routes import _progress_steps
 from app.core.config import get_app_config
 from app.core.secrets import load_or_create_fernet
 from app.db import Base
@@ -174,6 +175,51 @@ async def test_audio_task_enqueues_a_dub_job_when_subtitle_is_ready(loc_env):
     assert job is not None
     assert job.status == "pending"
     assert job.source_subtitle_path == str(target_srt)
+
+
+def test_audio_task_progress_steps_describe_dubbing(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    task, _ = LocalizationTaskService(db).create_manual_task(
+        media_item=media,
+        target_language="pt-PT",
+        capability="audio",
+    )
+    task.status = "processing"
+    job = JobRow(
+        task_id=task.id,
+        job_kind="dub",
+        media_path="/media/Matrix/The Matrix.mkv",
+        source_subtitle_path="/media/Matrix/The Matrix.pt-PT.srt",
+        target_subtitle_path="/media/Matrix/The Matrix.pt-PT.dub.mkv",
+        status="processing",
+        progress=50,
+        progress_detail="Synthesizing cue 5/10",
+    )
+
+    steps = _progress_steps(task, [job])
+
+    assert [step["label"] for step in steps] == [
+        "Localized subtitles",
+        "Preparing voice",
+        "Generating speech",
+        "Mixing and saving dub",
+        "Checking output",
+    ]
+    assert {step["id"]: step["state"] for step in steps} == {
+        "subtitles": "done",
+        "voice": "done",
+        "speech": "active",
+        "mix": "pending",
+        "verify": "pending",
+    }
 
 
 def test_completed_does_not_block_new_request(loc_env):

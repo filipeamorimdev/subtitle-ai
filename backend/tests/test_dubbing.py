@@ -34,6 +34,7 @@ from app.dubbing.dub import (
     _write_piper_wav,
 )
 from app.localization.dubbing.mixer import DUB_OUTPUT_SAMPLE_RATE, build_background_mix_command
+from app.localization.dubbing.options import cue_key, normalize_speaker_voice_overrides
 
 
 def test_piper_voice_download_urls_encode_unicode():
@@ -57,6 +58,12 @@ def test_clean_text_for_tts_strips_music_speaker_and_sfx():
     assert "equitação" in clean_text_for_tts(
         "é uma óptima maneira de aperfeiçoarmos a nossa equitação."
     )
+
+
+def test_cue_voice_override_keys_are_normalized_for_ai_cast_assignments():
+    overrides = normalize_speaker_voice_overrides({"Cue:42": " pt_PT-tugão-medium "})
+    assert cue_key(42) == "cue:42"
+    assert overrides[cue_key(42)] == "pt_PT-tugão-medium"
 
 
 def test_piper_output_ignores_text_detects_fixed_length_clips():

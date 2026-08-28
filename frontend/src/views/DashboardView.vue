@@ -14,6 +14,7 @@ import type {
   AutomationStatus,
   Candidate,
   Health,
+  Job,
   LocalizationTask,
 } from '../types'
 import { formatDateTime } from '../utils/datetime'
@@ -23,6 +24,7 @@ import {
   canRetryTask,
   isActiveTaskStatus,
   isUnresolvedFailedTask,
+  jobKindLabel,
   pipelineStage,
   type PipelineStage,
 } from '../utils/status'
@@ -36,6 +38,7 @@ const automation = ref<AutomationStatus | null>(null)
 const aiOverview = ref<AiOverview | null>(null)
 const tasks = ref<LocalizationTask[]>([])
 const currentTasksDetailed = ref<LocalizationTask[]>([])
+const completedJobs = ref<Job[]>([])
 const pipelineLoading = ref(false)
 const pipelineError = ref<string | null>(null)
 const pipelineLoaded = ref(false)
@@ -381,6 +384,10 @@ function formatTokens(n: number | null | undefined): string {
   return String(n)
 }
 
+function completedJobTitle(job: Job): string {
+  return job.media_title || job.media_path || `Job #${job.id}`
+}
+
 async function loadPipeline(refresh = false) {
   pipelineLoading.value = true
   pipelineError.value = null
@@ -409,6 +416,18 @@ async function loadCurrentLocalization() {
       active_only: true,
       include_detail: true,
       limit: LIVE_LIMIT,
+    })
+  } catch {
+    /* keep previous */
+  }
+}
+
+async function loadCompletedJobs() {
+  try {
+    completedJobs.value = await api.getJobs({
+      status: 'completed',
+      sort: 'completed_at',
+      limit: 2,
     })
   } catch {
     /* keep previous */
@@ -444,6 +463,7 @@ async function refreshDashboard() {
     loadPipeline(true),
     loadTasks(),
     loadCurrentLocalization(),
+    loadCompletedJobs(),
     loadHealth(),
     loadAutomation(),
     loadAiSummary(),
@@ -519,10 +539,12 @@ onMounted(async () => {
     loadPipeline(false),
     loadTasks(),
     loadCurrentLocalization(),
+    loadCompletedJobs(),
   ])
   timer = window.setInterval(() => {
     loadTasks().catch(() => undefined)
     loadCurrentLocalization().catch(() => undefined)
+    loadCompletedJobs().catch(() => undefined)
     loadHealth().catch(() => undefined)
     loadAutomation().catch(() => undefined)
   }, 30000)
@@ -530,6 +552,7 @@ onMounted(async () => {
     if (event.type === 'hello') return
     loadTasks().catch(() => undefined)
     loadCurrentLocalization().catch(() => undefined)
+    loadCompletedJobs().catch(() => undefined)
   })
 })
 
@@ -791,6 +814,39 @@ onUnmounted(() => {
           "
         />
       </div>
+
+      <section class="rounded-md border border-l-4 border-ink-200 border-l-emerald-500 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="font-display text-lg font-semibold">Last 2 completed jobs</h2>
+          <RouterLink class="text-xs font-medium text-accent hover:underline" to="/media?filter=completed">
+            View completed media
+          </RouterLink>
+        </div>
+        <p v-if="!completedJobs.length" class="mt-4 text-sm text-ink-500">No completed jobs yet.</p>
+        <ul v-else class="mt-4 divide-y divide-ink-100 dark:divide-ink-800">
+          <li v-for="job in completedJobs" :key="job.id" class="py-3 first:pt-0 last:pb-0">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <RouterLink
+                  class="block truncate font-medium text-accent hover:underline"
+                  :to="`/jobs/${job.id}`"
+                  :title="completedJobTitle(job)"
+                >
+                  {{ completedJobTitle(job) }}
+                </RouterLink>
+                <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
+                  {{ jobKindLabel(job.job_kind) }} #{{ job.id }}
+                  <span v-if="job.target_language" class="text-ink-500"> · {{ job.target_language }}</span>
+                  <span v-if="job.model" class="text-ink-500"> · {{ job.model }}</span>
+                </p>
+              </div>
+              <time class="shrink-0 text-xs text-ink-500" :datetime="job.completed_at || undefined">
+                {{ formatDateTime(job.completed_at) }}
+              </time>
+            </div>
+          </li>
+        </ul>
+      </section>
 
       <section class="rounded-md border border-l-4 border-ink-200 border-l-ink-400 bg-white p-4 dark:border-ink-800 dark:bg-ink-900">
         <div class="flex flex-wrap items-start justify-between gap-3">

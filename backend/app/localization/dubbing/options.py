@@ -29,8 +29,17 @@ def speaker_key(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).casefold()
 
 
+def cue_key(cue_index: int | None) -> str:
+    """Stable key for an AI assignment tied to an individual SRT cue."""
+    try:
+        index = int(cue_index) if cue_index is not None else 0
+    except (TypeError, ValueError):
+        index = 0
+    return f"cue:{index}" if index > 0 else ""
+
+
 def normalize_speaker_voice_overrides(values: Mapping[str, str] | None) -> dict[str, str]:
-    """Validate and normalize user-supplied subtitle-speaker → Piper model mappings."""
+    """Validate label or ``cue:N`` → Piper model mappings for a dub job."""
     normalized: dict[str, str] = {}
     for raw_speaker, raw_model in (values or {}).items():
         key = speaker_key(raw_speaker)
