@@ -226,11 +226,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),
     }),
-  suggestDubVoiceCast: (id: number, target_language: string) =>
+  suggestDubVoiceCast: (
+    id: number,
+    target_language: string,
+    mix_mode: 'background_preserved' | 'voiceover_preview' = 'background_preserved',
+  ) =>
     request<VoiceCast>(`/api/media/${id}/dub/voice-cast`, {
       method: 'POST',
-      body: JSON.stringify({ target_language }),
+      body: JSON.stringify({ target_language, mix_mode }),
     }),
+  getDubVoiceCast: (id: number, target_language: string) =>
+    request<VoiceCast>(
+      `/api/media/${id}/dub/voice-cast?target_language=${encodeURIComponent(target_language)}`,
+    ),
+  updateDubVoiceCast: (
+    id: number,
+    target_language: string,
+    payload: Pick<VoiceCast, 'suggestions' | 'mix_mode'>,
+  ) =>
+    request<VoiceCast>(
+      `/api/media/${id}/dub/voice-cast?target_language=${encodeURIComponent(target_language)}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+    ),
+  requestDubFromVoiceCast: (id: number, target_language: string) =>
+    request<Job>(
+      `/api/media/${id}/dub/voice-cast/request?target_language=${encodeURIComponent(target_language)}`,
+      { method: 'POST' },
+    ),
   getMediaActions: (id: number) => request<JobAction[]>(`/api/media/${id}/actions`),
   createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {
     const response = await fetch(`/api/media/${mediaId}/localization-tasks`, {

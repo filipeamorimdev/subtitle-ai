@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import DashboardView from '../views/DashboardView.vue'
+import DubCastView from '../views/DubCastView.vue'
 import JobDetailView from '../views/JobDetailView.vue'
 import MediaDetailView from '../views/MediaDetailView.vue'
 import MediaView from '../views/MediaView.vue'
@@ -19,6 +20,7 @@ const router = createRouter({
     },
     { path: '/media', name: 'media', component: MediaView },
     { path: '/media/:id', name: 'media-detail', component: MediaDetailView, props: true },
+    { path: '/media/:id/dub-cast', name: 'dub-cast', component: DubCastView, props: true },
     { path: '/tasks', redirect: '/media' },
     { path: '/tasks/:id', name: 'task-detail', component: TaskRedirectView, props: true },
     {

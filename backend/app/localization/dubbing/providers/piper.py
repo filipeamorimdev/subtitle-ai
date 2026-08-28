@@ -145,6 +145,22 @@ def resolve_voice_model_for_language(target_language: str) -> str:
     return "en_US-lessac-medium"
 
 
+def recommended_voice_models_for_language(target_language: str) -> list[tuple[str, str]]:
+    """Return verified Piper choices bundled by the current dubbing workflow.
+
+    Piper's catalogue is language-specific.  In particular, its supported
+    European Portuguese catalogue currently exposes one verified voice, so it
+    would be misleading to invent alternatives merely to vary a cast.
+    """
+    default = resolve_voice_model_for_language(target_language)
+    labels = {
+        "pt_PT-tugão-medium": "Tugão · medium (European Portuguese)",
+        "pt_BR-faber-medium": "Faber · medium (Brazilian Portuguese)",
+        "en_US-lessac-medium": "Lessac · medium (US English)",
+    }
+    return [(default, labels.get(default, default))]
+
+
 def wav_duration_seconds(path: Path) -> float | None:
     try:
         with wave.open(str(path), "rb") as handle:

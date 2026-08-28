@@ -15,12 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.bootstrap import bootstrap_providers
 from app.ai.errors import AIProviderError
 from app.ai.providers.registry import get_provider_registry
-from app.db.models import MediaItemRow
+from app.db.models import MediaItemRow, VoiceCastDraftRow
+from app.localization.dubbing.options import cue_key, normalize_dub_mix_mode
 from app.integrations.bazarr.paths import apply_path_mapping, is_under_roots, mappings_from_settings
 from app.localization.dubbing.dialogue import speech_segments_from_document
 from app.localization.dubbing.providers.piper import resolve_voice_model_for_language
@@ -59,6 +61,130 @@ class VoiceCastResult:
     suggestions: list[VoiceCastSuggestion]
     analysed_cue_count: int
     metadata_used: dict[str, str | int]
+
+
+class VoiceCastDraftService:
+    """Persist and validate the editable result of an on-demand audio analysis."""
+
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get(self, media_id: int, target_language: str) -> VoiceCastDraftRow | None:
+        return self.db.scalar(
+            select(VoiceCastDraftRow).where(
+                VoiceCastDraftRow.media_item_id == media_id,
+                VoiceCastDraftRow.target_language == target_language,
+            )
+        )
+
+    def save_analysis(
+        self,
+        media: MediaItemRow,
+        *,
+        target_language: str,
+        mix_mode: str,
+        result: VoiceCastResult,
+    ) -> VoiceCastDraftRow:
+        row = self.get(media.id, target_language)
+        if row is None:
+            row = VoiceCastDraftRow(media_item_id=media.id, target_language=target_language)
+        row.provider_id = result.provider_id
+        row.model_id = result.model_id
+        row.analysed_cue_count = result.analysed_cue_count
+        row.mix_mode = normalize_dub_mix_mode(mix_mode)
+        row.metadata_json = dict(result.metadata_used)
+        row.suggestions_json = [
+            {
+                "speaker_id": suggestion.speaker_id,
+                "voice_style": suggestion.voice_style,
+                "cue_indices": suggestion.cue_indices,
+                "confidence": suggestion.confidence,
+                "voice_model": suggestion.voice_model,
+                "enabled": True,
+            }
+            for suggestion in result.suggestions
+        ]
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def update(
+        self,
+        row: VoiceCastDraftRow,
+        *,
+        suggestions: list[dict[str, Any]],
+        mix_mode: str,
+    ) -> VoiceCastDraftRow:
+        if not suggestions:
+            raise VoiceCastError("Keep at least one speaker assignment in the casting draft.")
+        normalized: list[dict[str, Any]] = []
+        assigned_cues: set[int] = set()
+        for position, suggestion in enumerate(suggestions, start=1):
+            speaker_id = re.sub(r"\s+", " ", str(suggestion.get("speaker_id") or "")).strip()[:80]
+            voice_style = re.sub(r"\s+", " ", str(suggestion.get("voice_style") or "")).strip()[:180]
+            voice_model = str(suggestion.get("voice_model") or "").strip()[:256]
+            raw_cues = suggestion.get("cue_indices")
+            cues: list[int] = []
+            if isinstance(raw_cues, list):
+                for raw_cue in raw_cues:
+                    try:
+                        cue = int(raw_cue)
+                    except (TypeError, ValueError):
+                        continue
+                    if cue > 0 and cue not in cues:
+                        cues.append(cue)
+            if not speaker_id:
+                raise VoiceCastError(f"Speaker {position} needs a name.")
+            if not voice_model:
+                raise VoiceCastError(f"Speaker {position} needs a Piper voice model.")
+            if not cues:
+                raise VoiceCastError(f"Speaker {position} needs at least one sampled cue.")
+            overlap = assigned_cues.intersection(cues)
+            if overlap:
+                rendered = ", ".join(str(item) for item in sorted(overlap))
+                raise VoiceCastError(f"Sampled cue {rendered} is assigned to more than one speaker.")
+            assigned_cues.update(cues)
+            confidence: float | None = None
+            try:
+                raw_confidence = suggestion.get("confidence")
+                if raw_confidence is not None:
+                    confidence = max(0.0, min(1.0, float(raw_confidence)))
+            except (TypeError, ValueError):
+                pass
+            normalized.append(
+                {
+                    "speaker_id": speaker_id,
+                    "voice_style": voice_style or "No voice style note",
+                    "cue_indices": sorted(cues),
+                    "confidence": confidence,
+                    "voice_model": voice_model,
+                    "enabled": bool(suggestion.get("enabled", True)),
+                }
+            )
+        row.suggestions_json = normalized
+        row.mix_mode = normalize_dub_mix_mode(mix_mode)
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def speaker_voice_overrides(self, row: VoiceCastDraftRow) -> dict[str, str]:
+        overrides: dict[str, str] = {}
+        for suggestion in row.suggestions_json or []:
+            if not isinstance(suggestion, dict) or not suggestion.get("enabled", True):
+                continue
+            voice_model = str(suggestion.get("voice_model") or "").strip()
+            if not voice_model:
+                continue
+            for raw_cue in suggestion.get("cue_indices") or []:
+                try:
+                    key = cue_key(int(raw_cue))
+                except (TypeError, ValueError):
+                    key = ""
+                if key:
+                    overrides[key] = voice_model
+        return overrides
 
 
 @dataclass(frozen=True)

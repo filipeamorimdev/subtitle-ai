@@ -24,12 +24,14 @@ from app.api.schemas import (
     DubCreate,
     VoiceCastOut,
     VoiceCastSuggestionOut,
+    VoiceCastDraftUpdate,
+    VoiceModelOptionOut,
     GlossaryEntryIn,
     GlossaryOut,
     GlossaryEntryOut,
 )
 from app.db import get_db, release_session_connection
-from app.db.models import LocalizationTaskRow, MediaItemRow
+from app.db.models import LocalizationTaskRow, MediaItemRow, VoiceCastDraftRow
 from app.integrations.bazarr.client import BazarrError
 from app.jobs.service import JobService, job_to_out
 from app.jobs.worker import worker
@@ -40,7 +42,12 @@ from app.localization.service import (
     LocalizationTaskService,
     UnsupportedCapabilityError,
 )
-from app.localization.dubbing.voice_cast import VoiceCastError, VoiceCastService
+from app.localization.dubbing.providers.piper import recommended_voice_models_for_language
+from app.localization.dubbing.voice_cast import (
+    VoiceCastDraftService,
+    VoiceCastError,
+    VoiceCastService,
+)
 from app.media import MediaRef
 from app.media.bazarr_provider import (
     BAZARR_PROVIDER_ID,
@@ -73,6 +80,45 @@ def _media_item_out(row: MediaItemRow) -> MediaItemOut:
         parent_media_id=row.parent_media_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _voice_cast_out(row: VoiceCastDraftRow) -> VoiceCastOut:
+    """Translate persisted casting JSON into the public editable draft shape."""
+    suggestions: list[VoiceCastSuggestionOut] = []
+    for raw in row.suggestions_json or []:
+        if not isinstance(raw, dict):
+            continue
+        raw_cues = raw.get("cue_indices")
+        cues = [int(item) for item in raw_cues if isinstance(item, int)] if isinstance(raw_cues, list) else []
+        suggestions.append(
+            VoiceCastSuggestionOut(
+                speaker_id=str(raw.get("speaker_id") or "Unidentified speaker"),
+                voice_style=str(raw.get("voice_style") or "No voice style note"),
+                cue_indices=cues,
+                confidence=raw.get("confidence") if isinstance(raw.get("confidence"), (int, float)) else None,
+                voice_model=str(raw.get("voice_model") or ""),
+                enabled=bool(raw.get("enabled", True)),
+            )
+        )
+    return VoiceCastOut(
+        id=row.id,
+        media_item_id=row.media_item_id,
+        target_language=row.target_language,
+        provider_id=row.provider_id,
+        model_id=row.model_id,
+        suggestions=suggestions,
+        analysed_cue_count=row.analysed_cue_count,
+        metadata_used={
+            str(key): value
+            for key, value in (row.metadata_json or {}).items()
+            if isinstance(value, (str, int))
+        },
+        mix_mode=row.mix_mode,
+        available_voice_models=[
+            VoiceModelOptionOut(id=model_id, label=label)
+            for model_id, label in recommended_voice_models_for_language(row.target_language)
+        ],
     )
 
 
@@ -514,31 +560,88 @@ async def suggest_dub_voice_cast(
     payload: DubCreate | None = None,
     db: Session = Depends(get_db),
 ) -> VoiceCastOut:
-    """Analyse a compact source-audio sample and return editable cast suggestions."""
+    """Analyse source audio and replace the saved editable casting draft."""
     media = MediaItemService(db).get(media_id)
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     target_language = (payload.target_language if payload else None) or "pt-PT"
     try:
         result = await VoiceCastService(db).suggest(media, target_language=target_language)
-        return VoiceCastOut(
-            provider_id=result.provider_id,
-            model_id=result.model_id,
-            suggestions=[
-                VoiceCastSuggestionOut(
-                    speaker_id=suggestion.speaker_id,
-                    voice_style=suggestion.voice_style,
-                    cue_indices=suggestion.cue_indices,
-                    confidence=suggestion.confidence,
-                    voice_model=suggestion.voice_model,
-                )
-                for suggestion in result.suggestions
-            ],
-            analysed_cue_count=result.analysed_cue_count,
-            metadata_used=result.metadata_used,
+        draft = VoiceCastDraftService(db).save_analysis(
+            media,
+            target_language=target_language,
+            mix_mode=payload.mix_mode if payload else "background_preserved",
+            result=result,
+        )
+        return _voice_cast_out(draft)
+    except VoiceCastError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/media/{media_id}/dub/voice-cast", response_model=VoiceCastOut)
+def get_dub_voice_cast(
+    media_id: int,
+    target_language: str = Query("pt-PT"),
+    db: Session = Depends(get_db),
+) -> VoiceCastOut:
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    draft = VoiceCastDraftService(db).get(media_id, target_language)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="No saved voice-casting draft for this language.")
+    return _voice_cast_out(draft)
+
+
+@router.put("/media/{media_id}/dub/voice-cast", response_model=VoiceCastOut)
+def update_dub_voice_cast(
+    media_id: int,
+    payload: VoiceCastDraftUpdate,
+    target_language: str = Query("pt-PT"),
+    db: Session = Depends(get_db),
+) -> VoiceCastOut:
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    drafts = VoiceCastDraftService(db)
+    draft = drafts.get(media_id, target_language)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="No saved voice-casting draft for this language.")
+    try:
+        saved = drafts.update(
+            draft,
+            suggestions=[suggestion.model_dump() for suggestion in payload.suggestions],
+            mix_mode=payload.mix_mode,
         )
     except VoiceCastError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _voice_cast_out(saved)
+
+
+@router.post("/media/{media_id}/dub/voice-cast/request", response_model=JobOut)
+async def request_dub_from_voice_cast(
+    media_id: int,
+    target_language: str = Query("pt-PT"),
+    db: Session = Depends(get_db),
+) -> JobOut:
+    """Start a dub using the saved, reviewed voice-casting draft."""
+    media = MediaItemService(db).get(media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    drafts = VoiceCastDraftService(db)
+    draft = drafts.get(media_id, target_language)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="No saved voice-casting draft for this language.")
+    try:
+        return await JobService(db).start_manual_dub(
+            media,
+            target_language=draft.target_language,
+            replace_existing=True,
+            mix_mode=draft.mix_mode,
+            speaker_voice_overrides=drafts.speaker_voice_overrides(draft),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/media/{media_id}/localization-tasks", response_model=LocalizationTaskOut)

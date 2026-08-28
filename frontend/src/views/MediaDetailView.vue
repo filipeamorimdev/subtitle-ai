@@ -423,6 +423,16 @@ onUnmounted(() => {
           >
             Request dub
           </button>
+          <RouterLink
+            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            :to="{
+              name: 'dub-cast',
+              params: { id: mediaId },
+              query: { language: selectedTask?.target_language_code || 'pt-PT' },
+            }"
+          >
+            Voice cast
+          </RouterLink>
           <details v-if="verifyFailedTasks.length" class="relative">
             <summary
               class="cursor-pointer list-none rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600 [&::-webkit-details-marker]:hidden"

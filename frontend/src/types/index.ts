@@ -171,14 +171,25 @@ export interface VoiceCastSuggestion {
   cue_indices: number[]
   confidence: number | null
   voice_model: string
+  enabled: boolean
+}
+
+export interface VoiceModelOption {
+  id: string
+  label: string
 }
 
 export interface VoiceCast {
+  id: number
+  media_item_id: number
+  target_language: string
   provider_id: string
   model_id: string
   suggestions: VoiceCastSuggestion[]
   analysed_cue_count: number
   metadata_used: Record<string, string | number>
+  mix_mode: 'background_preserved' | 'voiceover_preview'
+  available_voice_models: VoiceModelOption[]
 }
 
 export interface LanguageCatalogItem {

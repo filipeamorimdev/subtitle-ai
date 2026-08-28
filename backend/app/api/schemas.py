@@ -214,14 +214,30 @@ class VoiceCastSuggestionOut(BaseModel):
     cue_indices: list[int] = Field(default_factory=list)
     confidence: float | None = None
     voice_model: str
+    enabled: bool = True
+
+
+class VoiceModelOptionOut(BaseModel):
+    id: str
+    label: str
 
 
 class VoiceCastOut(BaseModel):
+    id: int
+    media_item_id: int
+    target_language: str
     provider_id: str
     model_id: str
     suggestions: list[VoiceCastSuggestionOut] = Field(default_factory=list)
     analysed_cue_count: int = 0
     metadata_used: dict[str, str | int] = Field(default_factory=dict)
+    mix_mode: Literal["background_preserved", "voiceover_preview"] = "background_preserved"
+    available_voice_models: list[VoiceModelOptionOut] = Field(default_factory=list)
+
+
+class VoiceCastDraftUpdate(BaseModel):
+    suggestions: list[VoiceCastSuggestionOut] = Field(default_factory=list)
+    mix_mode: Literal["background_preserved", "voiceover_preview"] = "background_preserved"
 
 
 class RequestSubtitleCreate(BaseModel):

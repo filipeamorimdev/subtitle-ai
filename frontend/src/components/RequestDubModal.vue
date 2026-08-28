@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import LanguageSelect from './LanguageSelect.vue'
 import { api } from '../services/api'
-import type { LanguageCatalogItem, MediaItem, MediaRef, VoiceCast } from '../types'
+import type { LanguageCatalogItem, MediaItem, MediaRef } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -16,13 +17,12 @@ const emit = defineEmits<{
   created: []
 }>()
 
+const router = useRouter()
+
 const languages = ref<LanguageCatalogItem[]>([])
 const languageChoice = ref('')
 const mixMode = ref<'background_preserved' | 'voiceover_preview'>('background_preserved')
 const speakerVoiceOverrides = ref('')
-const voiceCast = ref<VoiceCast | null>(null)
-const voiceCastEnabled = ref<Record<number, boolean>>({})
-const voiceModels = ref<Record<number, string>>({})
 const casting = ref(false)
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
@@ -36,9 +36,6 @@ watch(
     submitError.value = null
     mixMode.value = 'background_preserved'
     speakerVoiceOverrides.value = ''
-    voiceCast.value = null
-    voiceCastEnabled.value = {}
-    voiceModels.value = {}
     if (!languages.value.length) {
       try {
         languages.value = await api.getLanguages()
@@ -55,13 +52,6 @@ watch(
     }
   },
 )
-
-watch(languageChoice, () => {
-  // Audio samples are evaluated against one localized subtitle language at a time.
-  voiceCast.value = null
-  voiceCastEnabled.value = {}
-  voiceModels.value = {}
-})
 
 function mediaLabel(item: MediaRef) {
   if (item.media_type === 'episode') {
@@ -107,31 +97,19 @@ async function ensureSelectedMedia(): Promise<MediaItem> {
   })
 }
 
-function suggestedVoiceOverrides(): Record<string, string> {
-  const overrides: Record<string, string> = {}
-  if (!voiceCast.value) return overrides
-  voiceCast.value.suggestions.forEach((suggestion, index) => {
-    const voiceModel = voiceModels.value[index]?.trim()
-    if (!voiceCastEnabled.value[index] || !voiceModel) return
-    suggestion.cue_indices.forEach((cueIndex) => {
-      overrides[`cue:${cueIndex}`] = voiceModel
-    })
-  })
-  return overrides
-}
-
 async function autoCastVoices() {
   if (!selected.value || !languageChoice.value || casting.value || submitting.value) return
   casting.value = true
   submitError.value = null
   try {
     const media = await ensureSelectedMedia()
-    const result = await api.suggestDubVoiceCast(media.id, languageChoice.value)
-    voiceCast.value = result
-    voiceCastEnabled.value = Object.fromEntries(result.suggestions.map((_suggestion, index) => [index, true]))
-    voiceModels.value = Object.fromEntries(
-      result.suggestions.map((suggestion, index) => [index, suggestion.voice_model]),
-    )
+    await api.suggestDubVoiceCast(media.id, languageChoice.value, mixMode.value)
+    await router.push({
+      name: 'dub-cast',
+      params: { id: media.id },
+      query: { language: languageChoice.value },
+    })
+    emit('close')
   } catch (err) {
     submitError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -150,7 +128,6 @@ async function submit() {
       replace_existing: true,
       mix_mode: mixMode.value,
       speaker_voices: {
-        ...suggestedVoiceOverrides(),
         ...parseSpeakerVoiceOverrides(speakerVoiceOverrides.value),
       },
     })
@@ -174,7 +151,7 @@ async function submit() {
     @click.self="emit('close')"
   >
     <div
-      class="w-full max-w-lg rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
+      class="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
     >
       <div class="flex items-start justify-between gap-3">
         <div>
@@ -261,43 +238,11 @@ async function submit() {
             :disabled="!selected || !languageChoice || casting || submitting"
             @click="autoCastVoices"
           >
-            {{ casting ? 'Analysing source audio…' : voiceCast ? 'Re-analyse voices with AI' : 'Analyse voices with AI' }}
+            {{ casting ? 'Analysing source audio…' : 'Analyse voices with AI' }}
           </button>
-
-          <div v-if="voiceCast" class="mt-3 space-y-2">
-            <p class="text-xs text-ink-500">
-              {{ voiceCast.analysed_cue_count }} sampled cues · {{ voiceCast.model_id }}
-            </p>
-            <div
-              v-for="(suggestion, index) in voiceCast.suggestions"
-              :key="`${suggestion.speaker_id}-${suggestion.cue_indices.join('-')}`"
-              class="rounded-md border border-ink-200 bg-white p-2.5 dark:border-ink-700 dark:bg-ink-900"
-            >
-              <label class="flex cursor-pointer items-start gap-2">
-                <input v-model="voiceCastEnabled[index]" type="checkbox" class="mt-1" />
-                <span class="min-w-0 flex-1">
-                  <span class="flex flex-wrap items-center gap-x-2 text-sm font-medium">
-                    {{ suggestion.speaker_id }}
-                    <span v-if="suggestion.confidence != null" class="text-xs font-normal text-ink-500">
-                      {{ Math.round(suggestion.confidence * 100) }}% confidence
-                    </span>
-                  </span>
-                  <span class="block text-xs text-ink-500">{{ suggestion.voice_style }}</span>
-                  <span class="block text-xs text-ink-500">
-                    Applies to sampled cues {{ suggestion.cue_indices.join(', ') }}
-                  </span>
-                </span>
-              </label>
-              <label class="mt-2 block text-xs font-medium text-ink-600 dark:text-ink-300">
-                Piper voice model
-                <input
-                  v-model="voiceModels[index]"
-                  class="mt-1 w-full rounded border border-ink-300 bg-white px-2 py-1 font-mono text-xs dark:border-ink-600 dark:bg-ink-800"
-                  :disabled="!voiceCastEnabled[index]"
-                />
-              </label>
-            </div>
-          </div>
+          <p class="mt-2 text-xs text-ink-500">
+            Analysis opens a saved casting workspace where every assignment can be reviewed and edited.
+          </p>
         </fieldset>
 
         <details>

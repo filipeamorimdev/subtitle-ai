@@ -246,6 +246,37 @@ class MediaItemRow(Base):
     )
 
 
+class VoiceCastDraftRow(Base):
+    """An editable, persistent AI voice-casting proposal for one dub language."""
+
+    __tablename__ = "voice_cast_drafts"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_item_id",
+            "target_language",
+            name="uq_voice_cast_drafts_media_language",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    media_item_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("media_items.id"), nullable=False, index=True
+    )
+    target_language: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    analysed_cue_count: Mapped[int] = mapped_column(Integer, default=0)
+    mix_mode: Mapped[str] = mapped_column(String(32), default="background_preserved")
+    suggestions_json: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    media_item = relationship("MediaItemRow", lazy="joined")
+
+
 class LocalizationTaskRow(Base):
     """User-facing localization goal for a media item (subtitles today; audio later)."""
 
