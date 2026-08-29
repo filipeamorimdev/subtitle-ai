@@ -15,7 +15,7 @@ Requires-Dist: python-multipart>=0.0.17
 Requires-Dist: pillow>=10.0.0
 Requires-Dist: pytesseract>=0.3.13
 Requires-Dist: faster-whisper>=1.1.0
-Requires-Dist: chatterbox-tts==0.1.7
+Requires-Dist: chatterbox-tts@ git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"

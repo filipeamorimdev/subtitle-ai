@@ -16,7 +16,10 @@ dependencies = [
     "pillow>=10.0.0",
     "pytesseract>=0.3.13",
     "faster-whisper>=1.1.0",
-    "chatterbox-tts==0.1.7",
+    # PyPI's 0.1.7 wheel predates the Multilingual V3 loader. Pin the official
+    # upstream commit that introduced ``t3_model=\"v3\"`` so the runtime API and
+    # the model advertised by the dubbing UI always match.
+    "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2",
 ]
 
 [project.optional-dependencies]
