@@ -64,6 +64,8 @@ export const api = {
     request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   testBazarr: () =>
     request<ConnectionTestResult>('/api/settings/test/bazarr', { method: 'POST' }),
+  testJellyfin: () =>
+    request<ConnectionTestResult>('/api/settings/test/jellyfin', { method: 'POST' }),
   testOpenRouter: () =>
     request<ConnectionTestResult>('/api/settings/test/openrouter', { method: 'POST' }),
   clearJobs: (opts?: {

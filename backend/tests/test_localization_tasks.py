@@ -222,6 +222,41 @@ def test_audio_task_progress_steps_describe_dubbing(loc_env):
     }
 
 
+def test_subtitle_task_progress_shows_active_transcription_badge(loc_env):
+    db, *_ = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="The Matrix",
+        path="/media/Matrix/The Matrix.mkv",
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    task, _ = LocalizationTaskService(db).create_manual_task(
+        media_item=media,
+        target_language="pt-PT",
+        capability="subtitles",
+    )
+    task.status = "processing"
+    task.substate = "transcribing_source"
+    job = JobRow(
+        task_id=task.id,
+        job_kind="transcribe",
+        media_path="/media/Matrix/The Matrix.mkv",
+        status="processing",
+        progress=25,
+    )
+
+    steps = _progress_steps(task, [job])
+
+    transcription = next(step for step in steps if step["id"] == "transcribe")
+    assert transcription == {
+        "id": "transcribe",
+        "label": "Transcribing",
+        "state": "active",
+    }
+
+
 def test_completed_does_not_block_new_request(loc_env):
     db, *_ = loc_env
     media = MediaItemService(db).upsert_from_candidate_fields(

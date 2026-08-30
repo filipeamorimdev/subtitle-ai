@@ -228,7 +228,7 @@ onMounted(() => {
               v-else-if="query.trim().length >= 2 && !results.length"
               class="mt-1 text-xs text-ink-500"
             >
-              No media found in Bazarr.
+              No media found.
             </p>
             <ul
               v-if="results.length"

@@ -11,11 +11,15 @@ const message = ref<string | null>(null)
 const error = ref<string | null>(null)
 const saving = ref(false)
 const bazarrTest = ref<string | null>(null)
+const jellyfinTest = ref<string | null>(null)
 
 const form = reactive({
   bazarr_url: '',
   bazarr_api_key: '',
   clear_bazarr_api_key: false,
+  jellyfin_url: '',
+  jellyfin_api_key: '',
+  clear_jellyfin_api_key: false,
   asr_provider: 'local_then_openai',
   asr_local_model: 'small',
   openai_api_key: '',
@@ -53,6 +57,7 @@ onMounted(async () => {
   const s = store.settings
   if (s) {
     form.bazarr_url = s.bazarr_url || ''
+    form.jellyfin_url = s.jellyfin_url || ''
     form.asr_provider = s.asr_provider || 'local_then_openai'
     form.asr_local_model = s.asr_local_model || 'small'
   }
@@ -69,6 +74,9 @@ async function save() {
         bazarr_url: form.bazarr_url,
         bazarr_api_key: form.bazarr_api_key || undefined,
         clear_bazarr_api_key: form.clear_bazarr_api_key,
+        jellyfin_url: form.jellyfin_url,
+        jellyfin_api_key: form.jellyfin_api_key || undefined,
+        clear_jellyfin_api_key: form.clear_jellyfin_api_key,
         asr_provider: form.asr_provider,
         asr_local_model: form.asr_local_model,
         openai_api_key: form.openai_api_key || undefined,
@@ -85,7 +93,7 @@ async function save() {
     const failures = results
       .map((result, index) => {
         if (result.status === 'fulfilled') return null
-        const label = index === 0 ? 'Bazarr' : 'OpenRouter'
+        const label = index === 0 ? 'Media providers' : 'OpenRouter'
         const reason = result.reason instanceof Error ? result.reason.message : String(result.reason)
         return `${label}: ${reason}`
       })
@@ -94,6 +102,8 @@ async function save() {
     if (results[0].status === 'fulfilled') {
       form.bazarr_api_key = ''
       form.clear_bazarr_api_key = false
+      form.jellyfin_api_key = ''
+      form.clear_jellyfin_api_key = false
       form.openai_api_key = ''
       form.clear_openai_api_key = false
       await store.loadSettings()
@@ -123,6 +133,12 @@ async function testBazarr() {
   bazarrTest.value = null
   const result = await api.testBazarr()
   bazarrTest.value = result.message
+}
+
+async function testJellyfin() {
+  jellyfinTest.value = null
+  const result = await api.testJellyfin()
+  jellyfinTest.value = result.message
 }
 
 async function clearOpenRouterApiKey() {
@@ -176,6 +192,51 @@ async function testOpenRouter(fresh = false) {
     <form id="settings-providers-form" class="space-y-8" @submit.prevent="save">
       <section class="space-y-4">
         <h3 class="font-display text-lg font-semibold">Media</h3>
+        <p class="text-sm text-ink-500">
+          When Jellyfin is connected, its movies and episodes are used in media search and AI
+          requests. If it is unavailable or not configured, the catalog automatically uses Bazarr.
+        </p>
+        <fieldset
+          class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
+        >
+          <legend class="px-1 font-display text-lg font-semibold">Jellyfin catalog</legend>
+          <label class="block text-sm">
+            <span class="text-ink-500">URL</span>
+            <input
+              v-model="form.jellyfin_url"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              placeholder="http://jellyfin:8096"
+            />
+          </label>
+          <label class="block text-sm">
+            <span class="text-ink-500">API key</span>
+            <input
+              v-model="form.jellyfin_api_key"
+              type="password"
+              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              placeholder="Leave blank to keep existing"
+            />
+            <span v-if="store.settings?.jellyfin_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
+              Saved: {{ store.settings.jellyfin_api_key_masked }}
+            </span>
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input v-model="form.clear_jellyfin_api_key" type="checkbox" />
+            Clear saved Jellyfin API key
+          </label>
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+              type="button"
+              @click="testJellyfin"
+            >
+              Test Connection
+            </button>
+            <span v-if="jellyfinTest" class="min-w-0 break-words text-sm text-ink-600 dark:text-ink-300">
+              {{ jellyfinTest }}
+            </span>
+          </div>
+        </fieldset>
         <fieldset
           class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
         >

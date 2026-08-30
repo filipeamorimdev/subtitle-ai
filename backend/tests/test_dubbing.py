@@ -41,6 +41,7 @@ from app.dubbing.dub import (
 from app.localization.dubbing.mixer import DUB_OUTPUT_SAMPLE_RATE, build_background_mix_command
 from app.localization.dubbing.options import cue_key, normalize_speaker_voice_overrides
 from app.localization.dubbing.providers import chatterbox as chatterbox_provider
+from app.localization.dubbing.providers.chatterbox import TTSError
 
 
 def test_installed_chatterbox_supports_multilingual_v3_loader():
@@ -71,6 +72,17 @@ def test_load_chatterbox_model_requests_the_v3_checkpoint(monkeypatch):
 
     assert loaded.device == "cpu"
     assert calls == [{"device": "cpu", "t3_model": "v3"}]
+
+
+def test_load_chatterbox_model_explains_an_outdated_package(monkeypatch):
+    chatterbox_package = types.ModuleType("chatterbox")
+    chatterbox_package.__path__ = []
+    monkeypatch.setitem(sys.modules, "chatterbox", chatterbox_package)
+    monkeypatch.delitem(sys.modules, "chatterbox.mtl_tts", raising=False)
+    monkeypatch.setattr(chatterbox_provider, "_MODEL_BY_DEVICE", {})
+
+    with pytest.raises(TTSError, match="does not support Multilingual V3"):
+        chatterbox_provider.load_chatterbox_model(device="cpu")
 
 
 def test_chatterbox_profiles_are_language_aware_and_reject_arbitrary_models():
@@ -155,8 +167,8 @@ def test_write_chatterbox_wav_sends_cue_text_and_profile(tmp_path, monkeypatch):
     out = tmp_path / "cue.wav"
     captured: dict[str, object] = {}
 
-    def save(path, audio, sample_rate):
-        captured.update({"path": path, "audio": audio, "sample_rate": sample_rate})
+    def save(path, audio, sample_rate, **kwargs):
+        captured.update({"path": path, "audio": audio, "sample_rate": sample_rate, **kwargs})
         Path(path).write_bytes(b"wav" * 24)
 
     monkeypatch.setitem(sys.modules, "torchaudio", types.SimpleNamespace(save=save))
@@ -175,6 +187,9 @@ def test_write_chatterbox_wav_sends_cue_text_and_profile(tmp_path, monkeypatch):
     )
     assert voice.texts == ["Para! Para!"]
     assert captured["sample_rate"] == 24_000
+    assert captured["format"] == "wav"
+    assert captured["encoding"] == "PCM_S"
+    assert captured["bits_per_sample"] == 16
     assert out.stat().st_size > 64
 
 

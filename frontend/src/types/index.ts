@@ -12,6 +12,9 @@ export interface Settings {
   bazarr_url: string | null
   bazarr_api_key_masked: string | null
   bazarr_api_key_configured: boolean
+  jellyfin_url: string | null
+  jellyfin_api_key_masked: string | null
+  jellyfin_api_key_configured: boolean
   openrouter_api_key_masked: string | null
   openrouter_api_key_configured: boolean
   openrouter_model: string
@@ -52,6 +55,9 @@ export interface SettingsUpdate {
   bazarr_url?: string | null
   bazarr_api_key?: string | null
   clear_bazarr_api_key?: boolean
+  jellyfin_url?: string | null
+  jellyfin_api_key?: string | null
+  clear_jellyfin_api_key?: boolean
   openrouter_api_key?: string | null
   clear_openrouter_api_key?: boolean
   openrouter_model?: string
@@ -232,6 +238,7 @@ export interface MediaItem {
   bazarr_series_id: number | null
   bazarr_episode_id: number | null
   parent_media_id: number | null
+  series_title: string | null
   created_at: string | null
   updated_at: string | null
 }

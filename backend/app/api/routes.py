@@ -33,8 +33,9 @@ from app.api.schemas import (
     SettingsUpdate,
     StatsOut,
 )
-from app.db import get_db
+from app.db import get_db, release_session_connection
 from app.integrations.bazarr.client import BazarrClient, BazarrError
+from app.integrations.jellyfin.client import JellyfinClient, JellyfinError
 from app.jobs.scanner import scanner
 from app.jobs.service import JobService
 from app.jobs.worker import worker
@@ -143,6 +144,21 @@ async def test_bazarr(db: Session = Depends(get_db)) -> ConnectionTestResult:
         details = await BazarrClient(url, key).test_connection()
         return ConnectionTestResult(ok=True, message="Connected to Bazarr.", details=details)
     except BazarrError as exc:
+        return ConnectionTestResult(ok=False, message=str(exc))
+
+
+@router.post("/settings/test/jellyfin", response_model=ConnectionTestResult)
+async def test_jellyfin(db: Session = Depends(get_db)) -> ConnectionTestResult:
+    url, key = SettingsService(db).get_jellyfin_credentials()
+    if not url or not key:
+        return ConnectionTestResult(
+            ok=False, message="Jellyfin URL and API key must both be configured."
+        )
+    release_session_connection(db)
+    try:
+        details = await JellyfinClient(url, key).test_connection()
+        return ConnectionTestResult(ok=True, message="Connected to Jellyfin.", details=details)
+    except JellyfinError as exc:
         return ConnectionTestResult(ok=False, message=str(exc))
 
 

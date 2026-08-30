@@ -267,6 +267,8 @@ def init_db() -> None:
         settings_rows = conn.execute(text("PRAGMA table_info(settings)")).fetchall()
         settings_columns = {row[1] for row in settings_rows}
         for column, ddl in (
+            ("jellyfin_url", "ALTER TABLE settings ADD COLUMN jellyfin_url VARCHAR(512)"),
+            ("jellyfin_api_key_encrypted", "ALTER TABLE settings ADD COLUMN jellyfin_api_key_encrypted TEXT"),
             ("max_concurrent_translate", "ALTER TABLE settings ADD COLUMN max_concurrent_translate INTEGER NOT NULL DEFAULT 1"),
             ("max_concurrent_extract", "ALTER TABLE settings ADD COLUMN max_concurrent_extract INTEGER NOT NULL DEFAULT 1"),
             ("max_concurrent_request", "ALTER TABLE settings ADD COLUMN max_concurrent_request INTEGER NOT NULL DEFAULT 1"),

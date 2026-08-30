@@ -118,6 +118,14 @@ def _artifact(path: Path, *, role: str, model: str, source: Path) -> AudioArtifa
     )
 
 
+def _failure_detail(result: object) -> str:
+    """Return a compact terminal diagnostic without burying the job message."""
+    stderr = getattr(result, "stderr_text", "") or ""
+    stdout = getattr(result, "stdout_text", "") or ""
+    text = " ".join((stderr or stdout).split())
+    return text[-600:]
+
+
 class DemucsProvider:
     name = PROVIDER_DEMUCS
 
@@ -202,8 +210,12 @@ class DemucsProvider:
                     code=CODE_PROVIDER_UNAVAILABLE,
                     stage="provider",
                 )
+            detail = _failure_detail(result)
+            message = "Demucs separation process failed."
+            if detail:
+                message = f"{message} {detail}"
             raise AudioSeparationError(
-                "Demucs separation process failed.",
+                message,
                 code=CODE_SEPARATION_FAILED,
                 stage="provider",
             )

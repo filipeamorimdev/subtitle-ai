@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
+import RequestDubModal from '../components/RequestDubModal.vue'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
 import { api } from '../services/api'
 import { useAppStore } from '../stores/app'
@@ -57,6 +58,7 @@ const search = ref('')
 const mediaTypeFilter = ref<string | null>(null)
 const categoryFilter = ref<MediaFilter>('all')
 const modalOpen = ref(false)
+const dubModalOpen = ref(false)
 const requestMedia = ref<MediaRef | null>(null)
 const requestLanguage = ref<string | null>(null)
 const selectedKeys = ref<Set<string>>(new Set())
@@ -191,9 +193,21 @@ const rows = computed(() => {
   return [...byId.values(), ...extras]
 })
 
+function hasActiveCandidateJob(candidate: Candidate | null) {
+  if (!candidate) return false
+  return [
+    candidate.active_extract_job_id,
+    candidate.active_request_job_id,
+    candidate.active_translate_job_id,
+    candidate.active_transcribe_job_id,
+  ].some((jobId) => jobId != null)
+}
+
 function rowKind(row: MediaRow): RowKind {
   const latest = [...latestTasksByLanguageCapability(row.tasks).values()]
-  if (latest.some((task) => isActiveTaskStatus(task.status))) return 'in-progress'
+  if (latest.some((task) => isActiveTaskStatus(task.status)) || hasActiveCandidateJob(row.candidate)) {
+    return 'in-progress'
+  }
 
   const targetLang = row.candidate?.target_language
   const targetExists = row.candidate?.reason_code === 'target_exists'
@@ -294,6 +308,9 @@ const filteredRows = computed(() => {
     .filter((row) => {
       if (mediaTypeFilter.value && row.mediaType !== mediaTypeFilter.value) return false
       const kind = rowKind(row)
+      // Keep the default view focused on titles that still have an available
+      // action. Completed target translations remain accessible via Completed.
+      if (categoryFilter.value === 'all' && kind === 'completed') return false
       if (categoryFilter.value === 'needs-work' && kind !== 'needs-work') return false
       if (categoryFilter.value === 'in-progress' && kind !== 'in-progress') return false
       if (categoryFilter.value === 'failed' && kind !== 'failed') return false
@@ -327,7 +344,7 @@ const progressByKey = computed(() => {
 const counts = computed(() => {
   const list = rows.value
   return {
-    all: list.length,
+    all: list.filter((row) => rowKind(row) !== 'completed').length,
     needsWork: list.filter((row) => rowKind(row) === 'needs-work').length,
     inProgress: list.filter((row) => rowKind(row) === 'in-progress').length,
     failed: list.filter((row) => rowKind(row) === 'failed').length,
@@ -557,6 +574,13 @@ onUnmounted(() => {
         >
           Request subtitles
         </button>
+        <button
+          type="button"
+          class="rounded-md border border-accent px-3 py-1.5 text-sm font-semibold text-accent"
+          @click="dubModalOpen = true"
+        >
+          Request dub
+        </button>
       </div>
     </div>
 
@@ -633,7 +657,7 @@ onUnmounted(() => {
     >
       <p class="font-medium">No media in this view.</p>
       <p class="mt-1 text-sm text-ink-500">
-        Request subtitles for a title, or refresh Bazarr wanted items.
+        Request subtitles for a title, refresh the media catalog, or open Completed to see finished titles.
       </p>
       <button
         type="button"
@@ -738,6 +762,11 @@ onUnmounted(() => {
       :initial-media="requestMedia"
       :initial-language="requestLanguage"
       @close="modalOpen = false"
+      @created="load(false, mediaListLoaded)"
+    />
+    <RequestDubModal
+      :open="dubModalOpen"
+      @close="dubModalOpen = false"
       @created="load(false, mediaListLoaded)"
     />
   </section>

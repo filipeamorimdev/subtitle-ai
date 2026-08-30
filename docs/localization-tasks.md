@@ -65,9 +65,12 @@ Backend-authoritative (`GET /api/languages`, `normalize_language()`).
 - Bare `pt` is generic Portuguese (not auto-promoted to `pt-PT`)
 - Aliases such as “Português de Portugal” normalize to `pt-PT`
 
-## Bazarr media provider
+## Media catalog providers
 
-`BazarrMediaProvider` supports search/get for movies and episodes. It is a lightweight identity layer, not a second media-management app.
+`JellyfinMediaProvider` lists and searches all movies and episodes exposed by a configured Jellyfin
+server. It is the preferred catalog for the request dialogs and AI operator. If Jellyfin is not
+configured or cannot be reached, `BazarrMediaProvider` remains the automatic search/get fallback.
+Both are lightweight identity layers, not a second media-management library.
 
 ## Task states
 

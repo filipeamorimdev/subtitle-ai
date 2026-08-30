@@ -40,8 +40,6 @@ const modalOpen = ref(false)
 const dubModalOpen = ref(false)
 const busy = ref(false)
 const retryingId = ref<number | null>(null)
-const canTranscribe = ref(false)
-const transcribeReason = ref<string | null>(null)
 let timer: number | undefined
 let stopLive: (() => void) | undefined
 
@@ -50,6 +48,16 @@ const mediaId = computed(() => Number(props.id))
 const visibleLanguages = computed(() =>
   localization.value.filter((lang) => lang.available || lang.task_status),
 )
+
+const dubbedTasks = computed(() => {
+  const latestByLanguage = new Map<string, LocalizationTask>()
+  for (const task of tasks.value) {
+    if ((task.capability || 'subtitles') !== 'audio') continue
+    const existing = latestByLanguage.get(task.target_language_code)
+    if (!existing || task.id > existing.id) latestByLanguage.set(task.target_language_code, task)
+  }
+  return [...latestByLanguage.values()].filter((task) => task.status === 'completed')
+})
 
 const selectedTask = computed(() => {
   return (
@@ -129,11 +137,19 @@ const mediaMeta = computed(() => {
   const parts: string[] = []
   if (media.value.year) parts.push(String(media.value.year))
   parts.push(media.value.media_type)
-  if (media.value.media_type === 'episode' && media.value.season != null && media.value.episode != null) {
-    parts.push(`S${String(media.value.season).padStart(2, '0')}E${String(media.value.episode).padStart(2, '0')}`)
+  if (media.value.media_type !== 'episode' && media.value.episode_title) {
+    parts.push(media.value.episode_title)
   }
-  if (media.value.episode_title) parts.push(media.value.episode_title)
   return parts.join(' · ')
+})
+
+const mediaHeading = computed(() => {
+  if (!media.value || media.value.media_type !== 'episode') return media.value?.title || ''
+  if (media.value.season == null || media.value.episode == null || !media.value.episode_title) {
+    return media.value.title
+  }
+  const code = `S${String(media.value.season).padStart(2, '0')}E${String(media.value.episode).padStart(2, '0')}`
+  return `${code} - ${media.value.episode_title}`
 })
 
 const anyActive = computed(() =>
@@ -165,12 +181,16 @@ const targetSubtitlePath = computed(
     null,
 )
 
+const dubbedPath = computed(() => {
+  const dubJobs = tasks.value
+    .flatMap((task) => task.executions || [])
+    .filter((job) => job.job_kind === 'dub' && job.status === 'completed')
+  if (!dubJobs.length) return null
+  return [...dubJobs].sort((a, b) => b.id - a.id)[0].target_subtitle_path
+})
+
 const detailModel = computed(
   () => detailJob.value?.model || selectedTask.value?.ai?.model_id || null,
-)
-
-const detailReason = computed(
-  () => matchedCandidate.value?.reason || detailJob.value?.reason_code || null,
 )
 
 const showEmbeddedTracks = computed(() => Boolean(matchedCandidate.value?.has_embedded))
@@ -206,8 +226,6 @@ async function load() {
     ])
     media.value = mediaRow
     localization.value = loc.languages
-    canTranscribe.value = Boolean(loc.can_transcribe)
-    transcribeReason.value = loc.transcribe_reason || null
     tasks.value = taskList
     actions.value = history
     error.value = null
@@ -276,27 +294,6 @@ async function cancelTask(taskId?: number) {
   }
 }
 
-async function transcribeAudio() {
-  if (!media.value || busy.value) return
-  const ok = window.confirm(
-    'Transcribe audio from this file? On CPU this can take as long as the video itself, and the first run downloads a Whisper model.',
-  )
-  if (!ok) return
-  busy.value = true
-  actionError.value = null
-  try {
-    await api.transcribeMedia(mediaId.value, {
-      target_language:
-        selectedTask.value?.target_language_code || store.settings?.target_language.code,
-    })
-    await load()
-  } catch (err) {
-    actionError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    busy.value = false
-  }
-}
-
 async function retryJob(jobId: number) {
   if (retryingId.value != null) return
   retryingId.value = jobId
@@ -351,8 +348,14 @@ onUnmounted(() => {
     <template v-else>
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
+          <p
+            v-if="media.media_type === 'episode' && media.series_title"
+            class="font-display text-lg font-semibold text-ink-600 dark:text-ink-300"
+          >
+            {{ media.series_title }}
+          </p>
           <h1 class="font-display text-2xl font-bold tracking-tight sm:text-3xl">
-            {{ media.title }}
+            {{ mediaHeading }}
           </h1>
           <p class="mt-1 text-sm capitalize text-ink-500">{{ mediaMeta }}</p>
         </div>
@@ -392,17 +395,6 @@ onUnmounted(() => {
             @click="cancelTask()"
           >
             Cancel
-          </button>
-          <button
-            v-if="canTranscribe"
-            type="button"
-            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
-            :title="transcribeReason || 'Transcribe audio when no subtitle source is available'"
-            aria-label="Transcribe audio"
-            :disabled="busy || anyActive"
-            @click="transcribeAudio"
-          >
-            Transcribe audio
           </button>
           <button
             type="button"
@@ -477,7 +469,16 @@ onUnmounted(() => {
           {{ lang.language_name || lang.language_code }}
           <span class="ml-1 font-normal opacity-80">{{ languageLabel(lang) }}</span>
         </span>
-        <p v-if="!visibleLanguages.length" class="text-sm text-ink-500">
+        <span
+          v-for="task in dubbedTasks"
+          :key="`dub-${task.id}`"
+          class="rounded-full border px-3 py-1 text-xs font-semibold"
+          :class="languageChipClass('completed', true)"
+        >
+          {{ task.target_language_name }}
+          <span class="ml-1 font-normal opacity-80">Dubbed</span>
+        </span>
+        <p v-if="!visibleLanguages.length && !dubbedTasks.length" class="text-sm text-ink-500">
           No localized subtitles requested for this media.
         </p>
       </div>
@@ -502,10 +503,10 @@ onUnmounted(() => {
           <div>
             <dt class="text-ink-500">Target subtitle</dt>
             <dd class="mt-1 break-all">{{ targetSubtitlePath || '—' }}</dd>
-          </div>
-          <div v-if="detailReason" class="sm:col-span-2">
-            <dt class="text-ink-500">Reason</dt>
-            <dd class="mt-1">{{ detailReason }}</dd>
+            <template v-if="dubbedPath">
+              <dt class="mt-4 text-ink-500">Dubbed output</dt>
+              <dd class="mt-1 break-all">{{ dubbedPath }}</dd>
+            </template>
           </div>
           <div v-if="showEmbeddedTracks" class="sm:col-span-2">
             <dt class="text-ink-500">Embedded tracks</dt>

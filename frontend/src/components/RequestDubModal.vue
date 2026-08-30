@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import LanguageSelect from './LanguageSelect.vue'
 import { api } from '../services/api'
@@ -20,6 +20,11 @@ const emit = defineEmits<{
 const router = useRouter()
 
 const languages = ref<LanguageCatalogItem[]>([])
+const query = ref('')
+const searching = ref(false)
+const searchError = ref<string | null>(null)
+const results = ref<MediaRef[]>([])
+const selected = ref<MediaRef | null>(null)
 const languageChoice = ref('')
 const mixMode = ref<'background_preserved' | 'voiceover_preview'>('background_preserved')
 const speakerVoiceOverrides = ref('')
@@ -27,13 +32,15 @@ const casting = ref(false)
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
 
-const selected = computed(() => props.initialMedia ?? null)
-
 watch(
   () => props.open,
   async (open) => {
     if (!open) return
     submitError.value = null
+    searchError.value = null
+    query.value = ''
+    results.value = []
+    selected.value = props.initialMedia ?? null
     mixMode.value = 'background_preserved'
     speakerVoiceOverrides.value = ''
     if (!languages.value.length) {
@@ -52,6 +59,41 @@ watch(
     }
   },
 )
+
+let searchTimer: number | undefined
+watch(query, (value) => {
+  if (searchTimer) window.clearTimeout(searchTimer)
+  if (selected.value || value.trim().length < 2) {
+    results.value = []
+    return
+  }
+  searchTimer = window.setTimeout(() => void runSearch(), 300)
+})
+
+async function runSearch() {
+  searching.value = true
+  searchError.value = null
+  try {
+    results.value = await api.searchMedia(query.value.trim())
+  } catch (err) {
+    searchError.value = err instanceof Error ? err.message : String(err)
+    results.value = []
+  } finally {
+    searching.value = false
+  }
+}
+
+function selectMedia(item: MediaRef) {
+  selected.value = item
+  query.value = item.title
+  results.value = []
+}
+
+function clearSelection() {
+  selected.value = null
+  query.value = ''
+  results.value = []
+}
 
 function mediaLabel(item: MediaRef) {
   if (item.media_type === 'episode') {
@@ -173,14 +215,58 @@ async function submit() {
       </div>
 
       <div class="mt-5 space-y-4">
-        <div v-if="selected">
+        <div>
           <span class="block text-sm font-medium text-ink-700 dark:text-ink-200">Media</span>
           <div
+            v-if="selected"
             class="mt-1.5 rounded-md border border-ink-200 bg-ink-50 px-3 py-2 dark:border-ink-700 dark:bg-ink-800"
           >
-            <p class="truncate font-medium">{{ mediaLabel(selected) }}</p>
-            <p class="text-xs uppercase tracking-wide text-ink-500">{{ selected.media_type }}</p>
+            <div class="flex items-center justify-between gap-2">
+              <div class="min-w-0">
+                <p class="truncate font-medium">{{ mediaLabel(selected) }}</p>
+                <p class="text-xs uppercase tracking-wide text-ink-500">{{ selected.media_type }}</p>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 text-sm text-accent hover:underline"
+                @click="clearSelection"
+              >
+                Change
+              </button>
+            </div>
           </div>
+          <template v-else>
+            <input
+              v-model="query"
+              type="search"
+              class="mt-1.5 w-full rounded-md border border-ink-300 bg-white px-3 py-2 text-sm dark:border-ink-600 dark:bg-ink-950"
+              placeholder="Search media…"
+              autocomplete="off"
+            />
+            <p v-if="searching" class="mt-1 text-xs text-ink-500">Searching…</p>
+            <p v-else-if="searchError" class="mt-1 text-xs text-red-600">{{ searchError }}</p>
+            <p
+              v-else-if="query.trim().length >= 2 && !results.length"
+              class="mt-1 text-xs text-ink-500"
+            >
+              No media found.
+            </p>
+            <ul
+              v-if="results.length"
+              class="mt-2 max-h-48 overflow-auto rounded-md border border-ink-200 dark:border-ink-700"
+            >
+              <li v-for="item in results" :key="`${item.provider_id}:${item.external_id}`">
+                <button
+                  type="button"
+                  class="flex w-full flex-col items-start gap-0.5 border-b border-ink-100 px-3 py-2 text-left text-sm last:border-0 hover:bg-ink-50 dark:border-ink-800 dark:hover:bg-ink-800"
+                  @click="selectMedia(item)"
+                >
+                  <span class="font-medium">{{ mediaLabel(item) }}</span>
+                  <span class="text-xs uppercase text-ink-500">{{ item.media_type }}</span>
+                </button>
+              </li>
+            </ul>
+          </template>
         </div>
 
         <div>

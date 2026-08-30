@@ -176,8 +176,18 @@ def load_chatterbox_model(*, device: str | None = None) -> Any:
             return cached
         try:
             from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+        except ModuleNotFoundError as exc:
+            if exc.name == "chatterbox":
+                raise TTSError(
+                    "Chatterbox TTS is not installed in this server image. Deploy the current Subtitle AI image, then retry the dub."
+                ) from exc
+            if exc.name == "chatterbox.mtl_tts":
+                raise TTSError(
+                    "The installed Chatterbox version does not support Multilingual V3. Deploy the current Subtitle AI image, then retry the dub."
+                ) from exc
+            raise TTSError(f"Chatterbox could not be imported: {exc}") from exc
         except ImportError as exc:
-            raise TTSError("chatterbox-tts is not installed") from exc
+            raise TTSError(f"Chatterbox could not be imported: {exc}") from exc
         try:
             model = ChatterboxMultilingualTTS.from_pretrained(
                 device=selected_device,
@@ -212,7 +222,18 @@ def write_chatterbox_wav(
             cfg_weight=profile.cfg_weight,
             temperature=profile.temperature,
         )
-        torchaudio.save(str(output_wav), audio.detach().cpu(), model.sr)
+        # The timeline probes each cue with Python's wave module.  Explicit
+        # PCM S16 keeps every generated WAV readable there as well as by
+        # ffmpeg; torchaudio's backend defaults can otherwise create an
+        # extensible/float WAV that loses duration information.
+        torchaudio.save(
+            str(output_wav),
+            audio.detach().cpu(),
+            model.sr,
+            format="wav",
+            encoding="PCM_S",
+            bits_per_sample=16,
+        )
     except Exception as exc:  # noqa: BLE001
         raise TTSError(f"Chatterbox could not synthesize this cue: {exc}") from exc
 

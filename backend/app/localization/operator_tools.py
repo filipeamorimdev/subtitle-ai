@@ -32,6 +32,7 @@ from app.media.bazarr_provider import (
     episode_external_id,
     movie_external_id,
 )
+from app.media.catalog import MediaCatalog, MediaCatalogError, configured_media_catalog
 from app.media.service import MediaItemService
 from app.services.settings import SettingsService
 from app.subtitles.filenames import languages_compatible
@@ -100,6 +101,17 @@ def _bazarr_provider(db: Session) -> BazarrMediaProvider:
     return BazarrMediaProvider(BazarrClient(url, key))
 
 
+def _media_catalog(db: Session) -> MediaCatalog:
+    """Build the shared catalog while preserving the injectable Bazarr seam."""
+    catalog = configured_media_catalog(db)
+    if catalog.jellyfin is None:
+        try:
+            catalog.bazarr = _bazarr_provider(db)
+        except ValueError:
+            pass
+    return catalog
+
+
 def _confirmation_preview(name: str, args: dict[str, Any]) -> dict[str, Any]:
     return {
         "needs_confirmation": True,
@@ -114,13 +126,11 @@ async def search_media(db: Session, *, query: str, **_kwargs: Any) -> dict[str, 
     if not q:
         return {"error": "invalid_arguments", "detail": "query is required"}
     try:
-        provider = _bazarr_provider(db)
+        catalog = _media_catalog(db)
         release_session_connection(db)
-        refs = await provider.search_media(q)
-    except BazarrError as exc:
-        return {"error": "bazarr_error", "detail": str(exc)}
-    except ValueError as exc:
-        return {"error": "not_configured", "detail": str(exc)}
+        source, refs = await catalog.search(q)
+    except MediaCatalogError as exc:
+        return {"error": "media_catalog_error", "detail": str(exc)}
     results = [
         {
             "provider_id": r.provider_id,
@@ -141,6 +151,7 @@ async def search_media(db: Session, *, query: str, **_kwargs: Any) -> dict[str, 
     ]
     return {
         "query": q,
+        "source": source,
         "count": len(results),
         "results": results,
         "ambiguous": len(results) > 1,
@@ -185,12 +196,9 @@ async def ensure_media(
             }
 
     ref: MediaRef | None = None
-    try:
-        provider = _bazarr_provider(db)
-        release_session_connection(db)
-        ref = await provider.get_media(resolved_external)
-    except (BazarrError, ValueError):
-        ref = None
+    catalog = _media_catalog(db)
+    release_session_connection(db)
+    ref = await catalog.get(provider_id or BAZARR_PROVIDER_ID, resolved_external)
 
     if ref is None:
         if not title or not media_type:
@@ -485,7 +493,8 @@ def _build_registry() -> dict[str, OperatorTool]:
             spec=ToolSpec(
                 name="search_media",
                 description=(
-                    "Search the Bazarr library for movies or episodes by title. "
+                    "Search the configured media catalog for movies or episodes by title. "
+                    "Jellyfin is preferred when connected; Bazarr is the fallback. "
                     "Call this before ensure_media / create_localization_task."
                 ),
                 parameters={

@@ -23,6 +23,9 @@ class SettingsUpdate(BaseModel):
     bazarr_url: str | None = None
     bazarr_api_key: str | None = None
     clear_bazarr_api_key: bool = False
+    jellyfin_url: str | None = None
+    jellyfin_api_key: str | None = None
+    clear_jellyfin_api_key: bool = False
     openrouter_api_key: str | None = None
     clear_openrouter_api_key: bool = False
     openrouter_model: str | None = None
@@ -66,6 +69,9 @@ class SettingsOut(BaseModel):
     bazarr_url: str | None
     bazarr_api_key_masked: str | None
     bazarr_api_key_configured: bool
+    jellyfin_url: str | None = None
+    jellyfin_api_key_masked: str | None = None
+    jellyfin_api_key_configured: bool = False
     openrouter_api_key_masked: str | None
     openrouter_api_key_configured: bool
     openrouter_model: str
@@ -547,6 +553,7 @@ class MediaItemOut(BaseModel):
     bazarr_series_id: int | None = None
     bazarr_episode_id: int | None = None
     parent_media_id: int | None = None
+    series_title: str | None = None
     created_at: DateTimeOut
     updated_at: DateTimeOut
 

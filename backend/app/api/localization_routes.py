@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -60,6 +61,7 @@ from app.media.bazarr_provider import (
     episode_external_id,
     movie_external_id,
 )
+from app.media.catalog import MediaCatalogError, configured_media_catalog
 from app.media.service import MediaItemService
 from app.services.settings import SettingsService
 from app.subtitles.filenames import languages_compatible
@@ -67,7 +69,33 @@ from app.subtitles.filenames import languages_compatible
 router = APIRouter(prefix="/api")
 
 
-def _media_item_out(row: MediaItemRow) -> MediaItemOut:
+def _episode_series_title(db: Session, row: MediaItemRow) -> str | None:
+    """Resolve an episode's series title without changing movie metadata."""
+    if row.media_type != "episode":
+        return None
+
+    if row.parent_media_id:
+        parent = db.get(MediaItemRow, row.parent_media_id)
+        if parent and parent.media_type == "series" and parent.title:
+            return parent.title
+
+    metadata = row.metadata_json or {}
+    saved_title = metadata.get("series_title") if isinstance(metadata, dict) else None
+    if isinstance(saved_title, str) and saved_title.strip():
+        return saved_title.strip()
+
+    title_match = re.match(r"^(.+?)\s+-\s+S\d{1,2}E\d{1,3}(?:\s+-|$)", row.title)
+    if title_match:
+        return title_match.group(1).strip()
+
+    parts = [part for part in (row.path or "").replace("\\", "/").split("/") if part]
+    for index, part in enumerate(parts):
+        if index and re.fullmatch(r"(?:season|series)\s*\d+", part, flags=re.IGNORECASE):
+            return parts[index - 1]
+    return None
+
+
+def _media_item_out(db: Session, row: MediaItemRow) -> MediaItemOut:
     return MediaItemOut(
         id=row.id,
         provider_id=row.provider_id,
@@ -83,6 +111,7 @@ def _media_item_out(row: MediaItemRow) -> MediaItemOut:
         bazarr_series_id=row.bazarr_series_id,
         bazarr_episode_id=row.bazarr_episode_id,
         parent_media_id=row.parent_media_id,
+        series_title=_episode_series_title(db, row),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -144,7 +173,9 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
     )
 
     if has_checkpoint_data(task.metadata_json):
-        return progress_steps(read_checkpoints(task.metadata_json))
+        steps = progress_steps(read_checkpoints(task.metadata_json))
+        steps.insert(2, _transcription_progress_step(task, jobs))
+        return steps
 
     kinds_done = {j.job_kind for j in jobs if j.status == "completed"}
     kinds_active = {j.job_kind for j in jobs if j.status in {"pending", "processing", "paused"}}
@@ -162,42 +193,44 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
     steps = [
         {"id": "source", "label": "Source found", "state": state("request")},
         {"id": "extract", "label": "Source extracted", "state": state("extract")},
+        _transcription_progress_step(task, jobs),
         {"id": "translate", "label": "Translating", "state": state("translate")},
         {"id": "validate", "label": "Validating", "state": "pending"},
         {"id": "write", "label": "Writing subtitle", "state": "pending"},
         {"id": "sync", "label": "Bazarr sync", "state": "pending"},
         {"id": "verify", "label": "Verification", "state": "pending"},
     ]
+    by_id = {step["id"]: step for step in steps}
     if "transcribe" in kinds_active:
-        steps[0]["state"] = "active"
-        if steps[1]["state"] == "pending":
-            steps[1]["state"] = "skipped"
+        by_id["source"]["state"] = "active"
+        if by_id["extract"]["state"] == "pending":
+            by_id["extract"]["state"] = "skipped"
     if "transcribe" in kinds_done:
-        steps[0]["state"] = "done"
-        if steps[1]["state"] == "pending":
-            steps[1]["state"] = "skipped"
+        by_id["source"]["state"] = "done"
+        if by_id["extract"]["state"] == "pending":
+            by_id["extract"]["state"] = "skipped"
     if "transcribe" in kinds_failed:
-        steps[0]["state"] = "failed"
-        if steps[1]["state"] == "pending":
-            steps[1]["state"] = "skipped"
+        by_id["source"]["state"] = "failed"
+        if by_id["extract"]["state"] == "pending":
+            by_id["extract"]["state"] = "skipped"
     if "translate" in kinds_done or "translate" in kinds_active:
-        if steps[0]["state"] == "pending":
-            steps[0]["state"] = "done"
-        if steps[1]["state"] == "pending" and "extract" not in kinds_failed:
-            steps[1]["state"] = "skipped"
+        if by_id["source"]["state"] == "pending":
+            by_id["source"]["state"] = "done"
+        if by_id["extract"]["state"] == "pending" and "extract" not in kinds_failed:
+            by_id["extract"]["state"] = "skipped"
     if "translate" in kinds_done:
-        steps[2]["state"] = "done"
-        steps[3]["state"] = "done"
-        steps[4]["state"] = "done"
+        by_id["translate"]["state"] = "done"
+        by_id["validate"]["state"] = "done"
+        by_id["write"]["state"] = "done"
         if task.status == "verifying":
-            steps[5]["state"] = "active"
-            steps[6]["state"] = "active"
+            by_id["sync"]["state"] = "active"
+            by_id["verify"]["state"] = "active"
         elif task.status == "completed":
-            steps[5]["state"] = "done"
-            steps[6]["state"] = "done"
+            by_id["sync"]["state"] = "done"
+            by_id["verify"]["state"] = "done"
         elif any(j.reason_code == "bazarr_verify_failed" for j in jobs if j.job_kind == "translate"):
-            steps[5]["state"] = "done"
-            steps[6]["state"] = "failed"
+            by_id["sync"]["state"] = "done"
+            by_id["verify"]["state"] = "failed"
     if task.status == "completed":
         for step in steps:
             if step["state"] == "pending":
@@ -206,14 +239,37 @@ def _progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str
         request_failed = any(
             j.job_kind == "request" and j.reason_code == "not_found" for j in jobs
         )
-        steps[0]["state"] = "failed" if request_failed else "active"
-        if steps[1]["state"] == "pending":
-            steps[1]["state"] = "skipped"
+        by_id["source"]["state"] = "failed" if request_failed else "active"
+        if by_id["extract"]["state"] == "pending":
+            by_id["extract"]["state"] = "skipped"
     if task.status == "failed" and task.error_code in {"not_found", "source_unavailable"}:
-        steps[0]["state"] = "failed"
-        if steps[1]["state"] == "pending":
-            steps[1]["state"] = "skipped"
+        by_id["source"]["state"] = "failed"
+        if by_id["extract"]["state"] == "pending":
+            by_id["extract"]["state"] = "skipped"
     return steps
+
+
+def _transcription_progress_step(
+    task: LocalizationTaskRow, jobs: list
+) -> dict[str, str]:
+    """Expose transcription as its own live-work stage badge."""
+    job = next((item for item in reversed(jobs) if item.job_kind == "transcribe"), None)
+    if job is not None:
+        if job.status in {"pending", "processing", "paused"}:
+            state = "active"
+        elif job.status == "completed":
+            state = "done"
+        elif job.status == "failed":
+            state = "failed"
+        else:
+            state = "skipped"
+    elif task.status == "completed" or any(
+        item.job_kind == "translate" for item in jobs
+    ):
+        state = "skipped"
+    else:
+        state = "pending"
+    return {"id": "transcribe", "label": "Transcribing", "state": state}
 
 
 def _audio_progress_steps(task: LocalizationTaskRow, jobs: list) -> list[dict[str, str]]:
@@ -343,10 +399,10 @@ async def search_media(
     db: Session = Depends(get_db),
 ) -> list[MediaRefOut]:
     try:
-        provider = _bazarr_provider(db)
+        catalog = configured_media_catalog(db)
         release_session_connection(db)
-        refs = await provider.search_media(q)
-    except BazarrError as exc:
+        _source, refs = await catalog.search(q)
+    except MediaCatalogError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return [
         MediaRefOut(
@@ -377,7 +433,7 @@ def list_media(
 ) -> list[MediaItemOut]:
     svc = MediaItemService(db)
     response.headers["X-Total-Count"] = str(svc.count_items())
-    return [_media_item_out(row) for row in svc.list_items(limit=limit, offset=offset)]
+    return [_media_item_out(db, row) for row in svc.list_items(limit=limit, offset=offset)]
 
 
 @router.post("/media", response_model=MediaItemOut)
@@ -393,14 +449,11 @@ async def ensure_media(payload: MediaEnsureIn, db: Session = Depends(get_db)) ->
         else:
             raise HTTPException(status_code=400, detail="external_id or Bazarr IDs required")
 
-    # Prefer live Bazarr metadata when possible.
+    # Prefer live metadata from the catalog that produced the selection.
     ref: MediaRef | None = None
-    try:
-        provider = _bazarr_provider(db)
-        release_session_connection(db)
-        ref = await provider.get_media(external_id)
-    except (BazarrError, HTTPException):
-        ref = None
+    catalog = configured_media_catalog(db)
+    release_session_connection(db)
+    ref = await catalog.get(payload.provider_id or BAZARR_PROVIDER_ID, external_id)
 
     if ref is None:
         if not payload.title or not payload.media_type:
@@ -421,7 +474,7 @@ async def ensure_media(payload: MediaEnsureIn, db: Session = Depends(get_db)) ->
             bazarr_episode_id=payload.bazarr_episode_id,
         )
     row = media_svc.upsert_from_ref(ref)
-    return _media_item_out(row)
+    return _media_item_out(db, row)
 
 
 @router.get("/media/{media_id}", response_model=MediaItemOut)
@@ -429,7 +482,7 @@ def get_media(media_id: int, db: Session = Depends(get_db)) -> MediaItemOut:
     row = MediaItemService(db).get(media_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Media not found")
-    return _media_item_out(row)
+    return _media_item_out(db, row)
 
 
 @router.get("/media/{media_id}/localization", response_model=MediaLocalizationOut)

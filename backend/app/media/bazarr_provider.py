@@ -156,6 +156,9 @@ def _episode_ref(raw: dict[str, Any], *, series_title: str | None = None) -> Med
     if episode_title:
         parts.append(episode_title)
     title = " - ".join(parts) if parts else f"Episode {episode_id}"
+    metadata = _metadata_from(raw)
+    if series_name:
+        metadata["series_title"] = series_name
     return MediaRef(
         provider_id=BAZARR_PROVIDER_ID,
         external_id=episode_external_id(episode_id),
@@ -169,7 +172,7 @@ def _episode_ref(raw: dict[str, Any], *, series_title: str | None = None) -> Med
         parent_external_id=series_external_id(series_id) if series_id is not None else None,
         bazarr_series_id=series_id,
         bazarr_episode_id=episode_id,
-        metadata=_metadata_from(raw),
+        metadata=metadata,
     )
 
 

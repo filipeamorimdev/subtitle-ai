@@ -68,7 +68,12 @@ API:
 
 Media:
 
+- Jellyfin URL, API key, Test Connection (preferred movie/episode catalog when reachable)
 - Bazarr URL, API key, Test Connection
+
+The request dialogs and AI operator search Jellyfin when both Jellyfin settings are saved and the
+server is reachable. They automatically fall back to Bazarr when Jellyfin is not configured or a
+Jellyfin request fails. Bazarr remains responsible for subtitle requests, rescans, and verification.
 
 AI:
 

@@ -18,6 +18,8 @@ class SettingsRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     bazarr_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     bazarr_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    jellyfin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    jellyfin_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     openrouter_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     openrouter_model: Mapped[str] = mapped_column(String(256), default="openai/gpt-4o-mini")
     target_language_code: Mapped[str] = mapped_column(String(32), default="pt-PT")

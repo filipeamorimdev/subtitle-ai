@@ -118,12 +118,18 @@ class SettingsService:
         row = self.get_or_create_row()
         config = get_app_config()
         bazarr_key = decrypt_secret(self.fernet, row.bazarr_api_key_encrypted)
+        jellyfin_key = decrypt_secret(
+            self.fernet, getattr(row, "jellyfin_api_key_encrypted", None)
+        )
         openrouter_key = decrypt_secret(self.fernet, row.openrouter_api_key_encrypted)
         openai_key = decrypt_secret(self.fernet, getattr(row, "openai_api_key_encrypted", None))
         return SettingsOut(
             bazarr_url=row.bazarr_url,
             bazarr_api_key_masked=mask_secret(bazarr_key),
             bazarr_api_key_configured=bool(bazarr_key),
+            jellyfin_url=getattr(row, "jellyfin_url", None),
+            jellyfin_api_key_masked=mask_secret(jellyfin_key),
+            jellyfin_api_key_configured=bool(jellyfin_key),
             openrouter_api_key_masked=mask_secret(openrouter_key),
             openrouter_api_key_configured=bool(openrouter_key),
             openrouter_model=row.openrouter_model,
@@ -221,6 +227,14 @@ class SettingsService:
             row.bazarr_api_key_encrypted = None
         elif payload.bazarr_api_key:
             row.bazarr_api_key_encrypted = encrypt_secret(self.fernet, payload.bazarr_api_key.strip())
+        if payload.jellyfin_url is not None:
+            row.jellyfin_url = payload.jellyfin_url.strip() or None
+        if payload.clear_jellyfin_api_key:
+            row.jellyfin_api_key_encrypted = None
+        elif payload.jellyfin_api_key:
+            row.jellyfin_api_key_encrypted = encrypt_secret(
+                self.fernet, payload.jellyfin_api_key.strip()
+            )
         if payload.clear_openrouter_api_key:
             row.openrouter_api_key_encrypted = None
         elif payload.openrouter_api_key:
@@ -340,6 +354,13 @@ class SettingsService:
     def get_bazarr_credentials(self) -> tuple[str | None, str | None]:
         row = self.get_or_create_row()
         return row.bazarr_url, decrypt_secret(self.fernet, row.bazarr_api_key_encrypted)
+
+    def get_jellyfin_credentials(self) -> tuple[str | None, str | None]:
+        row = self.get_or_create_row()
+        return (
+            getattr(row, "jellyfin_url", None),
+            decrypt_secret(self.fernet, getattr(row, "jellyfin_api_key_encrypted", None)),
+        )
 
     def get_openrouter_credentials(self) -> tuple[str | None, str]:
         row = self.get_or_create_row()
