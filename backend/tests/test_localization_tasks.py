@@ -2873,9 +2873,13 @@ def test_list_job_actions_for_media_includes_legacy_and_task_jobs(loc_env):
     request = next(item for item in actions if item.action == "request")
     localize = next(item for item in actions if item.action == "localize")
     assert translate.related_job_id == translate.id
+    assert translate.model == "test"
     assert extract.related_job_id is None
+    assert extract.model is None
     assert request.related_job_id is None
+    assert request.model is None
     assert localize.related_job_id == translate.id
+    assert localize.model is None
 
 
 def test_list_job_actions_for_media_includes_cancelled_task_without_cancelled_job(loc_env):

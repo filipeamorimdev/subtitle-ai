@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
+import RequestDubModal from '../components/RequestDubModal.vue'
 import RequestSubtitlesModal from '../components/RequestSubtitlesModal.vue'
 import OperatorChatBar from '../components/OperatorChatBar.vue'
 import RunningJobsPanel from '../components/RunningJobsPanel.vue'
@@ -43,6 +44,7 @@ const pipelineLoading = ref(false)
 const pipelineError = ref<string | null>(null)
 const pipelineLoaded = ref(false)
 const modalOpen = ref(false)
+const dubModalOpen = ref(false)
 const scanning = ref(false)
 const actionBusyId = ref<number | null>(null)
 const actionError = ref<string | null>(null)
@@ -584,6 +586,13 @@ onUnmounted(() => {
         >
           Request subtitles
         </button>
+        <button
+          type="button"
+          class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+          @click="dubModalOpen = true"
+        >
+          Request dubbing
+        </button>
       </div>
     </div>
 
@@ -925,6 +934,16 @@ onUnmounted(() => {
     <RequestSubtitlesModal
       :open="modalOpen"
       @close="modalOpen = false"
+      @created="
+        () => {
+          loadTasks()
+          loadCurrentLocalization()
+        }
+      "
+    />
+    <RequestDubModal
+      :open="dubModalOpen"
+      @close="dubModalOpen = false"
       @created="
         () => {
           loadTasks()

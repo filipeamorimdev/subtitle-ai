@@ -230,6 +230,10 @@ function statsHref(item: JobAction) {
             <dt class="text-ink-500">When</dt>
             <dd>{{ formatDateTime(item.datetime) }}</dd>
           </div>
+          <div v-if="item.model" class="col-span-2">
+            <dt class="text-ink-500">Model</dt>
+            <dd class="break-all">{{ item.model }}</dd>
+          </div>
           <div v-if="item.message" class="col-span-2">
             <dt class="text-ink-500">Message</dt>
             <dd
@@ -255,6 +259,7 @@ function statsHref(item: JobAction) {
             <th class="py-2 pr-4 font-medium">Date / time</th>
             <th class="py-2 pr-4 font-medium">Duration</th>
             <th class="py-2 pr-4 font-medium">Status</th>
+            <th class="py-2 pr-4 font-medium">Model</th>
             <th class="py-2 font-medium">Message</th>
             <th class="whitespace-nowrap py-2 pl-2 font-medium">
               <span class="sr-only">Actions</span>
@@ -263,7 +268,7 @@ function statsHref(item: JobAction) {
         </thead>
         <tbody>
           <tr v-if="!actions.length">
-            <td colspan="6" class="py-4 text-ink-500">{{ emptyMessage }}</td>
+            <td colspan="7" class="py-4 text-ink-500">{{ emptyMessage }}</td>
           </tr>
           <tr
             v-for="item in pagedActions"
@@ -299,6 +304,9 @@ function statsHref(item: JobAction) {
             </td>
             <td class="py-3 pr-4 align-top">
               <span :class="jobStatusBadgeClass(item.status)">{{ item.status }}</span>
+            </td>
+            <td class="py-3 pr-4 align-top break-all text-ink-600 dark:text-ink-300">
+              {{ item.model || '—' }}
             </td>
             <td
               class="py-3 align-top break-words"

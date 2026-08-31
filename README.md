@@ -169,6 +169,7 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 - The Portuguese dub is the default audio track (48 kHz stereo); the original audio remains as an alternate track. **Voiceover preview** remains available when a speech-only timeline is wanted.
 - Subtitle labels such as `Ryder:` are retained as speaker identities. Optional per-speaker Chatterbox expressive profiles can be set in the Dub dialog; unlabelled cues use the target-language natural profile.
 - The source video is never overwritten; the first run downloads the Chatterbox checkpoint (about 2 GB). The supplied image uses CPU synthesis; a GPU-enabled image can set `SUBTITLE_AI_CHATTERBOX_DEVICE=cuda`.
+- CPU dub jobs checkpoint completed cues under `/config/cache/dubbing`, recycle Chatterbox every 50 newly synthesized cues, and resume matching retries. Tune the defaults with `SUBTITLE_AI_CHATTERBOX_RECYCLE_CUES`, `SUBTITLE_AI_CHATTERBOX_MAX_CUE_SECONDS`, and `SUBTITLE_AI_DUB_MAX_RUNTIME_HOURS`.
 
 ### Translation
 

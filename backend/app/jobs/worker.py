@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from app.core.config import get_app_config
 from app.core.logging import get_logger
 from app.db import get_session_factory
 from app.db.models import JobRow
@@ -24,8 +25,15 @@ JOB_MAX_RUNTIME_SECONDS = {
     "extract": 2 * 60 * 60.0,
     "request": 15 * 60.0,
     "transcribe": 9 * 60 * 60.0,
-    "dub": 6 * 60 * 60.0,
+    "dub": 12 * 60 * 60.0,
 }
+
+
+def _job_max_runtime_seconds(kind: str) -> float:
+    if kind == "dub":
+        configured = float(get_app_config().dub_max_runtime_hours)
+        return max(1.0, min(configured, 168.0)) * 60 * 60.0
+    return JOB_MAX_RUNTIME_SECONDS.get(kind or "translate", JOB_MAX_RUNTIME_SECONDS["translate"])
 
 
 class JobWorker:
@@ -144,7 +152,7 @@ class JobWorker:
                 continue
             started = self._started_at.get(job_id, now)
             kind = self._kinds_by_job.get(job_id, "translate")
-            limit = JOB_MAX_RUNTIME_SECONDS.get(kind or "translate", JOB_MAX_RUNTIME_SECONDS["translate"])
+            limit = _job_max_runtime_seconds(kind)
             if now - started < limit:
                 continue
             elapsed = int(now - started)

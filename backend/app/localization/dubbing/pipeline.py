@@ -7,6 +7,7 @@ import json
 import math
 import shutil
 import tempfile
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from app.jobs.event_log import JobEventLog
 from app.localization.artifacts import MediaArtifact
 from app.localization.audio.models import AudioSeparationError
 from app.localization.audio.separation import AudioSeparationService
+from app.localization.dubbing.cache import DubCueCache, dub_cache_key
 from app.localization.dubbing.dialogue import speech_segments_from_document
 from app.localization.dubbing.mixer import (
     DUB_OUTPUT_SAMPLE_RATE,
@@ -37,6 +39,7 @@ from app.localization.dubbing.providers.chatterbox import (
     resolve_voice_model_for_language,
     resolve_voice_profile,
     tts_output_ignores_text,
+    unload_chatterbox_model,
     wav_duration_seconds,
 )
 from app.localization.dubbing.timeline import AudioTimeline, CUE_SAMPLE_RATE
@@ -49,6 +52,30 @@ from app.subtitles.parsers.srt import parse_srt
 logger = get_logger("dubbing.pipeline")
 
 CancelCheck = Callable[[], bool]
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def _process_memory_stats() -> dict[str, float]:
+    """Return current Linux process RSS/swap without adding a psutil dependency."""
+    try:
+        lines = Path("/proc/self/status").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    values: dict[str, float] = {}
+    for line in lines:
+        key, _separator, raw = line.partition(":")
+        if key not in {"VmRSS", "VmSwap"}:
+            continue
+        try:
+            values[{"VmRSS": "rss_mb", "VmSwap": "swap_mb"}[key]] = round(
+                float(raw.strip().split()[0]) / 1024.0, 1
+            )
+        except (IndexError, ValueError):
+            continue
+    return values
 
 
 class DubError(Exception):
@@ -249,6 +276,9 @@ class DubbingPipeline:
         is_cancelled: CancelCheck,
         on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
         use_loudnorm: bool = True,
+        cache_dir: str | Path | None = None,
+        model_recycle_cues: int = 0,
+        max_cue_seconds: float = 0.0,
     ) -> MediaArtifact:
         media = Path(media_path)
         source_srt = Path(source_srt_path)
@@ -293,6 +323,20 @@ class DubbingPipeline:
             raise DubError(str(exc)) from exc
         tts_by_model: dict[str, ChatterboxTTSProvider] = {}
         chatterbox_model = None
+        cue_cache = (
+            DubCueCache(
+                Path(cache_dir),
+                dub_cache_key(
+                    source_srt=content,
+                    target_language=target_language,
+                    voice_model=voice_model,
+                    speaker_voice_overrides=speaker_voice_overrides,
+                    timing=self.timing,
+                ),
+            )
+            if cache_dir is not None
+            else None
+        )
 
         async def tts_for(model: str) -> ChatterboxTTSProvider:
             profile = resolve_voice_profile(model, target_language)
@@ -317,7 +361,6 @@ class DubbingPipeline:
             )
             return tts
 
-        await tts_for(voice_model)
         if is_cancelled():
             event_log.record(event="cancelled")
             return None
@@ -327,6 +370,8 @@ class DubbingPipeline:
         speed_adjustments = 0
         timeline = AudioTimeline()
         assigned_speakers: dict[str, str] = {}
+        used_voice_models: set[str] = set()
+        synthesized_since_recycle = 0
 
         with tempfile.TemporaryDirectory(prefix="subtitle-ai-dub-") as tmp:
             tmp_dir = Path(tmp)
@@ -341,7 +386,7 @@ class DubbingPipeline:
                 segment_voice_model = speaker_voice_overrides.get(override_key, voice_model)
                 profile = resolve_voice_profile(segment_voice_model, target_language)
                 segment_voice_model = profile.id
-                tts = await tts_for(segment_voice_model)
+                used_voice_models.add(segment_voice_model)
                 voice_config = VoiceConfig(
                     voice_id=segment_voice_model,
                     language=target_language,
@@ -365,6 +410,29 @@ class DubbingPipeline:
                     voice_model=segment_voice_model,
                     text_preview=text[:80],
                 )
+                cached_cue = cue_cache.load(index) if cue_cache is not None else None
+                if cached_cue is not None:
+                    actual = cached_cue.actual
+                    decision = cached_cue.decision
+                    if decision.speed > 1.001:
+                        speed_adjustments += 1
+                    if actual:
+                        synth_samples_by_model.setdefault(segment_voice_model, []).append((len(text), actual))
+                    timeline.add_clip(cached_cue.path, segment.start, speaker_id=segment.speaker_id)
+                    event_log.record(
+                        event="speech_cached",
+                        index=index,
+                        path=str(cached_cue.path),
+                        **_process_memory_stats(),
+                    )
+                    if on_progress:
+                        maybe = on_progress(index, total)
+                        if maybe is not None:
+                            await maybe
+                    continue
+
+                tts = await tts_for(segment_voice_model)
+                synthesis_started = _monotonic()
                 try:
                     artifact = await tts.synthesize(
                         text,
@@ -410,11 +478,58 @@ class DubbingPipeline:
                 await shape_clip(cue_wav, shaped, speed=speed, is_cancelled=is_cancelled)
                 if actual:
                     synth_samples_by_model.setdefault(segment_voice_model, []).append((len(text), actual))
-                timeline.add_clip(shaped, segment.start, speaker_id=segment.speaker_id)
+                checkpoint = (
+                    cue_cache.store(index, shaped, actual=actual, decision=decision)
+                    if cue_cache is not None
+                    else shaped
+                )
+                timeline.add_clip(checkpoint, segment.start, speaker_id=segment.speaker_id)
+                synthesis_seconds = _monotonic() - synthesis_started
+                event_log.record(
+                    event="synthesis_completed",
+                    index=index,
+                    seconds=round(synthesis_seconds, 3),
+                    checkpointed=cue_cache is not None,
+                    **_process_memory_stats(),
+                )
                 if on_progress:
                     maybe = on_progress(index, total)
                     if maybe is not None:
                         await maybe
+                synthesized_since_recycle += 1
+                if max_cue_seconds > 0 and synthesis_seconds > max_cue_seconds:
+                    device = str(getattr(chatterbox_model, "device", "cpu"))
+                    del tts
+                    tts_by_model.clear()
+                    chatterbox_model = None
+                    await asyncio.to_thread(unload_chatterbox_model, device=device)
+                    event_log.record(
+                        event="voice_recycled",
+                        index=index,
+                        device=device,
+                        reason="slow_cue",
+                        seconds=round(synthesis_seconds, 3),
+                    )
+                    raise DubError(
+                        f"Chatterbox slowed to {synthesis_seconds / 60.0:.1f} minutes "
+                        f"for cue {index}. The completed cue was checkpointed; retry "
+                        "the job to resume with a fresh model."
+                    )
+                if (
+                    model_recycle_cues > 0
+                    and synthesized_since_recycle >= model_recycle_cues
+                    and index < total
+                    and chatterbox_model is not None
+                ):
+                    device = str(getattr(chatterbox_model, "device", "cpu"))
+                    del tts
+                    tts_by_model.clear()
+                    chatterbox_model = None
+                    await asyncio.to_thread(unload_chatterbox_model, device=device)
+                    synthesized_since_recycle = 0
+                    event_log.record(
+                        event="voice_recycled", index=index, device=device, reason="periodic"
+                    )
 
             if not timeline.clips:
                 raise DubError("No cue text was synthesized; dub output would be silence.")
@@ -429,7 +544,7 @@ class DubbingPipeline:
                 event="mix",
                 input_clips=len(timeline.clips),
                 voice_model=voice_model,
-                voice_models=sorted(tts_by_model),
+                voice_models=sorted(used_voice_models),
                 speaker_voices=assigned_speakers,
                 mix_mode=mix_mode,
                 media_duration_s=media_duration_s,
@@ -590,6 +705,8 @@ class DubbingPipeline:
                 verified.duration,
                 verified.verified,
             )
+            if cue_cache is not None and verified.verified:
+                cue_cache.clear()
             return verified
 
 
@@ -605,6 +722,9 @@ async def dub_media_from_srt_to_mkv(
     event_log: JobEventLog,
     is_cancelled: CancelCheck,
     on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
+    cache_dir: str | Path | None = None,
+    model_recycle_cues: int = 0,
+    max_cue_seconds: float = 0.0,
 ) -> None:
     await DubbingPipeline().run(
         media_path=media_path,
@@ -617,4 +737,7 @@ async def dub_media_from_srt_to_mkv(
         event_log=event_log,
         is_cancelled=is_cancelled,
         on_progress=on_progress,
+        cache_dir=cache_dir,
+        model_recycle_cues=model_recycle_cues,
+        max_cue_seconds=max_cue_seconds,
     )

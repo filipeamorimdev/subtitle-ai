@@ -8,6 +8,7 @@ sets that directory to the persisted ``/config`` volume.
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import threading
 import wave
@@ -200,6 +201,17 @@ def load_chatterbox_model(*, device: str | None = None) -> Any:
         _MODEL_BY_DEVICE[selected_device] = model
         logger.info("chatterbox_model_loaded device=%s", selected_device)
         return model
+
+
+def unload_chatterbox_model(*, device: str | None = None) -> None:
+    """Drop cached model references so a long CPU job can reload cleanly."""
+    selected_device = device or _device()
+    with _MODEL_LOCK:
+        model = _MODEL_BY_DEVICE.pop(selected_device, None)
+    if model is not None:
+        del model
+        gc.collect()
+        logger.info("chatterbox_model_unloaded device=%s", selected_device)
 
 
 def write_chatterbox_wav(

@@ -326,6 +326,7 @@ def _job_row_to_action(
         message=message,
         current=current_id is not None and item.id == current_id,
         target_language=item.target_language,
+        model=item.model or None,
         kind="job",
         progress=item.progress,
         progress_detail=item.progress_detail,
@@ -2632,6 +2633,9 @@ class JobService:
                 voice_model=voice_model,
                 mix_mode=snapshot.dub_mix_mode,
                 speaker_voice_overrides=snapshot.dub_speaker_voices,
+                cache_dir=config_dir / "cache" / "dubbing",
+                model_recycle_cues=max(0, int(get_app_config().chatterbox_recycle_cues)),
+                max_cue_seconds=max(0.0, float(get_app_config().chatterbox_max_cue_seconds)),
             )
 
             current = self._fresh_job(job_id)

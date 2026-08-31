@@ -311,6 +311,7 @@ export interface JobAction {
   message: string | null
   current: boolean
   target_language?: string | null
+  model?: string | null
   kind?: 'job' | 'task'
   progress?: number | null
   progress_detail?: string | null

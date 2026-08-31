@@ -650,7 +650,7 @@ def get_dub_voice_cast(
     media = MediaItemService(db).get(media_id)
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
-    draft = VoiceCastDraftService(db).get(media_id, target_language)
+    draft = VoiceCastDraftService(db).get_for_media(media, target_language)
     if draft is None:
         raise HTTPException(status_code=404, detail="No saved voice-casting draft for this language.")
     return _voice_cast_out(draft)
@@ -667,7 +667,7 @@ def update_dub_voice_cast(
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     drafts = VoiceCastDraftService(db)
-    draft = drafts.get(media_id, target_language)
+    draft = drafts.get_for_media(media, target_language)
     if draft is None:
         raise HTTPException(status_code=404, detail="No saved voice-casting draft for this language.")
     try:
@@ -692,7 +692,7 @@ async def request_dub_from_voice_cast(
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     drafts = VoiceCastDraftService(db)
-    draft = drafts.get(media_id, target_language)
+    draft = drafts.get_for_media(media, target_language)
     if draft is None:
         raise HTTPException(status_code=404, detail="No saved voice-casting draft for this language.")
     try:

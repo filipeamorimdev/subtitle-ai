@@ -182,7 +182,7 @@ onMounted(() => {
         </div>
       </header>
 
-      <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+      <div class="space-y-4">
         <main class="space-y-4">
           <section class="rounded-lg border border-accent/40 bg-accent/5 p-4 dark:border-accent/50">
             <div class="flex flex-wrap items-start justify-between gap-3">
@@ -267,25 +267,8 @@ onMounted(() => {
           </section>
         </main>
 
-        <aside class="space-y-4">
-          <section class="rounded-lg border border-ink-200 bg-ink-50 p-4 text-sm dark:border-ink-700 dark:bg-ink-800/50">
-            <h2 class="font-semibold">Chatterbox voices</h2>
-            <p class="mt-2 text-ink-600 dark:text-ink-300">
-              {{ draft.model_id }} analyses and groups speakers. It does not synthesize their speech.
-              The fields below use the local Chatterbox Multilingual V3 model. The analyser preselects a calm, natural, expressive, or dramatic delivery profile from each style note.
-            </p>
-            <p class="mt-2 text-xs text-ink-500">
-              Profiles tune delivery rather than selecting a different real-person voice. Chatterbox downloads its shared model once and keeps it on this server.
-            </p>
-            <ul class="mt-3 space-y-1 text-xs text-ink-500">
-              <li v-for="model in draft.available_voice_models" :key="model.id">
-                {{ model.label }} — <code>{{ model.id }}</code>
-              </li>
-            </ul>
-          </section>
-          <p v-if="notice" class="rounded-md border border-green-300 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">{{ notice }}</p>
-          <p v-if="error" class="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">{{ error }}</p>
-        </aside>
+        <p v-if="notice" class="rounded-md border border-green-300 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">{{ notice }}</p>
+        <p v-if="error" class="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">{{ error }}</p>
       </div>
     </template>
   </section>

@@ -67,18 +67,84 @@ class VoiceCastResult:
 
 
 class VoiceCastDraftService:
-    """Persist and validate the editable result of an on-demand audio analysis."""
+    """Persist a cast per film or series, rather than per TV episode."""
 
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def get(self, media_id: int, target_language: str) -> VoiceCastDraftRow | None:
+    def _cast_owner(self, media: MediaItemRow) -> MediaItemRow:
+        """Return the movie or series that owns ``media``'s casting draft.
+
+        Episodes are still the source of the audio analysis, but their casting
+        decisions belong to their series.  Catalog imports normally create the
+        parent first; the fallback below makes the relationship reliable when a
+        user opens an episode directly from search.
+        """
+        if media.media_type != "episode":
+            return media
+
+        if media.parent_media_id:
+            parent = self.db.get(MediaItemRow, media.parent_media_id)
+            if parent is not None and parent.media_type == "series":
+                return parent
+
+        parent: MediaItemRow | None = None
+        if media.bazarr_series_id is not None:
+            parent = self.db.scalar(
+                select(MediaItemRow).where(
+                    MediaItemRow.provider_id == media.provider_id,
+                    MediaItemRow.media_type == "series",
+                    MediaItemRow.bazarr_series_id == media.bazarr_series_id,
+                )
+            )
+
+        metadata = media.metadata_json if isinstance(media.metadata_json, dict) else {}
+        parent_external_id = str(metadata.get("series_external_id") or "").strip()
+        if parent is None and parent_external_id:
+            parent = self.db.scalar(
+                select(MediaItemRow).where(
+                    MediaItemRow.provider_id == media.provider_id,
+                    MediaItemRow.external_id == parent_external_id,
+                )
+            )
+
+        if parent is None:
+            series_title = str(metadata.get("series_title") or media.title).strip()
+            generated_external_id = (
+                f"series:{media.bazarr_series_id}"
+                if media.bazarr_series_id is not None
+                else f"series-for-episode:{media.id}"
+            )
+            parent = MediaItemRow(
+                provider_id=media.provider_id,
+                external_id=parent_external_id or generated_external_id,
+                media_type="series",
+                title=series_title or "Untitled series",
+                year=media.year,
+                bazarr_series_id=media.bazarr_series_id,
+                metadata_json={"series_title": series_title} if series_title else {},
+            )
+            self.db.add(parent)
+            self.db.flush()
+
+        media.parent_media_id = parent.id
+        self.db.add(media)
+        return parent
+
+    def get_for_media(self, media: MediaItemRow, target_language: str) -> VoiceCastDraftRow | None:
+        """Get the draft shared by a movie or every episode in its series."""
+        owner = self._cast_owner(media)
         return self.db.scalar(
             select(VoiceCastDraftRow).where(
-                VoiceCastDraftRow.media_item_id == media_id,
+                VoiceCastDraftRow.media_item_id == owner.id,
                 VoiceCastDraftRow.target_language == target_language,
             )
         )
+
+    def get(self, media_id: int, target_language: str) -> VoiceCastDraftRow | None:
+        """Backward-compatible ID lookup for callers that only have a media ID."""
+        media = self.db.get(MediaItemRow, media_id)
+        return self.get_for_media(media, target_language) if media is not None else None
 
     def save_analysis(
         self,
@@ -88,9 +154,10 @@ class VoiceCastDraftService:
         mix_mode: str,
         result: VoiceCastResult,
     ) -> VoiceCastDraftRow:
-        row = self.get(media.id, target_language)
+        owner = self._cast_owner(media)
+        row = self.get_for_media(media, target_language)
         if row is None:
-            row = VoiceCastDraftRow(media_item_id=media.id, target_language=target_language)
+            row = VoiceCastDraftRow(media_item_id=owner.id, target_language=target_language)
         row.provider_id = result.provider_id
         row.model_id = result.model_id
         row.analysed_cue_count = result.analysed_cue_count

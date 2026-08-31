@@ -157,3 +157,28 @@ def test_voice_cast_draft_is_persisted_and_uses_only_enabled_assignments(tmp_pat
     assert public_draft.id == draft.id
     assert public_draft.suggestions[0].speaker_id == "Narrator"
     assert any(item.id.endswith(":natural") for item in public_draft.available_voice_models)
+
+
+def test_voice_cast_draft_is_shared_by_all_episodes_in_a_series(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'shared-voice-cast.db'}")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    series = MediaItemRow(provider_id="bazarr", external_id="series:7", media_type="series", title="Big Jon")
+    first = MediaItemRow(provider_id="bazarr", external_id="episode:71", media_type="episode", title="Big Jon - S01E01", parent_media_id=None)
+    second = MediaItemRow(provider_id="bazarr", external_id="episode:72", media_type="episode", title="Big Jon - S01E02", parent_media_id=None)
+    db.add_all([series, first, second])
+    db.commit()
+    first.parent_media_id = series.id
+    second.parent_media_id = series.id
+    db.commit()
+
+    service = VoiceCastDraftService(db)
+    draft = service.save_analysis(
+        first,
+        target_language="pt-PT",
+        mix_mode="background_preserved",
+        result=VoiceCastResult("openrouter", "audio", [], 0, {}),
+    )
+
+    assert draft.media_item_id == series.id
+    assert service.get_for_media(second, "pt-PT").id == draft.id

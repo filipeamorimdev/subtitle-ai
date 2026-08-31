@@ -57,6 +57,14 @@ class AppConfig(BaseSettings):
     auth_forward_trusted_proxies: Annotated[list[str] | None, NoDecode] = None
     # 0/unset = auto (half the cores, leaving headroom for the API).
     whisper_cpu_threads: int = 0
+    # Recycle the CPU TTS model periodically to bound long-lived inference state.
+    # Set to 0 to disable recycling.
+    chatterbox_recycle_cues: int = 50
+    # Save the cue and stop for a clean retry when CPU inference degrades badly.
+    # Set to 0 to disable the slow-cue guard.
+    chatterbox_max_cue_seconds: float = 600.0
+    # A healthy CPU-only episode can take longer than the previous six-hour cap.
+    dub_max_runtime_hours: float = 12.0
     # Per-task debug traces under {config_dir}/debug. Independent of log_level.
     debug_trace: bool = False
 

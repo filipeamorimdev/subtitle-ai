@@ -333,6 +333,7 @@ class JobActionOut(BaseModel):
     message: str | None = None
     current: bool = False
     target_language: str | None = None
+    model: str | None = None
     kind: Literal["job", "task"] = "job"
     progress: float | None = None
     progress_detail: str | None = None

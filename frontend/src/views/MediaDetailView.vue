@@ -189,10 +189,6 @@ const dubbedPath = computed(() => {
   return [...dubJobs].sort((a, b) => b.id - a.id)[0].target_subtitle_path
 })
 
-const detailModel = computed(
-  () => detailJob.value?.model || selectedTask.value?.ai?.model_id || null,
-)
-
 const showEmbeddedTracks = computed(() => Boolean(matchedCandidate.value?.has_embedded))
 
 function languageTask(lang: LanguageAvailability) {
@@ -407,7 +403,7 @@ onUnmounted(() => {
           </button>
           <button
             type="button"
-            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white"
             title="Create or replace a Portuguese TTS dub"
             aria-label="Request dub"
             :disabled="busy || anyActive"
@@ -416,7 +412,7 @@ onUnmounted(() => {
             Request dub
           </button>
           <RouterLink
-            class="rounded-md border border-ink-300 px-3 py-1.5 text-sm font-semibold dark:border-ink-600"
+            class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white"
             :to="{
               name: 'dub-cast',
               params: { id: mediaId },
@@ -493,10 +489,6 @@ onUnmounted(() => {
             <dd class="mt-1 break-all">{{ media.path || '—' }}</dd>
           </div>
           <div>
-            <dt class="text-ink-500">Model</dt>
-            <dd class="mt-1">{{ detailModel || '—' }}</dd>
-          </div>
-          <div>
             <dt class="text-ink-500">Source subtitle</dt>
             <dd class="mt-1 break-all">{{ sourceSubtitlePath || '—' }}</dd>
           </div>
@@ -548,7 +540,7 @@ onUnmounted(() => {
           <JobHistoryTable
             :actions="historyActions"
             empty-message="No runs yet."
-            :page-size="5"
+            :page-size="10"
             :retrying-id="retryingId"
             @retry="retryJob"
           />

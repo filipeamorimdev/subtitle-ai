@@ -18,7 +18,7 @@ from app.core.config import get_app_config
 from app.core.secrets import load_or_create_fernet
 from app.db import Base
 from app.db.models import JobRow, MediaItemRow
-from app.jobs.event_log import job_event_log_path
+from app.jobs.event_log import JobEventLog, job_event_log_path
 from app.jobs.service import JobService
 from app.jobs.worker import JOB_KINDS
 from app.localization.checkpoints import read_checkpoints
@@ -39,9 +39,12 @@ from app.dubbing.dub import (
     _write_chatterbox_wav,
 )
 from app.localization.dubbing.mixer import DUB_OUTPUT_SAMPLE_RATE, build_background_mix_command
+from app.localization.dubbing.cache import DubCueCache, dub_cache_key
 from app.localization.dubbing.options import cue_key, normalize_speaker_voice_overrides
+from app.localization.dubbing.pipeline import DubError, DubbingPipeline
 from app.localization.dubbing.providers import chatterbox as chatterbox_provider
-from app.localization.dubbing.providers.chatterbox import TTSError
+from app.localization.dubbing.providers.chatterbox import ChatterboxTTSProvider, TTSError
+from app.localization.dubbing.timing import TimingEngine
 
 
 def test_installed_chatterbox_supports_multilingual_v3_loader():
@@ -142,6 +145,158 @@ def test_tts_output_ignores_text_detects_fixed_length_clips():
         (48, 3.0),
     ]
     assert tts_output_ignores_text(varying) is False
+
+
+def test_dub_cue_cache_round_trip_and_input_keying(tmp_path):
+    timing = TimingEngine()
+    key = dub_cache_key(
+        source_srt="one subtitle",
+        target_language="pt-PT",
+        voice_model="chatterbox-multilingual-v3:pt-PT:natural",
+        speaker_voice_overrides={},
+        timing=timing,
+    )
+    changed_key = dub_cache_key(
+        source_srt="changed subtitle",
+        target_language="pt-PT",
+        voice_model="chatterbox-multilingual-v3:pt-PT:natural",
+        speaker_voice_overrides={},
+        timing=timing,
+    )
+    assert key != changed_key
+
+    shaped = tmp_path / "shaped.wav"
+    _write_pcm_wav(shaped, array.array("h", [1200] * 800))
+    decision = timing.decide(actual=1.1, available=1.0)
+    cache = DubCueCache(tmp_path / "cache", key)
+    cached_path = cache.store(3, shaped, actual=1.1, decision=decision)
+
+    restored = cache.load(3)
+    assert restored is not None
+    assert restored.path == cached_path
+    assert restored.actual == 1.1
+    assert restored.decision == decision
+
+    cache.clear()
+    assert cache.load(3) is None
+
+
+@pytest.mark.asyncio
+async def test_dub_retry_uses_checkpoint_without_loading_model(tmp_path, monkeypatch):
+    media = tmp_path / "episode.mkv"
+    media.write_bytes(b"media")
+    source_srt = tmp_path / "episode.pt.srt"
+    source_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nPrimeira fala\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\nSegunda fala\n\n",
+        encoding="utf-8",
+    )
+    synth_calls: list[str] = []
+    model_loads = 0
+
+    def fake_load_model():
+        nonlocal model_loads
+        model_loads += 1
+        return types.SimpleNamespace(device="cpu")
+
+    async def fake_synthesize(self, text, voice, language, *, output_path, is_cancelled=None):
+        from app.localization.artifacts import AudioArtifact
+
+        synth_calls.append(text)
+        _write_pcm_wav(Path(output_path), array.array("h", [1200] * 8_000))
+        return AudioArtifact(
+            path=str(output_path),
+            duration=0.5,
+            sample_rate=CUE_SAMPLE_RATE,
+            channels=1,
+            provider="fake",
+        )
+
+    async def fake_shape(input_wav, output_wav, **kwargs):
+        Path(output_wav).write_bytes(Path(input_wav).read_bytes())
+
+    monkeypatch.setattr("app.localization.dubbing.pipeline.load_chatterbox_model", fake_load_model)
+    monkeypatch.setattr(ChatterboxTTSProvider, "synthesize", fake_synthesize)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.shape_clip", fake_shape)
+
+    cache_dir = tmp_path / "cache"
+    for attempt in (1, 2):
+        cancelled = False
+
+        async def stop_after_first(done, total):
+            nonlocal cancelled
+            if done == 1:
+                cancelled = True
+
+        result = await DubbingPipeline().run(
+            media_path=media,
+            source_srt_path=source_srt,
+            target_language="pt-PT",
+            output_path=tmp_path / "episode.pt.dub.mkv",
+            event_log=JobEventLog(tmp_path / f"job-{attempt}.jsonl", job_id=attempt),
+            is_cancelled=lambda: cancelled,
+            on_progress=stop_after_first,
+            cache_dir=cache_dir,
+        )
+        assert result is None
+
+    assert synth_calls == ["Primeira fala"]
+    assert model_loads == 1
+    assert '"event": "speech_cached"' in (tmp_path / "job-2.jsonl").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_slow_cue_is_checkpointed_before_requesting_clean_retry(tmp_path, monkeypatch):
+    media = tmp_path / "episode.mkv"
+    media.write_bytes(b"media")
+    source_srt = tmp_path / "episode.pt.srt"
+    source_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nFala demorada\n\n",
+        encoding="utf-8",
+    )
+
+    async def fake_synthesize(self, text, voice, language, *, output_path, is_cancelled=None):
+        from app.localization.artifacts import AudioArtifact
+
+        _write_pcm_wav(Path(output_path), array.array("h", [1200] * 8_000))
+        return AudioArtifact(
+            path=str(output_path),
+            duration=0.5,
+            sample_rate=CUE_SAMPLE_RATE,
+            channels=1,
+            provider="fake",
+        )
+
+    async def fake_shape(input_wav, output_wav, **kwargs):
+        Path(output_wav).write_bytes(Path(input_wav).read_bytes())
+
+    ticks = iter((0.0, 601.0))
+    monkeypatch.setattr(
+        "app.localization.dubbing.pipeline.load_chatterbox_model",
+        lambda: types.SimpleNamespace(device="cpu"),
+    )
+    monkeypatch.setattr(ChatterboxTTSProvider, "synthesize", fake_synthesize)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.shape_clip", fake_shape)
+    monkeypatch.setattr("app.localization.dubbing.pipeline._monotonic", lambda: next(ticks))
+
+    event_path = tmp_path / "job.jsonl"
+    cache_dir = tmp_path / "cache"
+    with pytest.raises(DubError, match="completed cue was checkpointed"):
+        await DubbingPipeline().run(
+            media_path=media,
+            source_srt_path=source_srt,
+            target_language="pt-PT",
+            output_path=tmp_path / "episode.pt.dub.mkv",
+            event_log=JobEventLog(event_path, job_id=1),
+            is_cancelled=lambda: False,
+            cache_dir=cache_dir,
+            max_cue_seconds=600,
+        )
+
+    assert list(cache_dir.rglob("cue-00001.wav"))
+    log = event_path.read_text(encoding="utf-8")
+    assert '"reason": "slow_cue"' in log
+    assert '"seconds": 601.0' in log
 
 
 class _FakeTensor:

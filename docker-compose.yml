@@ -18,3 +18,7 @@ services:
       # - SUBTITLE_AI_MEDIA_ROOTS=/media
       # Optional per-task audio-separation traces under /config/debug:
       # - SUBTITLE_AI_DEBUG_TRACE=true
+      # CPU-only dubbing safety controls:
+      # - SUBTITLE_AI_DUB_MAX_RUNTIME_HOURS=12
+      # - SUBTITLE_AI_CHATTERBOX_RECYCLE_CUES=50
+      # - SUBTITLE_AI_CHATTERBOX_MAX_CUE_SECONDS=600

@@ -50,6 +50,8 @@ def _media_ref(raw: dict[str, Any]) -> MediaRef | None:
     if series_name:
         metadata["series_title"] = series_name
     series_id = str(raw.get("SeriesId") or "").strip() or None
+    if series_id:
+        metadata["series_external_id"] = series_id
     return MediaRef(
         provider_id=JELLYFIN_PROVIDER_ID,
         external_id=item_id,
