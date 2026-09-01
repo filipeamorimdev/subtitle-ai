@@ -20,10 +20,7 @@ const form = reactive({
   jellyfin_url: '',
   jellyfin_api_key: '',
   clear_jellyfin_api_key: false,
-  asr_provider: 'local_then_openai',
   asr_local_model: 'small',
-  openai_api_key: '',
-  clear_openai_api_key: false,
 })
 
 const providers = ref<AiProviderInfo[]>([])
@@ -58,7 +55,6 @@ onMounted(async () => {
   if (s) {
     form.bazarr_url = s.bazarr_url || ''
     form.jellyfin_url = s.jellyfin_url || ''
-    form.asr_provider = s.asr_provider || 'local_then_openai'
     form.asr_local_model = s.asr_local_model || 'small'
   }
   await loadAi()
@@ -77,10 +73,7 @@ async function save() {
         jellyfin_url: form.jellyfin_url,
         jellyfin_api_key: form.jellyfin_api_key || undefined,
         clear_jellyfin_api_key: form.clear_jellyfin_api_key,
-        asr_provider: form.asr_provider,
         asr_local_model: form.asr_local_model,
-        openai_api_key: form.openai_api_key || undefined,
-        clear_openai_api_key: form.clear_openai_api_key,
       }),
       api.updateAiProvider('openrouter', {
         api_key: apiKey.value || undefined,
@@ -104,12 +97,9 @@ async function save() {
       form.clear_bazarr_api_key = false
       form.jellyfin_api_key = ''
       form.clear_jellyfin_api_key = false
-      form.openai_api_key = ''
-      form.clear_openai_api_key = false
       await store.loadSettings()
       const s = store.settings
       if (s) {
-        form.asr_provider = s.asr_provider || 'local_then_openai'
         form.asr_local_model = s.asr_local_model || 'small'
       }
     }
@@ -290,21 +280,6 @@ async function testOpenRouter(fresh = false) {
             Used only when you click Transcribe audio on a media page. Local models download on first
             use (~500MB for small) and are slow on CPU. There is no GPU in the default Docker image.
           </p>
-          <fieldset class="space-y-2 text-sm">
-            <legend class="text-ink-500">Engine</legend>
-            <label class="flex items-center gap-2">
-              <input v-model="form.asr_provider" type="radio" value="local" />
-              Local faster-whisper
-            </label>
-            <label class="flex items-center gap-2">
-              <input v-model="form.asr_provider" type="radio" value="openai" />
-              OpenAI Whisper API
-            </label>
-            <label class="flex items-center gap-2">
-              <input v-model="form.asr_provider" type="radio" value="local_then_openai" />
-              Local, then OpenAI if local fails
-            </label>
-          </fieldset>
           <label class="block text-sm">
             <span class="text-ink-500">Local model</span>
             <select
@@ -318,22 +293,6 @@ async function testOpenRouter(fresh = false) {
               <option value="large-v3">large-v3</option>
               <option value="distil-large-v3">distil-large-v3</option>
             </select>
-          </label>
-          <label class="block text-sm">
-            <span class="text-ink-500">OpenAI API key</span>
-            <input
-              v-model="form.openai_api_key"
-              type="password"
-              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
-              placeholder="Leave blank to keep existing"
-            />
-            <span v-if="store.settings?.openai_api_key_masked" class="mt-1 block break-all text-xs text-ink-500">
-              Saved: {{ store.settings.openai_api_key_masked }}
-            </span>
-          </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input v-model="form.clear_openai_api_key" type="checkbox" />
-            Clear saved OpenAI API key
           </label>
         </fieldset>
       </section>

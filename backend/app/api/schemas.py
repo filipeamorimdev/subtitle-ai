@@ -39,10 +39,7 @@ class SettingsUpdate(BaseModel):
     max_concurrent_request: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_transcribe: int | None = Field(default=None, ge=1, le=20)
     max_concurrent_dub: int | None = Field(default=None, ge=1, le=20)
-    asr_provider: Literal["local", "openai", "local_then_openai"] | None = None
     asr_local_model: Literal["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"] | None = None
-    openai_api_key: str | None = None
-    clear_openai_api_key: bool = False
     automatic_fallback_enabled: bool | None = None
     automatic_scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
     bazarr_grace_period_minutes: int | None = Field(default=None, ge=0, le=1440)
@@ -85,10 +82,7 @@ class SettingsOut(BaseModel):
     max_concurrent_request: int
     max_concurrent_transcribe: int = 1
     max_concurrent_dub: int = 1
-    asr_provider: str = "local_then_openai"
     asr_local_model: str = "small"
-    openai_api_key_masked: str | None = None
-    openai_api_key_configured: bool = False
     automatic_fallback_enabled: bool = False
     automatic_scan_interval_minutes: int = 5
     bazarr_grace_period_minutes: int = 10

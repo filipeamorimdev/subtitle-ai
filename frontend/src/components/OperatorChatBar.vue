@@ -25,11 +25,6 @@ const rootEl = ref<HTMLElement | null>(null)
 const listEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLInputElement | null>(null)
 
-const speechSupported = computed(
-  () => typeof window !== 'undefined' && !!(window as any).webkitSpeechRecognition,
-)
-const listening = ref(false)
-let recognition: any = null
 let stopLive: (() => void) | undefined
 
 const canSend = computed(
@@ -217,35 +212,6 @@ function searchHitsFromEvents(): Record<string, unknown>[] {
 
 const ambiguousHits = computed(() => searchHitsFromEvents())
 
-function toggleMic() {
-  if (!speechSupported.value) return
-  const SR = (window as any).webkitSpeechRecognition
-  if (!SR) return
-  if (listening.value && recognition) {
-    recognition.stop()
-    listening.value = false
-    return
-  }
-  recognition = new SR()
-  recognition.lang = 'en-US'
-  recognition.interimResults = false
-  recognition.onresult = (event: any) => {
-    const transcript = event.results?.[0]?.[0]?.transcript
-    if (typeof transcript === 'string' && transcript.trim()) {
-      input.value = transcript.trim()
-      expand()
-    }
-  }
-  recognition.onerror = () => {
-    listening.value = false
-  }
-  recognition.onend = () => {
-    listening.value = false
-  }
-  listening.value = true
-  recognition.start()
-}
-
 onMounted(async () => {
   await store.loadSettings().catch(() => undefined)
   await refreshStatus()
@@ -262,11 +228,6 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', onDocumentPointer)
   document.removeEventListener('keydown', onKeydown)
   stopLive?.()
-  try {
-    recognition?.stop?.()
-  } catch {
-    /* ignore */
-  }
 })
 
 watch(
@@ -303,11 +264,6 @@ watch(
         <template v-else-if="recap">{{ recap }}</template>
         <template v-else>Ask Subtitle AI…</template>
       </span>
-      <span
-        v-if="speechSupported && ready"
-        class="shrink-0 text-ink-400"
-        aria-hidden="true"
-      >🎤</span>
       <span class="shrink-0 text-ink-400" aria-hidden="true">➤</span>
     </button>
 
@@ -423,17 +379,6 @@ watch(
           :disabled="sending || !ready"
           autocomplete="off"
         />
-        <button
-          v-if="speechSupported"
-          type="button"
-          class="rounded-md px-2 py-1.5 text-sm"
-          :class="listening ? 'text-accent' : 'text-ink-500 hover:text-ink-800 dark:hover:text-ink-200'"
-          :disabled="!ready"
-          title="Voice input"
-          @click="toggleMic"
-        >
-          🎤
-        </button>
         <button
           type="submit"
           class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"

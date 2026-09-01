@@ -20,7 +20,6 @@ from app.localization.transcription.providers.faster_whisper import (
     FasterWhisperProvider,
     TranscribeProviderError,
 )
-from app.localization.transcription.providers.openai import OpenAIProvider, OpenAITranscribeError
 from app.localization.transcription.subtitle_formatter import SubtitleFormatter
 from app.media.process_runner import ProcessError, run_process_checked
 from app.subtitles.filenames import build_external_subtitle_path, normalize_language_code
@@ -28,8 +27,6 @@ from app.subtitles.writer.srt import write_srt_atomic
 
 logger = get_logger("transcription")
 
-ASR_PROVIDERS = frozenset({"local", "openai", "local_then_openai"})
-DEFAULT_ASR_PROVIDER = "local_then_openai"
 FFMPEG_TIMEOUT = 1800.0
 LOW_CONFIDENCE = 0.5
 
@@ -39,11 +36,6 @@ ProgressCb = Callable[[float, float], Awaitable[None] | None]
 
 class TranscriptionError(Exception):
     pass
-
-
-def normalize_asr_provider(value: object) -> str:
-    text = str(value or "").strip().lower()
-    return text if text in ASR_PROVIDERS else DEFAULT_ASR_PROVIDER
 
 
 async def probe_duration_seconds(media_path: str | Path) -> float | None:
@@ -134,57 +126,31 @@ class TranscriptionService:
         self,
         audio_path: Path,
         *,
-        policy: str,
         local_model: str,
-        openai_key: str | None,
         language: str | None,
         duration: float | None,
         is_cancelled: CancelCheck | None,
         on_progress: ProgressCb | None,
-        fmt_hint: str,
     ) -> Transcript:
-        errors: list[str] = []
-        if policy in {"local", "local_then_openai"} and fmt_hint != "openai-only":
-            try:
-                provider = FasterWhisperProvider(local_model)
-                return await provider.transcribe(
-                    audio_path,
-                    language=language,
-                    word_timestamps=True,
-                    duration=duration,
-                    is_cancelled=is_cancelled,
-                    on_progress=on_progress,
-                )
-            except TranscribeProviderError as exc:
-                errors.append(str(exc))
-                if policy != "local_then_openai" or not (openai_key or "").strip():
-                    raise TranscriptionError(str(exc)) from exc
-                logger.warning("Local Whisper failed; trying OpenAI fallback: %s", exc)
-        if policy in {"openai", "local_then_openai"}:
-            if not (openai_key or "").strip():
-                raise TranscriptionError(errors[-1] if errors else "OpenAI API key is not configured.")
-            try:
-                provider = OpenAIProvider(openai_key or "")
-                return await provider.transcribe(
-                    audio_path,
-                    language=language,
-                    word_timestamps=True,
-                    duration=duration,
-                    is_cancelled=is_cancelled,
-                    on_progress=on_progress,
-                )
-            except OpenAITranscribeError as exc:
-                raise TranscriptionError(str(exc)) from exc
-        raise TranscriptionError(errors[-1] if errors else "No ASR engine is configured.")
+        try:
+            provider = FasterWhisperProvider(local_model)
+            return await provider.transcribe(
+                audio_path,
+                language=language,
+                word_timestamps=True,
+                duration=duration,
+                is_cancelled=is_cancelled,
+                on_progress=on_progress,
+            )
+        except TranscribeProviderError as exc:
+            raise TranscriptionError(str(exc)) from exc
 
     async def transcribe_media_to_srt(
         self,
         media_path: str | Path,
         output_path: str | Path | None = None,
         *,
-        provider: str,
         local_model: str,
-        openai_key: str | None,
         source_language: str | None = None,
         preferred_languages: list[str] | None = None,
         is_cancelled: CancelCheck | None = None,
@@ -192,7 +158,6 @@ class TranscriptionService:
         event_cb: Callable[[str, dict], None] | None = None,
     ) -> tuple[Path, Transcript, TranscriptArtifact, SubtitleArtifact, AudioSelection]:
         media = Path(media_path)
-        policy = normalize_asr_provider(provider)
         preferred = preferred_languages or ([source_language] if source_language else ["en"])
         duration = await probe_duration_seconds(media)
         selection = await self.selector.select(media, preferred_languages=preferred)
@@ -205,12 +170,11 @@ class TranscriptionService:
 
         with tempfile.TemporaryDirectory(prefix="subtitle-ai-asr-") as tmp:
             tmp_dir = Path(tmp)
-            fmt = "mp3" if policy == "openai" else "wav"
-            audio = tmp_dir / f"audio.{fmt}"
+            audio = tmp_dir / "audio.wav"
             await extract_audio(
                 media,
                 audio,
-                fmt=fmt,
+                fmt="wav",
                 stream_index=stream_index,
                 is_cancelled=is_cancelled,
             )
@@ -223,14 +187,11 @@ class TranscriptionService:
                 chunk_duration = max(0.1, chunk.end - chunk.start)
                 return await self._transcribe_file(
                     chunk_audio,
-                    policy=policy,
                     local_model=local_model,
-                    openai_key=openai_key,
                     language=language_hint,
                     duration=chunk_duration,
                     is_cancelled=is_cancelled,
                     on_progress=progress,
-                    fmt_hint="openai-only" if policy == "openai" else "local",
                 )
 
             if len(chunks) == 1:
@@ -241,7 +202,7 @@ class TranscriptionService:
                 for chunk in chunks:
                     if is_cancelled and is_cancelled():
                         raise TranscriptionError("Transcription cancelled.")
-                    part_fmt = fmt
+                    part_fmt = "wav"
                     part = tmp_dir / f"chunk-{chunk.index:03d}.{part_fmt}"
                     await extract_audio(
                         audio if audio.is_file() else media,

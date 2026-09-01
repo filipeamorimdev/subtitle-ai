@@ -23,18 +23,10 @@ from app.localization.transcription.providers.faster_whisper import (
     TranscribeProviderError,
     run_faster_whisper as _run_structured_whisper,
 )
-from app.localization.transcription.providers.openai import (
-    OPENAI_WHISPER_MODEL,  # noqa: F401
-    OpenAIProvider,
-    OpenAITranscribeError,
-)
 from app.localization.transcription.service import (
-    ASR_PROVIDERS,  # noqa: F401
-    DEFAULT_ASR_PROVIDER,  # noqa: F401
     FFMPEG_TIMEOUT,  # noqa: F401
     TranscriptionError,
     TranscriptionService,
-    normalize_asr_provider,
 )
 from app.localization.transcription.subtitle_formatter import seconds_to_srt_timestamp
 from app.subtitles.models import SubtitleBlock, SubtitleDocument
@@ -42,10 +34,8 @@ from app.subtitles.models import SubtitleBlock, SubtitleDocument
 logger = get_logger("transcribe")
 
 # Re-exported for existing imports/tests.
-OPENAI_MAX_UPLOAD_BYTES = 24 * 1024 * 1024
 NO_SPEECH_PROB_THRESHOLD = 0.65
 LOCAL_TRANSCRIBE_TIMEOUT = 8 * 3600.0
-OPENAI_REQUEST_TIMEOUT = 600.0
 
 CancelCheck = Callable[[], bool]
 ProgressCb = Callable[[float, float], Awaitable[None] | None]
@@ -255,7 +245,7 @@ async def transcribe_with_local(
             raise
         except MemoryError as exc:
             raise TranscribeError(
-                "Local Whisper ran out of memory. Try a smaller model or OpenAI fallback."
+                "Local Whisper ran out of memory. Try a smaller model."
             ) from exc
         except Exception as exc:  # noqa: BLE001
             raise TranscribeError(f"Local Whisper failed: {exc}") from exc
@@ -275,80 +265,30 @@ async def transcribe_with_local(
     return result
 
 
-async def transcribe_with_openai(
-    audio_path: str | Path,
-    *,
-    api_key: str,
-    duration: float | None = None,
-    is_cancelled: CancelCheck | None = None,
-    on_progress: ProgressCb | None = None,
-    language: str | None = None,
-) -> TranscriptResult:
-    try:
-        transcript = await OpenAIProvider(api_key).transcribe(
-            Path(audio_path),
-            language=language,
-            word_timestamps=True,
-            duration=duration,
-            is_cancelled=is_cancelled,
-            on_progress=on_progress,
-        )
-    except OpenAITranscribeError as exc:
-        raise TranscribeError(str(exc)) from exc
-    return _legacy_from_structured(transcript)
-
-
 async def transcribe_audio(
     audio_path: str | Path,
     *,
-    provider: str,
     local_model: str,
-    openai_key: str | None,
     duration: float | None = None,
     is_cancelled: CancelCheck | None = None,
     on_progress: ProgressCb | None = None,
     language: str | None = None,
 ) -> TranscriptResult:
-    policy = normalize_asr_provider(provider)
-    errors: list[str] = []
-    if policy in {"local", "local_then_openai"}:
-        try:
-            return await transcribe_with_local(
-                audio_path,
-                model_size=local_model,
-                duration=duration,
-                is_cancelled=is_cancelled,
-                on_progress=on_progress,
-                language=language,
-            )
-        except TranscribeError as exc:
-            errors.append(str(exc))
-            if policy != "local_then_openai" or not (openai_key or "").strip():
-                raise
-            logger.warning("Local Whisper failed; trying OpenAI fallback: %s", exc)
-    if policy in {"openai", "local_then_openai"}:
-        if not (openai_key or "").strip():
-            if errors:
-                raise TranscribeError(errors[-1])
-            raise TranscribeError("OpenAI API key is not configured.")
-        return await transcribe_with_openai(
-            audio_path,
-            api_key=openai_key or "",
-            duration=duration,
-            is_cancelled=is_cancelled,
-            on_progress=on_progress,
-            language=language,
-        )
-    raise TranscribeError(errors[-1] if errors else "No ASR engine is configured.")
+    return await transcribe_with_local(
+        audio_path,
+        model_size=local_model,
+        duration=duration,
+        is_cancelled=is_cancelled,
+        on_progress=on_progress,
+        language=language,
+    )
 
 
 async def transcribe_media_to_srt(
     media_path: str | Path,
     output_path: str | Path | None = None,
     *,
-    provider: str,
     local_model: str,
-    openai_key: str | None,
     is_cancelled: CancelCheck | None = None,
     on_progress: ProgressCb | None = None,
     source_language: str | None = None,
@@ -359,9 +299,7 @@ async def transcribe_media_to_srt(
         path, transcript, *_rest = await TranscriptionService().transcribe_media_to_srt(
             media_path,
             output_path,
-            provider=provider,
             local_model=local_model,
-            openai_key=openai_key,
             source_language=source_language,
             preferred_languages=preferred_languages,
             is_cancelled=is_cancelled,

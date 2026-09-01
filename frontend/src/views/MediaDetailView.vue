@@ -39,6 +39,7 @@ const actionError = ref<string | null>(null)
 const modalOpen = ref(false)
 const dubModalOpen = ref(false)
 const busy = ref(false)
+const bazarrSyncBusy = ref(false)
 const retryingId = ref<number | null>(null)
 let timer: number | undefined
 let stopLive: (() => void) | undefined
@@ -262,6 +263,7 @@ async function retryBazarrSync() {
   const targets = verifyFailedTasks.value
   if (!targets.length || busy.value) return
   busy.value = true
+  bazarrSyncBusy.value = true
   actionError.value = null
   try {
     for (const task of targets) {
@@ -271,6 +273,7 @@ async function retryBazarrSync() {
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
   } finally {
+    bazarrSyncBusy.value = false
     busy.value = false
   }
 }
@@ -432,12 +435,27 @@ onUnmounted(() => {
             >
               <button
                 type="button"
-                class="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold hover:bg-ink-100 dark:hover:bg-ink-800"
+                class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-semibold hover:bg-ink-100 disabled:cursor-wait disabled:opacity-70 dark:hover:bg-ink-800"
                 title="Retry Bazarr sync"
                 :disabled="busy"
+                :aria-busy="bazarrSyncBusy"
                 @click="retryBazarrSync"
               >
-                Retry Bazarr sync
+                <svg
+                  v-if="bazarrSyncBusy"
+                  class="h-4 w-4 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <path d="M21 3v6h-6" />
+                </svg>
+                {{ bazarrSyncBusy ? 'Syncing with Bazarr…' : 'Retry Bazarr sync' }}
               </button>
             </div>
           </details>

@@ -16,6 +16,7 @@ const router = useRouter()
 const job = ref<Job | null>(null)
 const error = ref<string | null>(null)
 const busy = ref(false)
+const bazarrSyncBusy = ref(false)
 const logBusy = ref(false)
 const logVisible = ref(false)
 const jobLog = ref<JobLog | null>(null)
@@ -228,12 +229,14 @@ async function cancel() {
 
 async function retrySync() {
   busy.value = true
+  bazarrSyncBusy.value = true
   error.value = null
   try {
     job.value = await api.retryBazarrSync(Number(props.id))
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
+    bazarrSyncBusy.value = false
     busy.value = false
   }
 }
@@ -344,12 +347,27 @@ async function viewRequestLog(row: JobUsageExchange) {
         </button>
         <button
           v-if="job.status === 'completed' && job.warning"
-          class="rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold dark:border-ink-600"
+          class="inline-flex items-center gap-2 rounded-md border border-ink-300 px-3 py-2 text-sm font-semibold disabled:cursor-wait disabled:opacity-70 dark:border-ink-600"
           type="button"
           :disabled="busy"
+          :aria-busy="bazarrSyncBusy"
           @click="retrySync"
         >
-          Retry Bazarr sync
+          <svg
+            v-if="bazarrSyncBusy"
+            class="h-4 w-4 animate-spin"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
+          {{ bazarrSyncBusy ? 'Syncing with Bazarr…' : 'Retry Bazarr sync' }}
         </button>
         <button
           v-if="canShowJobLog"

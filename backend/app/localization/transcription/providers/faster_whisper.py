@@ -270,7 +270,7 @@ class FasterWhisperProvider:
                 raise
             except MemoryError as exc:
                 raise TranscribeProviderError(
-                    "Local Whisper ran out of memory. Try a smaller model or OpenAI fallback."
+                    "Local Whisper ran out of memory. Try a smaller model."
                 ) from exc
             except Exception as exc:  # noqa: BLE001
                 raise TranscribeProviderError(f"Local Whisper failed: {exc}") from exc

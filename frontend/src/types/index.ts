@@ -28,10 +28,7 @@ export interface Settings {
   max_concurrent_request: number
   max_concurrent_transcribe: number
   max_concurrent_dub: number
-  asr_provider: 'local' | 'openai' | 'local_then_openai' | string
   asr_local_model: string
-  openai_api_key_masked: string | null
-  openai_api_key_configured: boolean
   automatic_fallback_enabled: boolean
   automatic_scan_interval_minutes: number
   bazarr_grace_period_minutes: number
@@ -71,10 +68,7 @@ export interface SettingsUpdate {
   max_concurrent_request?: number
   max_concurrent_transcribe?: number
   max_concurrent_dub?: number
-  asr_provider?: 'local' | 'openai' | 'local_then_openai' | string
   asr_local_model?: string
-  openai_api_key?: string | null
-  clear_openai_api_key?: boolean
   automatic_fallback_enabled?: boolean
   automatic_scan_interval_minutes?: number
   bazarr_grace_period_minutes?: number

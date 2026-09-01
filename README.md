@@ -2,7 +2,7 @@
 
 AI subtitle-translation fallback for [Bazarr](https://github.com/morpheus65535/bazarr).
 
-When Bazarr cannot find a subtitle in your target language but a source subtitle (usually English) already exists — or can be requested / extracted — Subtitle AI translates that SRT with an LLM through [OpenRouter](https://openrouter.ai/), writes the result beside the media file, and asks Bazarr to rescan.
+When Bazarr cannot find a subtitle in your target language but a source subtitle (usually English) already exists — or can be requested, extracted, or transcribed from audio — Subtitle AI translates that SRT with an LLM through [OpenRouter](https://openrouter.ai/), writes the result beside the media file, and asks Bazarr to rescan.
 
 ## Why it exists
 
@@ -10,26 +10,26 @@ Bazarr is excellent at finding existing subtitles. It is not a translator. Subti
 
 ## Workflow
 
-1. Configure Bazarr, languages, batch size, automation, and path mappings under **Settings**. Media library mounts come from Docker volumes and are auto-discovered.
+1. Configure Bazarr, languages, batch size, automation, and path mappings under **Settings**. Optionally connect Jellyfin for catalog search. Media library mounts come from Docker volumes and are auto-discovered.
 2. Optionally enable **Automatic Subtitle Fallback** under Settings (off by default). When enabled, Subtitle AI periodically scans Bazarr wanted items, waits a configurable grace period, then automatically request/extract/translate missing target subtitles. This can incur OpenRouter API costs.
-3. Open **Settings → Providers** to set the OpenRouter API key (and test connection / refresh models). Then open **Settings → Models** for free/paid pools, routing strategy, per-job cost caps, a monthly budget, and batch size. Paid fallback stays off unless you enable it.
+3. Open **Settings → Providers** to set the OpenRouter API key (and test connection / refresh models). Then open **Settings → Models** for free/paid pools, routing strategy, per-job cost caps, a monthly budget, batch size, and the optional operator-chat model. Paid fallback stays off unless you enable it.
 4. Open **Dashboard** for pipeline counts, live work, cost/quality cards, and AI reports (Ops / AI tabs), or **Media** to see titles that need work, are in progress, or already have history.
-5. Click a title to open the media file page (languages, localize, history). Use **Request subtitles** / **Localize** to create a localization task; the planner chooses request, extract, or translate.
+5. Click a title to open the media file page (languages, localize, history). Use **Request subtitles** / **Localize** to create a localization task; the planner chooses request, extract, transcribe, or translate. Manual transcription and dubbing are also available from the media page when their prerequisites are met.
 6. Use **Localize selected** or **Localize all missing** on the Media list when you want to queue several titles at once.
-7. The worker runs jobs in the background: routed translation via the AI provider layer (OpenRouter in v0.3-alpha1, with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
+7. The worker runs jobs in the background: routed translation via the AI provider layer (OpenRouter in v0.3-alpha2, with technical model fallback) → structure validation → atomic write → Bazarr rescan → verify Bazarr no longer reports the target missing.
 8. Track progress on the media file page, Dashboard live work, and the Dashboard **AI** tab (Overview / Usage).
 
-When automatic fallback is **off**, nothing is scheduled — only clicks create jobs.
+When automatic fallback is **off**, it creates no new jobs. Jobs can still be created manually through the UI or Dashboard operator chat, and active tasks are resumed after an application restart.
 
 ## Pages
 
 | Page | Purpose |
 | --- | --- |
-| **Dashboard** | Mission control: intervention strip, pipeline stage cards, cost/quality sums, live work, automation; AI Overview/Usage tabs |
+| **Dashboard** | Mission control: intervention strip, pipeline stage cards, cost/quality sums, live work, automation, and optional operator chat; AI Overview/Usage tabs |
 | **Media** | Library / work queue: wanted titles plus anything with a localization task |
-| **Media detail** | One file: languages, localize, details, running jobs, history |
+| **Media detail** | One file: languages, localize, transcription and dubbing actions, approval, running jobs, history |
 | **Job detail** | Progress, OpenRouter log, requests, usage KPIs (translate jobs), Retry / Cancel / Retry Bazarr sync |
-| **Settings** | General (incl. language), Providers (Bazarr and AI), Models |
+| **Settings** | General (incl. language, approval, automation), Providers (Bazarr, Jellyfin, and AI), Models |
 
 See [docs/localization-tasks.md](docs/localization-tasks.md) for the media-centric task architecture.
 
@@ -56,7 +56,7 @@ SQLite under /config
 ffmpeg / ffprobe / tesseract in the Docker image
 ```
 
-v0.3-alpha1 adds a provider-agnostic AI layer (`(provider_id, model_id)` identity). Only OpenRouter is implemented; see [docs/ai-providers.md](docs/ai-providers.md).
+v0.3-alpha2 has a provider-agnostic AI layer (`(provider_id, model_id)` identity). Only OpenRouter is implemented; see [docs/ai-providers.md](docs/ai-providers.md).
 
 The application owns subtitle structure (IDs, timing, markup). The model only translates dialogue text.
 
@@ -74,7 +74,7 @@ Automatic Scanner
 Grace Period
       |
       v
-Source Resolver (external SRT / extract / Bazarr request)
+Source Resolver (external SRT / extract / transcribe / Bazarr request)
       |
       v
 Translate → Validate → Write → Bazarr Rescan → Verify
@@ -104,10 +104,12 @@ Example:
 ## Docker installation
 
 ```bash
-cp .env.example .env
-# Edit docker-compose.yml media volume to your library path
+# Edit docker-compose.yml: set the media volume to your library path.
+# Optional runtime settings are documented as comments in that file.
 docker compose up -d --build
 ```
+
+`.env.example` is a reference for local development configuration; the supplied Compose files do not load it into the container.
 
 Open http://localhost:6768
 
@@ -150,23 +152,29 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 - API key if required
 - Use **Test Connection**
 
+### Jellyfin (optional)
+
+- URL and API key under **Settings → Providers**
+- When connected, its movies and episodes are available to Media search and the Dashboard operator chat
+- Use **Test Connection**
+
 ### OpenRouter
 
 - API key (stored encrypted; UI shows a masked value after save) — configure under **Settings → Providers**
 - Models, routing, cost/budget controls live under **Settings → Models** (`openrouter_model` is kept as a compatibility field)
-- Use per-model **Test** on the AI page
+- Use per-model **Test** on the AI page; the optional Dashboard operator chat also uses a configured tool-capable model
 
 ### Speech-to-text
 
 - Manual **Transcribe audio** on a media page when Bazarr has no source subtitle and embedded extract is not possible
-- Local `faster-whisper` (default model `small`, cached under `/config/whisper-models`) with optional OpenAI Whisper API fallback
+- Local `faster-whisper` (default model `small`, cached under `/config/whisper-models`)
 - First run downloads the model (~500MB for `small`); CPU transcription is slow and there is no GPU in the default image
 
 ### TTS dubbing
 
 - Manual **Dub** on a media page when a target-language SRT already exists beside the file
 - Local Chatterbox Multilingual V3 TTS (checkpoint cached under `/config/huggingface`); by default separates the original vocal stem with Demucs, mixes the translated dialogue with the preserved music/ambience/effects, and writes `{stem}.{lang}.dub.mkv` next to the original
-- The Portuguese dub is the default audio track (48 kHz stereo); the original audio remains as an alternate track. **Voiceover preview** remains available when a speech-only timeline is wanted.
+- The target-language dub is the default audio track (48 kHz stereo); the original audio remains as an alternate track. **Voiceover preview** remains available when a speech-only timeline is wanted.
 - Subtitle labels such as `Ryder:` are retained as speaker identities. Optional per-speaker Chatterbox expressive profiles can be set in the Dub dialog; unlabelled cues use the target-language natural profile.
 - The source video is never overwritten; the first run downloads the Chatterbox checkpoint (about 2 GB). The supplied image uses CPU synthesis; a GPU-enabled image can set `SUBTITLE_AI_CHATTERBOX_DEVICE=cuda`.
 - CPU dub jobs checkpoint completed cues under `/config/cache/dubbing`, recycle Chatterbox every 50 newly synthesized cues, and resume matching retries. Tune the defaults with `SUBTITLE_AI_CHATTERBOX_RECYCLE_CUES`, `SUBTITLE_AI_CHATTERBOX_MAX_CUE_SECONDS`, and `SUBTITLE_AI_DUB_MAX_RUNTIME_HOURS`.
@@ -176,6 +184,7 @@ Bazarr and Subtitle AI must agree on paths. If mounts already match (e.g. both u
 - Source language (default English / `en`)
 - Target language (default Portuguese Portugal / `pt-PT`; also `pt-BR`, `es`, `fr`, `de`, `it`, …)
 - Batch size (subtitle blocks per OpenRouter request; used by translation jobs)
+- Optional approval can hold **manual** translations as drafts for review before the target sidecar is written
 
 ### Media
 
@@ -239,7 +248,8 @@ Keep `/config` mounted across image upgrades. Recreate the container on the new 
 
 - SRT output. Embedded **text** tracks extract with ffmpeg. Blu-ray **PGS** image tracks are OCR'd with Tesseract (best-effort). DVD VobSub is not OCR'd yet.
 - OpenRouter only
-- No Whisper / speech-to-text
+- Speech-to-text uses local `faster-whisper` only; it can be slow on CPU and downloads its model on first use.
+- Dubbing is manual and CPU-intensive; it is not part of automatic fallback.
 - Bazarr rescan uses the same Scan Disk action as the Bazarr UI (`PATCH` `action=scan-disk`)
 
 ## Roadmap
@@ -259,4 +269,4 @@ Keep `/config` mounted across image upgrades. Recreate the container on the new 
 
 ## License
 
-MIT
+[MIT](LICENSE)

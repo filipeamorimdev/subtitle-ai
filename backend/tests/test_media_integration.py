@@ -84,9 +84,7 @@ async def test_smoke_select_transcribe_format_dub_mux(tmp_path, monkeypatch):
     srt_path, transcript, *_rest = await TranscriptionService().transcribe_media_to_srt(
         mkv,
         tmp_path / "Movie.en.srt",
-        provider="local",
         local_model="tiny",
-        openai_key=None,
         source_language="en",
         preferred_languages=["en"],
     )

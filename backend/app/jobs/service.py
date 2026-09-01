@@ -1625,14 +1625,8 @@ class JobService:
             if path
             else None
         )
-        provider = public.asr_provider
         local_model = public.asr_local_model
-        if provider == "openai":
-            model = "openai:whisper-1"
-        elif provider == "local":
-            model = f"faster-whisper:{local_model}"
-        else:
-            model = f"faster-whisper:{local_model}+openai"
+        model = f"faster-whisper:{local_model}"
         placeholder = str(build_external_subtitle_path(media_file, "und"))
         dkey = hashlib.sha256(f"transcribe|{path}|{target_language}".encode()).hexdigest()
         row = JobRow(
@@ -2436,7 +2430,6 @@ class JobService:
         try:
             media_path = row.media_path
             public = self.settings.get_public()
-            openai_key = self.settings.get_openai_api_key()
             row.progress = 8
             row.progress_detail = "Extracting audio"
             self.db.add(row)
@@ -2478,9 +2471,7 @@ class JobService:
             try:
                 path, result = await transcribe_media_to_srt(
                     media_path,
-                    provider=public.asr_provider,
                     local_model=public.asr_local_model,
-                    openai_key=openai_key,
                     is_cancelled=is_cancelled,
                     on_progress=on_progress,
                     source_language=row.source_language,

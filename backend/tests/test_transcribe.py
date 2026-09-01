@@ -1,4 +1,4 @@
-"""Audio transcription source tests (mocked Whisper/OpenAI)."""
+"""Audio transcription source tests (mocked local Whisper)."""
 
 from __future__ import annotations
 
@@ -66,11 +66,9 @@ def asr_env(tmp_path, monkeypatch):
             bazarr_url="http://bazarr.test",
             bazarr_api_key="test-key",
             openrouter_api_key="sk-test",
-            openai_api_key="sk-openai",
             target_language_code="pt-PT",
             target_language_name="Portuguese (Portugal)",
             source_languages=["en"],
-            asr_provider="local_then_openai",
             asr_local_model="small",
             path_mappings=[
                 PathMappingIn(bazarr_prefix="/media", local_prefix=str(tmp_path / "media"))
@@ -483,35 +481,26 @@ async def test_transcribe_matching_target_skips_translate(asr_env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_then_openai_fallback(monkeypatch, tmp_path):
+async def test_transcribe_audio_uses_local_whisper(monkeypatch, tmp_path):
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"x")
     calls: list[str] = []
 
-    async def fail_local(*_args, **_kwargs):
-        from app.subtitles.transcribe import TranscribeError
-
+    async def local_whisper(*_args, **_kwargs):
         calls.append("local")
-        raise TranscribeError("local failed")
-
-    async def ok_openai(*_args, **_kwargs):
-        calls.append("openai")
         return TranscriptResult(
             language="en",
             segments=[TranscriptSegment(0.0, 1.0, "Hello")],
-            engine="openai:whisper-1",
+            engine="faster-whisper:small",
         )
 
-    monkeypatch.setattr("app.subtitles.transcribe.transcribe_with_local", fail_local)
-    monkeypatch.setattr("app.subtitles.transcribe.transcribe_with_openai", ok_openai)
+    monkeypatch.setattr("app.subtitles.transcribe.transcribe_with_local", local_whisper)
     result = await transcribe_audio(
         audio,
-        provider="local_then_openai",
         local_model="small",
-        openai_key="sk-test",
     )
-    assert result.engine == "openai:whisper-1"
-    assert calls == ["local", "openai"]
+    assert result.engine == "faster-whisper:small"
+    assert calls == ["local"]
 
 
 def test_filter_segments_drops_silence():

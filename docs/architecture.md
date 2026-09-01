@@ -6,8 +6,8 @@ Subtitle AI is a single Docker service that combines:
 - **SQLite** persistence under `/config`
 - An **asyncio worker** that processes jobs with configurable per-kind concurrency (default: one translate, one extract, one request, and one transcribe at a time)
 - An optional **automatic scanner** that enqueues the same jobs when automatic fallback is enabled
-- Integrations for **Bazarr** (wanted detection + rescan + verify) and an **AI provider layer** (OpenRouter adapter in v0.3-alpha1)
-- **ffmpeg** for text subtitle extract, PGS demux, and audio extract for ASR; **Tesseract** for PGS OCR; **faster-whisper** (optional OpenAI Whisper API) for manual audio transcription
+- Integrations for **Bazarr** (wanted detection + rescan + verify) and an **AI provider layer** (OpenRouter adapter in v0.3-alpha2)
+- **ffmpeg** for text subtitle extract, PGS demux, and audio extract for ASR; **Tesseract** for PGS OCR; **faster-whisper** for manual audio transcription
 
 ## Boundaries
 
@@ -59,7 +59,7 @@ See [localization-tasks.md](localization-tasks.md) for the media-centric task mo
 | `services/candidates` | Build UI candidates; never enqueue jobs |
 | `services/fallback` | Observation store, grace period, automatic next-action planner |
 | `jobs/scanner` | Background loop; no-op when automatic fallback is disabled |
-| `subtitles` | Parse, markup, validate, write SRT; PGS demux + Tesseract OCR; audio transcription (Whisper) |
+| `subtitles` | Parse, markup, validate, write SRT; PGS demux + Tesseract OCR; local faster-whisper transcription |
 | `ai/` | Generic provider types, registry, OpenRouter adapter, credentials |
 | `translation/` | Provider-agnostic TranslationService + prompts; OpenRouter HTTP client |
 | `services/model_router` | Deterministic free/paid pool selection and cost gating |
@@ -74,11 +74,11 @@ See [localization-tasks.md](localization-tasks.md) for the media-centric task mo
 
 - `settings` — singleton configuration (including automatic fallback toggles, routing strategy, budget)
 - `media_items` — lightweight media identity cache (Bazarr IDs + display metadata)
-- `localization_tasks` — user-facing localization goals (subtitles; audio reserved for later)
-- `jobs` — translation / extract / request / transcribe work (`trigger_type` = manual \| automatic); optional `task_id`; includes `provider_id`
+- `localization_tasks` — user-facing subtitle and audio localization goals
+- `jobs` — translation / extract / request / transcribe / dub work (`trigger_type` = manual \| automatic); optional `task_id`; includes `provider_id`
 - `observed_candidates` — first-seen / grace-period state for automation
 - `translation_cache` — completed hash/language/provider/model tuples
-- `ai_provider_accounts` — encrypted provider credentials (OpenRouter in alpha1)
+- `ai_provider_accounts` — encrypted provider credentials (OpenRouter in alpha2)
 - `ai_model_preferences` — free/paid model pools keyed by `(provider_id, model_id)`
 - `ai_model_catalog_cache` — per-provider catalog snapshot (6-hour freshness)
 - `openrouter_model_preferences` / `openrouter_catalog_cache` — legacy tables kept for rollback
@@ -128,7 +128,7 @@ Off by default. When enabled:
 
 `SourceResolver` scores available sources. A French sidecar does **not** block transcription when the preferred source language is English. Transcription is selected when it outscores other-language subtitles and non-preferred embedded tracks.
 
-`AudioTrackSelector` picks the dialogue stream from ffprobe metadata (language, default, commentary/AD penalties). `TranscriptionService` extracts that stream, chunks by duration with overlap, runs an `ASRProvider` (`faster-whisper` or OpenAI), and `SubtitleFormatter` builds readable SRT cues from word timestamps. Detected language and confidence are stored; English is never assumed when detection is missing.
+`AudioTrackSelector` picks the dialogue stream from ffprobe metadata (language, default, commentary/AD penalties). `TranscriptionService` extracts that stream, chunks by duration with overlap, runs local `faster-whisper`, and `SubtitleFormatter` builds readable SRT cues from word timestamps. Detected language and confidence are stored; English is never assumed when detection is missing.
 
 Jobs record pipeline decisions in the job JSONL event log and task `metadata_json["pipeline"]`.
 
@@ -151,5 +151,4 @@ On startup `init_db()` adds missing tables/columns, seeds legacy preferences whe
 - Non-SRT formats
 - In-place dub mux / replacing original audio tracks
 - Speaker diarization / multiple TTS voices / voice cloning
-- Mixing separated background stems into the final dubbed file
 - WhisperX alignment (provider slot only)

@@ -11,11 +11,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.db import release_session_connection
-from app.db.models import JobRow, MediaItemRow
+from app.db.models import (
+    JobRow,
+    LocalizationTaskRow,
+    MediaItemRow,
+    ObservedCandidateRow,
+)
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.integrations.bazarr.paths import apply_path_mapping, mappings_from_settings
 from app.services.settings import SettingsService
@@ -49,6 +55,7 @@ class BazarrVerificationService:
 
     async def verify(self, media: MediaItemRow, target_language: str) -> VerificationResult:
         """Return whether the target subtitle is present and non-empty."""
+        await self._repair_missing_bazarr_ids(media)
         self._ensure_canonical_sidecar(media, target_language)
         if not self._local_file_ok(media, target_language):
             return VerificationResult(
@@ -69,6 +76,7 @@ class BazarrVerificationService:
 
     async def rescan(self, media: MediaItemRow) -> None:
         """Ask Bazarr to rescan this media. Raises BazarrError on failure."""
+        await self._repair_missing_bazarr_ids(media)
         await self._rescan(media)
 
     async def rescan_and_verify(
@@ -77,6 +85,7 @@ class BazarrVerificationService:
         target_language: str,
     ) -> VerificationResult:
         """Rescan Bazarr, then verify target presence."""
+        await self._repair_missing_bazarr_ids(media)
         self._ensure_canonical_sidecar(media, target_language)
         try:
             await self._rescan(media)
@@ -104,6 +113,7 @@ class BazarrVerificationService:
 
     async def rescan_and_verify_job(self, row: JobRow) -> VerificationResult:
         """Job-row variant for the jobs UI / legacy non-task-backed retry."""
+        await self._repair_missing_bazarr_ids(row)
         media_like = _JobMediaAdapter(row)
         job_id = row.id
         target_language = row.target_language
@@ -140,6 +150,135 @@ class BazarrVerificationService:
                 message=USER_VERIFY_FAILED,
             )
         return VerificationResult(ok=True, present=True)
+
+    async def _repair_missing_bazarr_ids(self, target: MediaItemRow | JobRow) -> bool:
+        """Backfill Bazarr IDs for media imported from another catalog.
+
+        Jellyfin-backed media rows intentionally have no Bazarr identifiers.  A
+        retry still needs those identifiers, so first reuse a persisted Bazarr
+        observation for the same file and then refresh Bazarr's wanted list as
+        a fallback.  Persisting the match makes later retries cheap.
+        """
+        if self._has_bazarr_id(target):
+            return True
+
+        path = target.path if isinstance(target, MediaItemRow) else target.media_path
+        media_type = target.media_type
+        candidate_key = target.candidate_key if isinstance(target, JobRow) else None
+
+        sources: list[object] = []
+        if isinstance(target, JobRow) and target.task_id is not None:
+            task = self.db.get(LocalizationTaskRow, target.task_id)
+            if task is not None:
+                media = self.db.get(MediaItemRow, task.media_item_id)
+                if media is not None:
+                    await self._repair_missing_bazarr_ids(media)
+                    sources.append(media)
+
+        if candidate_key:
+            observed = self.db.get(ObservedCandidateRow, candidate_key)
+            if observed is not None:
+                sources.append(observed)
+
+        if path:
+            sources.extend(
+                self.db.scalars(
+                    select(ObservedCandidateRow).where(
+                        ObservedCandidateRow.media_type == media_type,
+                        ObservedCandidateRow.media_path == path,
+                    )
+                ).all()
+            )
+            sources.extend(
+                self.db.scalars(
+                    select(MediaItemRow).where(
+                        MediaItemRow.media_type == media_type,
+                        MediaItemRow.path == path,
+                    )
+                ).all()
+            )
+            sources.extend(
+                self.db.scalars(
+                    select(JobRow).where(
+                        JobRow.media_type == media_type,
+                        JobRow.media_path == path,
+                    )
+                ).all()
+            )
+
+        wanted_path = self._mapped_media_path(path)
+        for source in sources:
+            source_path = getattr(source, "path", None) or getattr(source, "media_path", None)
+            if self._mapped_media_path(source_path) != wanted_path:
+                continue
+            if self._copy_bazarr_ids(target, source):
+                self.db.add(target)
+                self.db.commit()
+                self.db.refresh(target)
+                return True
+
+        try:
+            from app.services.candidates import CandidateService
+
+            candidates = await CandidateService(self.db).list_candidates(force_refresh=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Bazarr identifier refresh failed path=%s error=%s", path, exc)
+            return False
+
+        exact = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate_key and candidate.key == candidate_key and self._has_bazarr_id(candidate)
+            ),
+            None,
+        )
+        match = exact or next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.media_type == media_type
+                and self._mapped_media_path(candidate.media_path) == wanted_path
+                and self._has_bazarr_id(candidate)
+            ),
+            None,
+        )
+        if match is None or not self._copy_bazarr_ids(target, match):
+            return False
+        self.db.add(target)
+        self.db.commit()
+        self.db.refresh(target)
+        logger.info("Recovered Bazarr identifiers for %s=%s", type(target).__name__, target.id)
+        return True
+
+    def _mapped_media_path(self, path: str | None) -> str | None:
+        if not path:
+            return None
+        public = self.settings.get_public()
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        return str(Path(apply_path_mapping(path, mappings)))
+
+    @staticmethod
+    def _has_bazarr_id(value: object) -> bool:
+        media_type = getattr(value, "media_type", None)
+        if media_type == "movie":
+            return getattr(value, "bazarr_movie_id", None) is not None
+        return getattr(value, "bazarr_episode_id", None) is not None
+
+    @staticmethod
+    def _copy_bazarr_ids(target: MediaItemRow | JobRow, source: object) -> bool:
+        if target.media_type == "movie":
+            movie_id = getattr(source, "bazarr_movie_id", None)
+            if movie_id is None:
+                return False
+            target.bazarr_movie_id = movie_id
+            return True
+        episode_id = getattr(source, "bazarr_episode_id", None)
+        if episode_id is None:
+            return False
+        target.bazarr_episode_id = episode_id
+        target.bazarr_series_id = getattr(source, "bazarr_series_id", None)
+        return True
 
     def _ensure_canonical_sidecar(
         self,
