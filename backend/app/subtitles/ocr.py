@@ -58,6 +58,7 @@ class OcrError(Exception):
 
 
 CancelCheck = Callable[[], bool]
+ProgressCallback = Callable[[int, int], None]
 OCR_IMAGE_TIMEOUT_SECONDS = 120.0
 
 
@@ -154,6 +155,7 @@ def pgs_sup_to_srt(
     language: str | None = "en",
     overwrite: bool = False,
     is_cancelled: CancelCheck | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> Path:
     """OCR a demuxed `.sup` stream and write a sidecar SRT."""
     if not ocr_available():
@@ -164,7 +166,10 @@ def pgs_sup_to_srt(
     tess_lang = tesseract_lang_for(language)
     blocks: list[SubtitleBlock] = []
     empty = 0
-    for event in events:
+    total = len(events)
+    if progress_callback:
+        progress_callback(0, total)
+    for index, event in enumerate(events, start=1):
         if is_cancelled and is_cancelled():
             raise OcrError("PGS OCR cancelled.")
         try:
@@ -172,11 +177,15 @@ def pgs_sup_to_srt(
         except Exception as exc:  # noqa: BLE001
             logger.warning("OCR failed for cue at %sms: %s", event.start_ms, exc)
             empty += 1
+            if progress_callback:
+                progress_callback(index, total)
             continue
         if is_cancelled and is_cancelled():
             raise OcrError("PGS OCR cancelled.")
         if not text:
             empty += 1
+            if progress_callback:
+                progress_callback(index, total)
             continue
         blocks.append(
             SubtitleBlock(
@@ -187,6 +196,8 @@ def pgs_sup_to_srt(
                 original_text=text,
             )
         )
+        if progress_callback:
+            progress_callback(index, total)
     if not blocks:
         raise OcrError("OCR produced no readable text from the PGS track.")
     if empty:

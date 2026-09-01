@@ -79,7 +79,7 @@ class LocalizationTaskService:
         if task.status != status:
             if status == "planning" and task.started_at is None:
                 task.started_at = now
-            if status in {"processing", "verifying", "waiting_for_source", "awaiting_approval"} and task.started_at is None:
+            if status in {"processing", "verifying", "waiting_for_source"} and task.started_at is None:
                 task.started_at = now
             if status in {"completed", "failed", "cancelled", "blocked"}:
                 task.completed_at = now
@@ -440,7 +440,7 @@ class LocalizationTaskService:
         task = self.get(task_id)
         if task is None:
             raise ValueError("Task not found")
-        if task.status not in {"failed", "blocked", "cancelled", "awaiting_approval"}:
+        if task.status not in {"failed", "blocked", "cancelled"}:
             if task.status in ACTIVE_STATUSES:
                 return task
             if task.status == "completed":

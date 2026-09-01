@@ -235,6 +235,7 @@ async def extract_embedded_track(
     language: str | None = "en",
     timeout: float | None = None,
     is_cancelled: CancelCheck | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> Path:
     """Extract a text track with ffmpeg, or OCR a PGS image track to SRT."""
     tracks = await probe_subtitle_tracks(media_path, is_cancelled=is_cancelled)
@@ -256,6 +257,7 @@ async def extract_embedded_track(
             language=language or track.language or "en",
             timeout=timeout or PGS_EXTRACT_TIMEOUT,
             is_cancelled=is_cancelled,
+            progress_callback=progress_callback,
         )
     raise EmbeddedError(
         f"Embedded subtitle codec {track.codec or 'unknown'} cannot be extracted."
@@ -270,6 +272,7 @@ async def extract_pgs_track(
     language: str | None = "en",
     timeout: float = PGS_EXTRACT_TIMEOUT,
     is_cancelled: CancelCheck | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> Path:
     if not ocr_available():
         raise EmbeddedError(
@@ -321,6 +324,7 @@ async def extract_pgs_track(
                 language=language,
                 overwrite=False,
                 is_cancelled=ocr_cancelled,
+                progress_callback=progress_callback,
             )
         )
         try:

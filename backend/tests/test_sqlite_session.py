@@ -63,7 +63,9 @@ async def test_extract_job_releases_session_during_ffmpeg(session_env, monkeypat
 
     seen: dict[str, object] = {}
 
-    async def fake_extract(media_path, stream_index, output_path, language="en"):  # noqa: ARG001
+    async def fake_extract(
+        media_path, stream_index, output_path, language="en", progress_callback=None
+    ):  # noqa: ARG001
         seen["extract_in_transaction"] = db.in_transaction()
         other = factory()
         try:

@@ -13,7 +13,7 @@ const pickerOpen = ref(false)
 const pickerQuery = ref('')
 const pickerError = ref<string | null>(null)
 const pickerFilter = ref<'all' | 'compatible' | 'free' | 'paid' | 'audio'>('compatible')
-const pickerPurpose = ref<'translation' | 'audio_analysis'>('translation')
+const pickerPurpose = ref<PickerPurpose>('translation')
 const testResult = ref<Record<number, string>>({})
 const batchSize = ref(25)
 const operatorModelId = ref<string>('')
@@ -66,6 +66,7 @@ function badge(tier?: string | null, stale?: boolean, unavailable?: boolean) {
 
 type ModelTier = 'free' | 'paid'
 type ModelPurpose = 'translation' | 'audio_analysis'
+type PickerPurpose = ModelPurpose | 'operator'
 
 type ModelPool = {
   purpose: ModelPurpose
@@ -137,7 +138,9 @@ const filteredCatalog = computed(() => {
   const models = data.value?.catalog || []
   const q = pickerQuery.value.trim().toLowerCase()
   return models.filter((m) => {
-    if (selectedForPurpose(m.id, pickerPurpose.value)) return false
+    if (pickerPurpose.value === 'operator') {
+      if (!Array.isArray(m.capabilities) || !m.capabilities.includes('function_calling') || m.unavailable === true) return false
+    } else if (selectedForPurpose(m.id, pickerPurpose.value)) return false
     if (pickerFilter.value === 'compatible' && m.compatible === false) return false
     if (pickerFilter.value === 'free' && m.pricing_tier !== 'free') return false
     if (pickerFilter.value === 'paid' && m.pricing_tier !== 'paid') return false
@@ -224,7 +227,7 @@ async function refresh() {
   await refreshCatalog({ force: true, notify: true })
 }
 
-function openPicker(purpose: ModelPurpose) {
+function openPicker(purpose: PickerPurpose) {
   pickerQuery.value = ''
   pickerError.value = null
   pickerPurpose.value = purpose
@@ -257,6 +260,11 @@ async function addAudioModel(model: OpenRouterModel) {
   } catch (err) {
     pickerError.value = err instanceof Error ? err.message : String(err)
   }
+}
+
+function selectOperatorModel(model: OpenRouterModel) {
+  operatorModelId.value = model.id
+  closePicker()
 }
 
 async function toggle(pref: AiPreference) {
@@ -438,8 +446,8 @@ onMounted(async () => {
       <section class="rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <h2 class="font-display text-lg font-semibold">Catalog</h2>
         <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
-          Connection: {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
-          · Catalog: {{ catalogAge(data.catalog_age_seconds) }}
+          <strong>Connection</strong> {{ data.openrouter_configured ? '● Configured' : 'Not configured' }}
+          · <strong>Updated</strong> {{ catalogAge(data.catalog_age_seconds) }}
           <span v-if="catalogRefreshing" class="text-ink-500"> (updating…)</span>
           <span v-else-if="data.catalog_stale || data.pricing_freshness === 'stale'" class="text-amber-700">
             (stale pricing)
@@ -451,26 +459,28 @@ onMounted(async () => {
         <h2 class="font-display text-lg font-semibold">Chat model</h2>
         <p class="mt-1 text-sm text-ink-600 dark:text-ink-300">
           Used by the dashboard operator chat. Prefer a model that supports tool / function calling.
-          Translation pools are unchanged.
         </p>
-        <label class="mt-3 block text-sm">
-          <span class="text-ink-500">Operator model</span>
-          <select
-            v-model="operatorModelId"
-            class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
-          >
-            <option value="">Auto (first tool-capable pool model)</option>
-            <option v-for="m in toolModels" :key="m.id" :value="m.id">
-              {{ m.name }} ({{ m.id }})
-            </option>
-            <option
-              v-if="operatorModelId && !toolModels.some((m) => m.id === operatorModelId)"
-              :value="operatorModelId"
-            >
-              {{ operatorModelId }} (current)
-            </option>
-          </select>
-        </label>
+        <div class="mt-3">
+          <span class="text-sm text-ink-500">Operator model</span>
+          <div class="mt-1 flex flex-wrap items-center justify-between gap-3 rounded-md border border-ink-300 p-3 dark:border-ink-600">
+            <div class="min-w-0 text-sm">
+              <div class="font-medium">
+                {{ toolModels.find((model) => model.id === operatorModelId)?.name || (operatorModelId || 'Auto') }}
+              </div>
+              <div class="truncate text-xs text-ink-500">
+                {{ operatorModelId || 'Automatically uses the first tool-capable pool model.' }}
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="openPicker('operator')">
+                Choose model
+              </button>
+              <button v-if="operatorModelId" class="rounded border border-ink-300 px-2 py-1 text-xs dark:border-ink-600" type="button" @click="operatorModelId = ''">
+                Use Auto
+              </button>
+            </div>
+          </div>
+        </div>
         <p v-if="!toolModels.length" class="mt-2 text-xs text-amber-700 dark:text-amber-300">
           No catalog models advertise function_calling yet — refresh the catalog, or pick Auto and
           ensure a capable model is in your pools.
@@ -536,7 +546,7 @@ onMounted(async () => {
         </div>
       </section>
 
-      <div class="grid gap-4 lg:grid-cols-2">
+      <div class="space-y-4">
         <section
           v-for="pool in modelPools"
           :key="`${pool.purpose}:${pool.tier || 'all'}`"
@@ -630,10 +640,13 @@ onMounted(async () => {
           <div class="flex items-start justify-between gap-3">
             <div>
               <h2 id="add-model-title" class="font-display text-lg font-semibold">
-                Add {{ pickerPurpose === 'audio_analysis' ? 'audio analysis model' : 'model' }}
+                {{ pickerPurpose === 'operator' ? 'Select Operator model' : `Add ${pickerPurpose === 'audio_analysis' ? 'audio analysis model' : 'model'}` }}
               </h2>
               <p v-if="pickerPurpose === 'audio_analysis'" class="mt-1 text-sm text-ink-500">
                 Only models that accept audio input can be added to this pool.
+              </p>
+              <p v-else-if="pickerPurpose === 'operator'" class="mt-1 text-sm text-ink-500">
+                Choose a model that supports tool / function calling for the dashboard operator chat.
               </p>
             </div>
             <button
@@ -712,6 +725,14 @@ onMounted(async () => {
                   @click="addAudioModel(model)"
                 >
                   Add to Audio analysis
+                </button>
+                <button
+                  v-if="pickerPurpose === 'operator'"
+                  class="rounded border px-2 py-1 text-xs"
+                  type="button"
+                  @click="selectOperatorModel(model)"
+                >
+                  Use for Operator
                 </button>
               </div>
             </li>

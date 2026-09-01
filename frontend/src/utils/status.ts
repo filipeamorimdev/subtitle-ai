@@ -6,7 +6,6 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   waiting_for_source: 'Waiting for source',
   processing: 'Processing',
   verifying: 'Verifying',
-  awaiting_approval: 'Awaiting approval',
   completed: 'Completed',
   failed: 'Failed',
   blocked: 'Blocked',
@@ -19,7 +18,6 @@ const ACTIVE_TASK_STATUSES = new Set([
   'waiting_for_source',
   'processing',
   'verifying',
-  'awaiting_approval',
 ])
 
 export function isActiveTaskStatus(status: string) {
@@ -55,13 +53,38 @@ export function latestTasksByLanguageCapability<
   return map
 }
 
+type LanguageBadge = {
+  language_code: string
+  available: boolean
+  task_status: string | null
+}
+
+function languageCodesCompatible(a: string, b: string) {
+  const left = a.trim().replaceAll('_', '-').toLowerCase()
+  const right = b.trim().replaceAll('_', '-').toLowerCase()
+  if (!left || !right) return false
+  if (left === right) return true
+  return !left.includes('-') ? right.startsWith(`${left}-`) : !right.includes('-') && left.startsWith(`${right}-`)
+}
+
+/**
+ * A terminal task for a generic language (for example `pt`) is historical once
+ * a compatible locale (`pt-PT`) is available. Keep the task in history but do
+ * not show its stale status as a current language badge.
+ */
+export function isSupersededLanguageBadge(language: LanguageBadge, allLanguages: LanguageBadge[]) {
+  if (!['cancelled', 'failed', 'blocked'].includes(language.task_status || '')) return false
+  return allLanguages.some(
+    (other) => other !== language && other.available && languageCodesCompatible(language.language_code, other.language_code),
+  )
+}
+
 export type PipelineStage =
   | 'requesting'
   | 'extracting'
   | 'transcribing'
   | 'translating'
   | 'verifying'
-  | 'approval'
   | 'dubbing'
   | 'dub_blocked'
   | 'failed'
@@ -102,7 +125,6 @@ export function pipelineStage(task: PipelineTask): PipelineStage {
   }
 
   if (status === 'failed') return 'failed'
-  if (status === 'awaiting_approval') return 'approval'
   if (status === 'verifying') return 'verifying'
 
   if (
@@ -156,11 +178,7 @@ export function taskStatusIcon(status: string) {
 }
 
 export function canRetryTask(status: string) {
-  return ['failed', 'blocked', 'cancelled', 'waiting_for_source', 'awaiting_approval'].includes(status)
-}
-
-export function canApproveTask(status: string) {
-  return status === 'awaiting_approval'
+  return ['failed', 'blocked', 'cancelled', 'waiting_for_source'].includes(status)
 }
 
 const BAZARR_VERIFY_FAIL_CODES = new Set(['bazarr_verify_failed', 'bazarr_rescan_failed'])
@@ -246,8 +264,7 @@ export function jobStatusClass(status: string) {
     status === 'waiting_for_source' ||
     status === 'planning' ||
     status === 'requested' ||
-    status === 'verifying' ||
-    status === 'awaiting_approval'
+    status === 'verifying'
   ) {
     return 'text-accent'
   }
@@ -273,7 +290,6 @@ export function jobStatusBadgeClass(status: string) {
     status === 'planning' ||
     status === 'requested' ||
     status === 'verifying' ||
-    status === 'awaiting_approval' ||
     status === 'pending' ||
     status === 'paused'
   ) {

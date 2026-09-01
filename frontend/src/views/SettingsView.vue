@@ -30,7 +30,6 @@ const form = reactive({
   bazarr_grace_period_minutes: 10,
   automatic_retry_enabled: true,
   maximum_automatic_retries: 3,
-  require_translation_approval: false,
   source_language_code: 'en',
   target_language_code: 'pt-PT',
   target_language_name: 'Portuguese (Portugal)',
@@ -83,7 +82,6 @@ onMounted(async () => {
   form.bazarr_grace_period_minutes = s.bazarr_grace_period_minutes ?? 10
   form.automatic_retry_enabled = s.automatic_retry_enabled ?? true
   form.maximum_automatic_retries = s.maximum_automatic_retries ?? 3
-  form.require_translation_approval = s.require_translation_approval ?? false
   form.target_language_code = s.target_language.code
   form.target_language_name = s.target_language.name
   form.source_language_code = s.source_languages?.[0] || 'en'
@@ -107,7 +105,6 @@ async function save() {
       bazarr_grace_period_minutes: Number(form.bazarr_grace_period_minutes) || 0,
       automatic_retry_enabled: form.automatic_retry_enabled,
       maximum_automatic_retries: Number(form.maximum_automatic_retries) || 0,
-      require_translation_approval: form.require_translation_approval,
       target_language_code: form.target_language_code,
       target_language_name: form.target_language_name,
       source_languages: [form.source_language_code || 'en'],
@@ -239,9 +236,6 @@ function clearUsageStats() {
             placeholder="Select target language"
             @update:modelValue="onTargetChange"
           />
-          <span class="mt-1 block text-xs text-ink-500">
-            Used for Bazarr wanted matching, default to requests and new automatic localize requests.
-          </span>
         </div>
       </fieldset>
 
@@ -316,68 +310,60 @@ function clearUsageStats() {
       </fieldset>
 
       <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
-        <legend class="px-1 font-display text-lg font-semibold">Translation review</legend>
-        <label class="flex items-center gap-2 text-sm">
-          <input v-model="form.require_translation_approval" type="checkbox" />
-          Hold manual translations for approval before writing the sidecar
-        </label>
-      </fieldset>
-
-      <fieldset class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60">
         <legend class="px-1 font-display text-lg font-semibold">Job concurrency</legend>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <label class="block text-sm">
-            <span class="text-ink-500">Translate</span>
+            <span class="flex items-center justify-between text-ink-500"><span>Translate</span><output>{{ form.max_concurrent_translate }}</output></span>
             <input
               v-model.number="form.max_concurrent_translate"
-              type="number"
+              type="range"
               min="1"
-              max="20"
-              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              max="10"
+              class="mt-2 w-full accent-accent"
             />
           </label>
           <label class="block text-sm">
-            <span class="text-ink-500">Extract</span>
+            <span class="flex items-center justify-between text-ink-500"><span>Extract</span><output>{{ form.max_concurrent_extract }}</output></span>
             <input
               v-model.number="form.max_concurrent_extract"
-              type="number"
+              type="range"
               min="1"
-              max="20"
-              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              max="10"
+              class="mt-2 w-full accent-accent"
             />
           </label>
           <label class="block text-sm">
-            <span class="text-ink-500">Request</span>
+            <span class="flex items-center justify-between text-ink-500"><span>Request</span><output>{{ form.max_concurrent_request }}</output></span>
             <input
               v-model.number="form.max_concurrent_request"
-              type="number"
+              type="range"
               min="1"
-              max="20"
-              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              max="10"
+              class="mt-2 w-full accent-accent"
             />
           </label>
           <label class="block text-sm">
-            <span class="text-ink-500">Transcribe</span>
+            <span class="flex items-center justify-between text-ink-500"><span>Transcribe</span><output>{{ form.max_concurrent_transcribe }}</output></span>
             <input
               v-model.number="form.max_concurrent_transcribe"
-              type="number"
+              type="range"
               min="1"
-              max="20"
-              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              max="10"
+              class="mt-2 w-full accent-accent"
             />
           </label>
           <label class="block text-sm">
-            <span class="text-ink-500">Dub</span>
+            <span class="flex items-center justify-between text-ink-500"><span>Dub</span><output>{{ form.max_concurrent_dub }}</output></span>
             <input
               v-model.number="form.max_concurrent_dub"
-              type="number"
+              type="range"
               min="1"
-              max="20"
-              class="mt-1 w-full rounded-md border border-ink-300 bg-transparent px-3 py-2 dark:border-ink-600"
+              max="10"
+              class="mt-2 w-full accent-accent"
             />
           </label>
         </div>
-        <span class="block text-xs text-ink-500">Each limit accepts 1–20. Changes apply on the next worker poll.</span>
+        <span class="block text-xs text-ink-500">Each limit accepts 1–10. Changes apply on the next worker poll.</span>
       </fieldset>
     </form>
 

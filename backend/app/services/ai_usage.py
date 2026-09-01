@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
@@ -13,10 +17,16 @@ from app.ai.errors import AIProviderError
 from app.ai.models import AIResponse, CostSource, Message
 from app.ai.providers.base import AIProvider
 from app.ai.providers.openrouter import PROVIDER_ID as OPENROUTER_PROVIDER_ID
+from app.core.logging import get_logger
 from app.db.models import AiUsageRecordRow
 from app.services.ai_cost import estimate_cost_micro_usd, usd_to_micro
 from app.services.ai_ranking import TRANSLATION_RANKING_OPS
 from app.translation.openrouter.client import ChatResult, batch_base_model
+
+
+_USAGE_OUTBOX_LOCK = threading.Lock()
+_USAGE_OUTBOX_FILENAME = "openrouter-usage-outbox.jsonl"
+logger = get_logger("ai_usage")
 
 
 def utcnow() -> datetime:
@@ -136,32 +146,50 @@ def make_openrouter_http_usage_hook(
         total_tokens = _as_int(usage_body.get("total_tokens")) or (input_tokens + output_tokens)
         actual_cost = _as_float(usage_body.get("cost"))
 
-        usage.record(
-            model_id=str(model_id),
-            operation_type=operation,
-            trigger_type=trigger_type,
-            job_id=job_id,
-            status="success" if ok else "failed",
-            failure_category=str(error) if error else None,
-            outcome=None if ok else "technical_failure",
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            actual_cost_usd=actual_cost,
-            tier=tier,
-            provider_id=provider_id,
-            request_id=(
+        prepared = {
+            "model_id": str(model_id),
+            "operation_type": operation,
+            "trigger_type": trigger_type,
+            "job_id": job_id,
+            "status": "success" if ok else "failed",
+            "failure_category": str(error) if error else None,
+            "outcome": None if ok else "technical_failure",
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "actual_cost_usd": actual_cost,
+            "tier": tier,
+            "provider_id": provider_id,
+            "request_id": (
                 record.get("request_id")
                 if isinstance(record.get("request_id"), str)
                 else request.get("custom_id")
                 if isinstance(request.get("custom_id"), str)
                 else None
             ),
-            attempt_number=http_attempt if http_attempt is not None else attempt_number,
-        )
-        usage.db.commit()
+            "attempt_number": http_attempt if http_attempt is not None else attempt_number,
+        }
+        usage.record_http_attempt(prepared)
 
     return _hook
+
+
+def _usage_outbox_path() -> Path:
+    from app.core.config import get_app_config
+
+    path = get_app_config().config_dir / "logs" / _USAGE_OUTBOX_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _is_same_http_attempt(row: AiUsageRecordRow, record: dict[str, Any]) -> bool:
+    """Avoid duplicate replay after a commit outcome was uncertain."""
+    return (
+        row.provider_id == record.get("provider_id")
+        and row.request_id == record.get("request_id")
+        and row.attempt_number == record.get("attempt_number")
+        and row.operation_type == record.get("operation_type")
+    )
 
 
 def _cost_usd_value(value: Decimal | float | None) -> float | None:
@@ -176,6 +204,111 @@ class AiUsageService:
 
         self.db = db
         self.catalog = ModelCatalogService(db)
+
+    def record_http_attempt(self, prepared: dict[str, Any]) -> None:
+        """Record an HTTP attempt, retaining it locally if SQLite is temporarily unavailable.
+
+        OpenRouter has already accepted the request when this runs.  Losing its
+        accounting because the local database is briefly locked makes the
+        dashboard permanently under-report usage, so a small metadata-only
+        outbox is safer than propagating a bookkeeping failure to the caller.
+        """
+        self.replay_pending_http_attempts()
+        try:
+            self.record(**prepared)
+            self.db.commit()
+        except Exception as exc:  # noqa: BLE001
+            self.db.rollback()
+            self._queue_http_attempt(prepared)
+            logger.warning(
+                "Deferred OpenRouter usage record request_id=%s operation=%s: %s",
+                prepared.get("request_id"),
+                prepared.get("operation_type"),
+                exc,
+            )
+
+    def replay_pending_http_attempts(self) -> int:
+        """Replay deferred accounting rows once the database becomes writable."""
+        path = _usage_outbox_path()
+        with _USAGE_OUTBOX_LOCK:
+            if not path.exists():
+                return 0
+            try:
+                raw_lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError as exc:
+                logger.warning("Could not read deferred OpenRouter usage: %s", exc)
+                return 0
+
+            remaining: list[str] = []
+            restored = 0
+            for line in raw_lines:
+                try:
+                    prepared = json.loads(line)
+                    if not isinstance(prepared, dict):
+                        raise ValueError("record is not an object")
+                    if not self._http_attempt_exists(prepared):
+                        self.record(**prepared)
+                        self.db.commit()
+                    restored += 1
+                except Exception as exc:  # noqa: BLE001
+                    self.db.rollback()
+                    remaining.append(line)
+                    logger.warning("Could not replay deferred OpenRouter usage: %s", exc)
+
+            try:
+                if remaining:
+                    path.write_text("\n".join(remaining) + "\n", encoding="utf-8")
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Could not update deferred OpenRouter usage outbox: %s", exc)
+            return restored
+
+    def _http_attempt_exists(self, prepared: dict[str, Any]) -> bool:
+        request_id = prepared.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return False
+        from sqlalchemy import select
+
+        rows = self.db.scalars(
+            select(AiUsageRecordRow).where(
+                AiUsageRecordRow.provider_id == prepared.get("provider_id"),
+                AiUsageRecordRow.request_id == request_id,
+                AiUsageRecordRow.attempt_number == prepared.get("attempt_number"),
+                AiUsageRecordRow.operation_type == prepared.get("operation_type"),
+            )
+        ).all()
+        return any(_is_same_http_attempt(row, prepared) for row in rows)
+
+    @staticmethod
+    def _queue_http_attempt(prepared: dict[str, Any]) -> None:
+        # `prepared` contains only accounting metadata and token totals—never
+        # request messages or subtitle content.
+        allowed = {
+            "model_id",
+            "operation_type",
+            "trigger_type",
+            "job_id",
+            "status",
+            "failure_category",
+            "outcome",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "actual_cost_usd",
+            "tier",
+            "provider_id",
+            "request_id",
+            "attempt_number",
+        }
+        safe = {key: prepared.get(key) for key in allowed}
+        path = _usage_outbox_path()
+        payload = json.dumps(safe, separators=(",", ":"), ensure_ascii=False)
+        with _USAGE_OUTBOX_LOCK:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(payload + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def record(
         self,

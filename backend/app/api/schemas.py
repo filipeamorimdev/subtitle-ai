@@ -34,11 +34,11 @@ class SettingsUpdate(BaseModel):
     source_languages: list[str] | None = None
     path_mappings: list[PathMappingIn] | None = None
     batch_size: int | None = Field(default=None, ge=1, le=200)
-    max_concurrent_translate: int | None = Field(default=None, ge=1, le=20)
-    max_concurrent_extract: int | None = Field(default=None, ge=1, le=20)
-    max_concurrent_request: int | None = Field(default=None, ge=1, le=20)
-    max_concurrent_transcribe: int | None = Field(default=None, ge=1, le=20)
-    max_concurrent_dub: int | None = Field(default=None, ge=1, le=20)
+    max_concurrent_translate: int | None = Field(default=None, ge=1, le=10)
+    max_concurrent_extract: int | None = Field(default=None, ge=1, le=10)
+    max_concurrent_request: int | None = Field(default=None, ge=1, le=10)
+    max_concurrent_transcribe: int | None = Field(default=None, ge=1, le=10)
+    max_concurrent_dub: int | None = Field(default=None, ge=1, le=10)
     asr_local_model: Literal["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"] | None = None
     automatic_fallback_enabled: bool | None = None
     automatic_scan_interval_minutes: int | None = Field(default=None, ge=1, le=1440)
@@ -57,7 +57,6 @@ class SettingsUpdate(BaseModel):
     monthly_budget_amount_usd: float | None = Field(default=None, ge=0)
     clear_monthly_budget_amount: bool = False
     allow_manual_budget_override: bool | None = None
-    require_translation_approval: bool | None = None
     operator_model_id: str | None = None
     clear_operator_model_id: bool = False
 
@@ -98,7 +97,6 @@ class SettingsOut(BaseModel):
     monthly_budget_enabled: bool = False
     monthly_budget_amount_usd: float | None = None
     allow_manual_budget_override: bool = False
-    require_translation_approval: bool = False
     operator_model_id: str | None = None
 
 
@@ -626,7 +624,6 @@ class LocalizationTaskOut(BaseModel):
     executions: list[JobOut] = Field(default_factory=list)
     ai: TaskAiSummaryOut | None = None
     progress_steps: list[dict[str, str]] = Field(default_factory=list)
-    draft_subtitle_path: str | None = None
 
 
 class GlossaryEntryIn(BaseModel):

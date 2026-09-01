@@ -137,14 +137,14 @@ class SettingsService:
             media_roots=list(config.resolved_media_roots),
             path_mappings=[PathMappingIn(**m) for m in (row.path_mappings or [])],
             batch_size=row.batch_size,
-            max_concurrent_translate=row.max_concurrent_translate,
-            max_concurrent_extract=row.max_concurrent_extract,
-            max_concurrent_request=row.max_concurrent_request,
+            max_concurrent_translate=_int(row.max_concurrent_translate, 1, minimum=1, maximum=10),
+            max_concurrent_extract=_int(row.max_concurrent_extract, 1, minimum=1, maximum=10),
+            max_concurrent_request=_int(row.max_concurrent_request, 1, minimum=1, maximum=10),
             max_concurrent_transcribe=_int(
-                getattr(row, "max_concurrent_transcribe", 1), 1, minimum=1, maximum=20
+                getattr(row, "max_concurrent_transcribe", 1), 1, minimum=1, maximum=10
             ),
             max_concurrent_dub=_int(
-                getattr(row, "max_concurrent_dub", 1), 1, minimum=1, maximum=20
+                getattr(row, "max_concurrent_dub", 1), 1, minimum=1, maximum=10
             ),
             asr_local_model=normalize_asr_local_model(getattr(row, "asr_local_model", None)),
             automatic_fallback_enabled=_bool(
@@ -191,9 +191,6 @@ class SettingsService:
             allow_manual_budget_override=_bool(
                 getattr(row, "allow_manual_budget_override", False), False
             ),
-            require_translation_approval=_bool(
-                getattr(row, "require_translation_approval", False), False
-            ),
             operator_model_id=(
                 (getattr(row, "operator_model_id", None) or "").strip() or None
             ),
@@ -202,11 +199,11 @@ class SettingsService:
     def concurrency_limits(self) -> dict[str, int]:
         row = self.get_or_create_row()
         return {
-            "translate": max(1, int(row.max_concurrent_translate or 1)),
-            "extract": max(1, int(row.max_concurrent_extract or 1)),
-            "request": max(1, int(row.max_concurrent_request or 1)),
-            "transcribe": max(1, int(getattr(row, "max_concurrent_transcribe", None) or 1)),
-            "dub": max(1, int(getattr(row, "max_concurrent_dub", None) or 1)),
+            "translate": _int(row.max_concurrent_translate, 1, minimum=1, maximum=10),
+            "extract": _int(row.max_concurrent_extract, 1, minimum=1, maximum=10),
+            "request": _int(row.max_concurrent_request, 1, minimum=1, maximum=10),
+            "transcribe": _int(getattr(row, "max_concurrent_transcribe", None), 1, minimum=1, maximum=10),
+            "dub": _int(getattr(row, "max_concurrent_dub", None), 1, minimum=1, maximum=10),
         }
 
     def is_automatic_fallback_enabled(self) -> bool:
@@ -309,8 +306,6 @@ class SettingsService:
             row.monthly_budget_amount_micro_usd = usd_to_micro(payload.monthly_budget_amount_usd)
         if payload.allow_manual_budget_override is not None:
             row.allow_manual_budget_override = payload.allow_manual_budget_override
-        if payload.require_translation_approval is not None:
-            row.require_translation_approval = payload.require_translation_approval
         if payload.clear_operator_model_id:
             row.operator_model_id = None
         elif payload.operator_model_id is not None:

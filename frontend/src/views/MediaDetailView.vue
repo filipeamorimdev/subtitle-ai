@@ -21,8 +21,8 @@ import {
   canCancelTask,
   canRetryBazarrSync,
   canRetryTask,
-  canApproveTask,
   isActiveTaskStatus,
+  isSupersededLanguageBadge,
   languageChipClass,
   taskStatusLabel,
 } from '../utils/status'
@@ -35,6 +35,7 @@ const localization = ref<LanguageAvailability[]>([])
 const tasks = ref<LocalizationTask[]>([])
 const actions = ref<JobAction[]>([])
 const error = ref<string | null>(null)
+const detailLoadWarning = ref<string | null>(null)
 const actionError = ref<string | null>(null)
 const modalOpen = ref(false)
 const dubModalOpen = ref(false)
@@ -47,7 +48,10 @@ let stopLive: (() => void) | undefined
 const mediaId = computed(() => Number(props.id))
 
 const visibleLanguages = computed(() =>
-  localization.value.filter((lang) => lang.available || lang.task_status),
+  localization.value.filter(
+    (lang) =>
+      (lang.available || lang.task_status) && !isSupersededLanguageBadge(lang, localization.value),
+  ),
 )
 
 const dubbedTasks = computed(() => {
@@ -88,12 +92,7 @@ const historyActions = computed(() => {
 const verifyFailedTasks = computed(() => tasks.value.filter((task) => canRetryBazarrSync(task)))
 
 const runningTasks = computed(() =>
-  tasks.value.filter(
-    (task) =>
-      isActiveTaskStatus(task.status) &&
-      task.status !== 'awaiting_approval' &&
-      !canRetryBazarrSync(task),
-  ),
+  tasks.value.filter((task) => isActiveTaskStatus(task.status) && !canRetryBazarrSync(task)),
 )
 
 const matchedCandidate = computed<Candidate | null>(() => {
@@ -209,25 +208,68 @@ function languageLabel(lang: LanguageAvailability) {
   return '—'
 }
 
+async function resolveWithin<T>(promise: Promise<T>, label: string, timeoutMs = 15_000): Promise<T> {
+  let timeout: number | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = window.setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout != null) window.clearTimeout(timeout)
+  }
+}
+
 async function load() {
   if (!Number.isFinite(mediaId.value)) {
     error.value = 'Invalid media id'
     return
   }
+  error.value = null
+  detailLoadWarning.value = null
+  media.value = null
   try {
-    const [mediaRow, loc, taskList, history] = await Promise.all([
-      api.getMedia(mediaId.value),
-      api.getMediaLocalization(mediaId.value),
-      api.getLocalizationTasks({ media_item_id: mediaId.value, limit: 50, include_detail: true }),
-      api.getMediaActions(mediaId.value),
-    ])
-    media.value = mediaRow
-    localization.value = loc.languages
-    tasks.value = taskList
-    actions.value = history
-    error.value = null
+    // The media row is local and must not be hidden behind slower optional
+    // calls (notably the live Bazarr availability check).
+    media.value = await resolveWithin(api.getMedia(mediaId.value), 'Media details')
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
+    return
+  }
+
+  const results = await Promise.allSettled([
+    resolveWithin(api.getMediaLocalization(mediaId.value), 'Subtitle availability'),
+    resolveWithin(
+      api.getLocalizationTasks({ media_item_id: mediaId.value, limit: 50, include_detail: true }),
+      'Localization task history',
+    ),
+    resolveWithin(api.getMediaActions(mediaId.value), 'Job history'),
+  ])
+  const [localizationResult, tasksResult, actionsResult] = results
+  const unavailable: string[] = []
+
+  if (localizationResult.status === 'fulfilled') {
+    localization.value = localizationResult.value.languages
+  } else {
+    localization.value = []
+    unavailable.push('subtitle availability')
+  }
+  if (tasksResult.status === 'fulfilled') {
+    tasks.value = tasksResult.value
+  } else {
+    tasks.value = []
+    unavailable.push('localization tasks')
+  }
+  if (actionsResult.status === 'fulfilled') {
+    actions.value = actionsResult.value
+  } else {
+    actions.value = []
+    unavailable.push('job history')
+  }
+  if (unavailable.length) {
+    detailLoadWarning.value = `Could not load ${unavailable.join(', ')}. You can refresh to try again.`
   }
 }
 
@@ -237,20 +279,6 @@ async function retryTask() {
   actionError.value = null
   try {
     await api.retryLocalizationTask(selectedTask.value.id)
-    await load()
-  } catch (err) {
-    actionError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    busy.value = false
-  }
-}
-
-async function approveTask() {
-  if (!selectedTask.value || busy.value) return
-  busy.value = true
-  actionError.value = null
-  try {
-    await api.approveLocalizationTask(selectedTask.value.id)
     await load()
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
@@ -345,6 +373,12 @@ onUnmounted(() => {
     <div v-else-if="!media" class="text-sm text-ink-500">Loading…</div>
 
     <template v-else>
+      <p
+        v-if="detailLoadWarning"
+        class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
+      >
+        {{ detailLoadWarning }}
+      </p>
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
           <p
@@ -359,15 +393,6 @@ onUnmounted(() => {
           <p class="mt-1 text-sm capitalize text-ink-500">{{ mediaMeta }}</p>
         </div>
         <div class="flex flex-wrap gap-2">
-          <button
-            v-if="selectedTask && canApproveTask(selectedTask.status)"
-            type="button"
-            class="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white"
-            :disabled="busy"
-            @click="approveTask"
-          >
-            Approve translation
-          </button>
           <button
             v-if="selectedTask && canRetryTask(selectedTask.status)"
             type="button"

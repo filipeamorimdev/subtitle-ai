@@ -271,7 +271,7 @@ async function testOpenRouter(fresh = false) {
       </section>
 
       <section class="space-y-4">
-        <h3 class="font-display text-lg font-semibold">Speech-to-text</h3>
+        <h3 class="font-display text-lg font-semibold">Speech to text</h3>
         <fieldset
           class="min-w-0 space-y-4 overflow-hidden rounded-xl border border-ink-200 bg-white/80 p-5 dark:border-ink-800 dark:bg-ink-900/60"
         >

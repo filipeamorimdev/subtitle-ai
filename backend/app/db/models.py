@@ -49,7 +49,6 @@ class SettingsRow(Base):
     monthly_budget_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     monthly_budget_amount_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
     allow_manual_budget_override: Mapped[bool] = mapped_column(Boolean, default=False)
-    require_translation_approval: Mapped[bool] = mapped_column(Boolean, default=False)
     operator_model_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

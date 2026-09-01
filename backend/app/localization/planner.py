@@ -100,8 +100,6 @@ class TaskPlanner:
         task = self.tasks.get(task_id)
         if task is None:
             return None
-        if task.status == "awaiting_approval":
-            return task
         if task.status not in ACTIVE_STATUSES and task.status != "planning":
             if task.status in {"failed", "blocked"}:
                 media = self.media.get(task.media_item_id)
@@ -612,8 +610,6 @@ class TaskPlanner:
         if task.status == "verifying":
             return True
         if latest_translate is None or latest_translate.status != "completed":
-            return False
-        if latest_translate.reason_code == "awaiting_approval":
             return False
         existing = find_existing_sidecar(
             latest_translate.target_subtitle_path,

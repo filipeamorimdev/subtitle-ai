@@ -20,10 +20,9 @@ import type {
 } from '../types'
 import { formatDateTime } from '../utils/datetime'
 import { localizationTaskTitle, mediaHref } from '../utils/mediaNav'
+import { isOpenJobStatus } from '../utils/taskProgress'
 import {
-  canApproveTask,
   canRetryTask,
-  isActiveTaskStatus,
   isUnresolvedFailedTask,
   jobKindLabel,
   pipelineStage,
@@ -112,7 +111,6 @@ const stageCounts = computed(() => {
     transcribing: 0,
     translating: 0,
     verifying: 0,
-    approval: 0,
     dubbing: 0,
     dub_blocked: 0,
     failed: 0,
@@ -198,13 +196,6 @@ const subtitleCards = computed<PipelineCard[]>(() => {
       accent: 'border-l-amber-500',
     },
     {
-      key: 'approval',
-      label: 'Approval',
-      count: c.approval,
-      to: '/media?filter=in-progress',
-      accent: 'border-l-violet-500',
-    },
-    {
       key: 'failed',
       label: 'Failed',
       count: c.failed,
@@ -236,24 +227,20 @@ const audioCards = computed<PipelineCard[]>(() => {
 })
 
 const liveTasks = computed(() =>
-  enrichedTasks.value
-    .filter((task) => isActiveTaskStatus(task.status) && task.status !== 'awaiting_approval')
+  currentTasksDetailed.value
+    .filter((task) => task.executions?.some((job) => isOpenJobStatus(job.status)))
     .slice(0, LIVE_LIMIT),
 )
 
 const liveOverflow = computed(() => {
-  const active = enrichedTasks.value.filter(
-    (task) => isActiveTaskStatus(task.status) && task.status !== 'awaiting_approval',
+  const active = currentTasksDetailed.value.filter((task) =>
+    task.executions?.some((job) => isOpenJobStatus(job.status)),
   ).length
   return Math.max(0, active - LIVE_LIMIT)
 })
 
 const failedTasks = computed(() =>
   enrichedTasks.value.filter((t) => isUnresolvedFailedTask(t, enrichedTasks.value)).slice(0, 8),
-)
-
-const approvalTasks = computed(() =>
-  enrichedTasks.value.filter((t) => canApproveTask(t.status)).slice(0, 8),
 )
 
 const dubBlockedTasks = computed(() =>
@@ -286,7 +273,11 @@ const budgetHot = computed(
 
 type Intervention = {
   key: string
-  message: string
+  message?: string
+  mediaTitle?: string
+  mediaTo?: string
+  messagePrefix?: string
+  messageSuffix?: string
   to?: string
   actionLabel?: string
   onAction?: () => void
@@ -331,18 +322,12 @@ const interventions = computed<Intervention[]>(() => {
       actionLabel: 'Configure models',
     })
   }
-  for (const task of approvalTasks.value) {
-    items.push({
-      key: `approve-${task.id}`,
-      message: `Approve: ${localizationTaskTitle(task)}`,
-      actionLabel: 'Approve',
-      onAction: () => approveTask(task.id),
-    })
-  }
   for (const task of failedTasks.value) {
     items.push({
       key: `fail-${task.id}`,
-      message: `${localizationTaskTitle(task)}${task.error_message ? ` — ${task.error_message}` : ''}`,
+      mediaTitle: localizationTaskTitle(task),
+      mediaTo: mediaHref(task.media_item_id),
+      messageSuffix: task.error_message ? ` — ${task.error_message}` : '',
       to: mediaHref(task.media_item_id),
       actionLabel: canRetryTask(task.status) ? 'Retry' : 'Open',
       onAction: canRetryTask(task.status) ? () => retryTask(task.id) : undefined,
@@ -351,7 +336,9 @@ const interventions = computed<Intervention[]>(() => {
   for (const task of dubBlockedTasks.value) {
     items.push({
       key: `dub-block-${task.id}`,
-      message: `Dub blocked (need subtitles): ${localizationTaskTitle(task)}`,
+      mediaTitle: localizationTaskTitle(task),
+      mediaTo: mediaHref(task.media_item_id),
+      messagePrefix: 'Dub blocked (need subtitles): ',
       to: mediaHref(task.media_item_id),
       actionLabel: 'Localize subtitles',
     })
@@ -504,19 +491,6 @@ async function retryTask(id: number) {
   }
 }
 
-async function approveTask(id: number) {
-  if (actionBusyId.value != null) return
-  actionBusyId.value = id
-  actionError.value = null
-  try {
-    await api.approveLocalizationTask(id)
-    await Promise.all([loadTasks(), loadCurrentLocalization()])
-  } catch (err) {
-    actionError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    actionBusyId.value = null
-  }
-}
 
 async function cancelLiveTask(taskId: number) {
   actionError.value = null
@@ -644,7 +618,19 @@ onUnmounted(() => {
             :key="item.key"
             class="flex flex-wrap items-start justify-between gap-2 py-2.5 first:pt-0 last:pb-0"
           >
-            <p class="min-w-0 flex-1 text-sm text-ink-800 dark:text-ink-100">{{ item.message }}</p>
+            <p class="min-w-0 flex-1 text-sm text-ink-800 dark:text-ink-100">
+              <template v-if="item.mediaTitle && item.mediaTo">
+                {{ item.messagePrefix }}
+                <RouterLink
+                  class="font-medium text-accent hover:underline"
+                  :to="item.mediaTo"
+                >
+                  {{ item.mediaTitle }}
+                </RouterLink>
+                {{ item.messageSuffix }}
+              </template>
+              <template v-else>{{ item.message }}</template>
+            </p>
             <div class="flex shrink-0 gap-2">
               <button
                 v-if="item.onAction"
@@ -733,6 +719,18 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="rounded-md border border-l-4 border-ink-200 border-l-violet-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Translation cost</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
+              {{ formatUsd(periodCard?.translation_cost_usd) }}
+            </div>
+          </div>
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-amber-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
+            <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Repair cost</div>
+            <div class="mt-1 font-mono text-xl font-semibold">
+              {{ formatUsd(periodCard?.repair_cost_usd) }}
+            </div>
+          </div>
+          <div class="rounded-md border border-l-4 border-ink-200 border-l-violet-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
             <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Budget left</div>
             <div class="mt-1 font-mono text-xl font-semibold">
               <template v-if="aiOverview?.budget.enabled">
@@ -800,7 +798,7 @@ onUnmounted(() => {
         </template>
       </section>
 
-      <div>
+      <div v-if="liveTasks.length">
         <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
           <h2 class="text-xs font-semibold uppercase tracking-wide text-ink-500">Live work</h2>
           <RouterLink

@@ -2696,11 +2696,49 @@ class JobService:
             self.db.add(row)
             self._release_db()
 
+            # PGS OCR runs in a thread and can take a while on a full episode.
+            # Return its cue count to the event loop so the persisted job and
+            # live UI show it advancing instead of remaining at 0%.
+            loop = asyncio.get_running_loop()
+            last_progress = -1
+
+            def persist_ocr_progress(done: int, total: int) -> None:
+                nonlocal last_progress
+                if total <= 0:
+                    return
+                progress = min(89, 10 + int((done / total) * 79))
+                if progress == last_progress and done != total:
+                    return
+                last_progress = progress
+                current = self._fresh_job(job_id)
+                if current is None or current.status != "processing":
+                    self._release_db()
+                    return
+                current.progress = progress
+                current.progress_detail = f"OCR embedded PGS subtitles · cue {done}/{total}"
+                self.db.add(current)
+                self.db.commit()
+                from app.core.events import publish_job
+
+                publish_job(
+                    job_id=job_id,
+                    task_id=getattr(current, "task_id", None),
+                    status=current.status,
+                    progress=current.progress,
+                    job_kind=current.job_kind,
+                    detail=current.progress_detail,
+                )
+                self._release_db()
+
+            def on_ocr_progress(done: int, total: int) -> None:
+                loop.call_soon_threadsafe(persist_ocr_progress, done, total)
+
             await extract_embedded_track(
                 snapshot.media_path,
                 snapshot.extract_stream_index,
                 snapshot.target_subtitle_path,
                 language=snapshot.source_language or "en",
+                progress_callback=on_ocr_progress,
             )
 
             current = self.db.get(JobRow, job_id)
@@ -3126,37 +3164,9 @@ class JobService:
                 task_id, translate="done", validate="done", write="active"
             )
             target_path = Path(current.target_subtitle_path)
-            from app.jobs.translate import draft_subtitle_path, should_hold_for_approval
-
-            hold_approval = should_hold_for_approval(
-                require_approval=bool(getattr(public, "require_translation_approval", False)),
-                trigger_type=getattr(current, "trigger_type", None),
-                task_id=task_id,
-            )
-            if hold_approval:
-                draft_path = draft_subtitle_path(target_path)
-                write_srt_atomic(draft_path, outcome.document, overwrite=True)
-                if task_id:
-                    task_row = self.db.get(LocalizationTaskRow, int(task_id))
-                    if task_row is not None:
-                        meta = dict(task_row.metadata_json or {})
-                        meta["draft_subtitle_path"] = str(draft_path)
-                        task_row.metadata_json = meta
-                        self.db.add(task_row)
-                        self.db.commit()
-                        from app.localization.service import LocalizationTaskService
-
-                        LocalizationTaskService(self.db).transition(
-                            task_row,
-                            "awaiting_approval",
-                            substate="review",
-                            clear_error=True,
-                        )
-                self._set_task_checkpoints(task_id, write="done", sync="pending", verify="pending")
-            else:
-                write_srt_atomic(target_path, outcome.document, overwrite=False)
-                ensure_canonical_sidecar(target_path, current.target_language)
-                self._set_task_checkpoints(task_id, write="done", sync="active")
+            write_srt_atomic(target_path, outcome.document, overwrite=False)
+            ensure_canonical_sidecar(target_path, current.target_language)
+            self._set_task_checkpoints(task_id, write="done", sync="active")
 
             current.model = winning_model
             current.provider_id = winning_provider
@@ -3170,13 +3180,10 @@ class JobService:
             current.output_tokens = outcome.usage.output_tokens
             current.total_tokens = outcome.usage.total_tokens
             current.progress = 100
-            current.progress_detail = "Draft ready for approval" if hold_approval else "Written"
+            current.progress_detail = "Written"
             current.status = "completed"
             current.completed_at = utcnow()
-            if hold_approval:
-                current.reason_code = "awaiting_approval"
-                current.warning = "Translation written as a draft. Approve it to publish and sync Bazarr."
-            elif outcome.warnings:
+            if outcome.warnings:
                 current.warning = "; ".join(outcome.warnings)
                 current.reason_code = "markup_warning"
             else:
@@ -3197,27 +3204,24 @@ class JobService:
             )
 
             try:
-                if hold_approval:
-                    pass
-                else:
-                    await self._rescan(current)
-                    self._set_task_checkpoints(task_id, sync="done", verify="active")
-                    verified = await self._verify_target_with_backoff(current)
-                    if not verified:
-                        self._set_task_checkpoints(task_id, verify="failed")
-                        verify_warning = (
-                            "Bazarr rescan succeeded but the target subtitle was still "
-                            "reported missing after verification retries."
-                        )
-                        if current.warning:
-                            current.warning = f"{current.warning}; {verify_warning}"
-                        else:
-                            current.warning = verify_warning
-                        current.reason_code = "bazarr_verify_failed"
+                await self._rescan(current)
+                self._set_task_checkpoints(task_id, sync="done", verify="active")
+                verified = await self._verify_target_with_backoff(current)
+                if not verified:
+                    self._set_task_checkpoints(task_id, verify="failed")
+                    verify_warning = (
+                        "Bazarr rescan succeeded but the target subtitle was still "
+                        "reported missing after verification retries."
+                    )
+                    if current.warning:
+                        current.warning = f"{current.warning}; {verify_warning}"
                     else:
-                        self._set_task_checkpoints(task_id, verify="done")
-                        if not task_id:
-                            await self._discard_extracted_source_after_verify(current)
+                        current.warning = verify_warning
+                    current.reason_code = "bazarr_verify_failed"
+                else:
+                    self._set_task_checkpoints(task_id, verify="done")
+                    if not task_id:
+                        await self._discard_extracted_source_after_verify(current)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Bazarr rescan failed job_id=%s error=%s", job_id, exc)
                 self._set_task_checkpoints(task_id, sync="failed", verify="failed")

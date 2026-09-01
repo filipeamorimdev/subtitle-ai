@@ -44,7 +44,6 @@ export interface Settings {
   monthly_budget_enabled: boolean
   monthly_budget_amount_usd: number | null
   allow_manual_budget_override: boolean
-  require_translation_approval: boolean
   operator_model_id: string | null
 }
 
@@ -86,7 +85,6 @@ export interface SettingsUpdate {
   monthly_budget_amount_usd?: number | null
   clear_monthly_budget_amount?: boolean
   allow_manual_budget_override?: boolean
-  require_translation_approval?: boolean
   operator_model_id?: string | null
   clear_operator_model_id?: boolean
 }
@@ -293,7 +291,6 @@ export interface LocalizationTask {
   executions: Job[]
   ai: TaskAiSummary | null
   progress_steps: ProgressStep[]
-  draft_subtitle_path?: string | null
 }
 
 export interface JobAction {
@@ -557,7 +554,16 @@ export interface AiOverview {
   paid_cost_usd: number
   average_cost_usd: number | null
   average_latency_ms: number | null
-  cards: Record<string, { cost_usd: number; requests: number; clean_success_rate?: number | null }>
+  cards: Record<
+    string,
+    {
+      cost_usd: number
+      requests: number
+      clean_success_rate?: number | null
+      translation_cost_usd?: number
+      repair_cost_usd?: number
+    }
+  >
   budget: {
     enabled: boolean
     limit: number | null

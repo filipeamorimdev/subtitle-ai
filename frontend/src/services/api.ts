@@ -352,8 +352,6 @@ export const api = {
     request<LocalizationTask>(`/api/localization-tasks/${id}/retry`, { method: 'POST' }),
   cancelLocalizationTask: (id: number) =>
     request<LocalizationTask>(`/api/localization-tasks/${id}/cancel`, { method: 'POST' }),
-  approveLocalizationTask: (id: number) =>
-    request<LocalizationTask>(`/api/localization-tasks/${id}/approve`, { method: 'POST' }),
   getMediaGlossary: (mediaId: number, language: string) =>
     request<{
       scope_key: string

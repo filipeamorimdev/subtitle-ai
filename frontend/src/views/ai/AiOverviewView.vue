@@ -22,6 +22,64 @@ const jobTimes = ref<AiModelJobTimes | null>(null)
 const jobTimesError = ref<string | null>(null)
 const jobTimesLoading = ref(false)
 
+type RankingRow = AiOverview['ranking'][number]
+type RankingSortKey =
+  | 'configured_priority'
+  | 'adaptive_rank'
+  | 'provider'
+  | 'model_id'
+  | 'clean_success_rate'
+  | 'average_cost_per_clean_success_usd'
+  | 'average_latency_ms'
+  | 'average_job_duration_seconds'
+  | 'sample_count'
+
+const rankingSort = ref<{ key: RankingSortKey; direction: 'asc' | 'desc' } | null>(null)
+
+const rankingColumns: Array<{ key: RankingSortKey; label: string; title?: string }> = [
+  { key: 'configured_priority', label: 'Priority' },
+  { key: 'adaptive_rank', label: 'Adaptive' },
+  { key: 'provider', label: 'Provider' },
+  { key: 'model_id', label: 'Model' },
+  { key: 'clean_success_rate', label: 'Clean' },
+  { key: 'average_cost_per_clean_success_usd', label: 'Cost' },
+  { key: 'average_latency_ms', label: 'Speed' },
+  { key: 'average_job_duration_seconds', label: 'Mean time', title: 'Wall-clock time of successful finished translation jobs' },
+  { key: 'sample_count', label: 'Samples' },
+]
+
+function rankingSortValue(row: RankingRow, key: RankingSortKey): string | number | null | undefined {
+  if (key === 'provider') return row.provider_name || row.provider_id || 'OpenRouter'
+  return row[key]
+}
+
+function sortRanking(key: RankingSortKey) {
+  rankingSort.value = rankingSort.value?.key === key
+    ? { key, direction: rankingSort.value.direction === 'asc' ? 'desc' : 'asc' }
+    : { key, direction: 'asc' }
+}
+
+function rankingSortLabel(key: RankingSortKey): string {
+  if (rankingSort.value?.key !== key) return ''
+  return rankingSort.value.direction === 'asc' ? ' (ascending)' : ' (descending)'
+}
+
+const sortedRanking = computed(() => {
+  const rows = overview.value?.ranking ?? []
+  if (!rankingSort.value) return rows
+
+  const { key, direction } = rankingSort.value
+  const multiplier = direction === 'asc' ? 1 : -1
+  return [...rows].sort((a, b) => {
+    const aValue = rankingSortValue(a, key)
+    const bValue = rankingSortValue(b, key)
+    if (aValue == null) return bValue == null ? 0 : 1
+    if (bValue == null) return -1
+    if (typeof aValue === 'number' && typeof bValue === 'number') return (aValue - bValue) * multiplier
+    return String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: 'base' }) * multiplier
+  })
+})
+
 function formatUsd(n: number | null | undefined, digits = 2): string {
   if (n == null) return '—'
   if (n >= 1) return `$${n.toFixed(2)}`
@@ -227,19 +285,27 @@ onMounted(load)
             <table class="min-w-full text-left text-sm">
               <thead class="text-xs uppercase text-ink-500">
                 <tr>
-                  <th class="py-2 pr-3">Priority</th>
-                  <th class="py-2 pr-3">Adaptive</th>
-                  <th class="py-2 pr-3">Provider</th>
-                  <th class="py-2 pr-3">Model</th>
-                  <th class="py-2 pr-3">Clean</th>
-                  <th class="py-2 pr-3">Cost</th>
-                  <th class="py-2 pr-3">Speed</th>
-                  <th class="py-2 pr-3" title="Wall-clock time of successful finished translation jobs">Mean time</th>
-                  <th class="py-2 pr-3">Samples</th>
+                  <th
+                    v-for="column in rankingColumns"
+                    :key="column.key"
+                    class="py-2 pr-3"
+                    :title="column.title"
+                    :aria-sort="rankingSort?.key === column.key ? (rankingSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'"
+                  >
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 hover:text-ink-900 dark:hover:text-white"
+                      :aria-label="`Sort by ${column.label}${rankingSortLabel(column.key)}`"
+                      @click="sortRanking(column.key)"
+                    >
+                      {{ column.label }}
+                      <span aria-hidden="true">{{ rankingSort?.key === column.key ? (rankingSort.direction === 'asc' ? '↑' : '↓') : '↕' }}</span>
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in overview.ranking" :key="`${row.provider_id || 'openrouter'}:${row.model_id}`" class="border-t border-ink-100 dark:border-ink-800">
+                <tr v-for="row in sortedRanking" :key="`${row.provider_id || 'openrouter'}:${row.model_id}`" class="border-t border-ink-100 dark:border-ink-800">
                   <td class="py-2 pr-3">
                     <span v-if="row.configured_priority != null" class="rounded bg-ink-100 px-1.5 py-0.5 text-xs font-semibold dark:bg-ink-800">
                       Priority #{{ row.configured_priority }}

@@ -37,7 +37,7 @@ def test_stats_aggregates(tmp_path):
                 created_at=now,
             ),
             AiUsageRecordRow(
-                operation_type="translation",
+                operation_type="translation_repair",
                 trigger_type="manual",
                 model_id="paid/c",
                 tier="paid",
@@ -75,6 +75,8 @@ def test_stats_aggregates(tmp_path):
     assert overview["paid_requests"] == 1
     assert overview["tokens"]["total"] == 440
     assert overview["paid_cost_usd"] == pytest.approx(0.0041)
+    assert overview["cards"]["today"]["translation_cost_usd"] == pytest.approx(0)
+    assert overview["cards"]["today"]["repair_cost_usd"] == pytest.approx(0.0041)
     usage = AiStatsService(db).usage_page(period="all")
     assert usage["total"] == 3
     models = {m["model_id"]: m for m in usage["by_model"]}
@@ -83,6 +85,43 @@ def test_stats_aggregates(tmp_path):
     failed = [r for r in usage["items"] if r["status"] == "failed"]
     assert failed[0]["failure_category"] == "rate_limit"
     assert failed[0]["trigger_type"] == "automatic"
+
+
+def test_overview_separates_translation_and_repair_costs(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'costs.db'}")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    db.add(SettingsRow(id=1, openrouter_model="x", monthly_budget_enabled=False))
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        [
+            AiUsageRecordRow(
+                operation_type="translation",
+                trigger_type="manual",
+                model_id="paid/a",
+                tier="paid",
+                status="success",
+                estimated_cost_micro_usd=1200,
+                actual_cost_micro_usd=1200,
+                created_at=now,
+            ),
+            AiUsageRecordRow(
+                operation_type="translation_repair",
+                trigger_type="manual",
+                model_id="paid/a",
+                tier="paid",
+                status="success",
+                estimated_cost_micro_usd=800,
+                actual_cost_micro_usd=800,
+                created_at=now,
+            ),
+        ]
+    )
+    db.commit()
+
+    overview = AiStatsService(db).overview("today")
+    assert overview["cards"]["today"]["translation_cost_usd"] == pytest.approx(0.0012)
+    assert overview["cards"]["today"]["repair_cost_usd"] == pytest.approx(0.0008)
 
 
 def _session(tmp_path):

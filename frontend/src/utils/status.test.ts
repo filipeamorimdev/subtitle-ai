@@ -2,9 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   canPauseJob,
   canResumeJob,
-  canRetryTask,
-  isActiveTaskStatus,
   isUnresolvedFailedTask,
+  isSupersededLanguageBadge,
   latestTasksByLanguage,
   latestTasksByLanguageCapability,
   pipelineStage,
@@ -45,9 +44,6 @@ describe('task status helpers', () => {
   it('labels processing substates', () => {
     expect(taskStatusLabel('processing', 'extracting_source')).toBe('Extracting')
     expect(taskStatusLabel('processing', 'dubbing')).toBe('Dubbing')
-    expect(taskStatusLabel('awaiting_approval')).toBe('Awaiting approval')
-    expect(isActiveTaskStatus('awaiting_approval')).toBe(true)
-    expect(canRetryTask('awaiting_approval')).toBe(true)
   })
 
   it('pauses pending jobs and resumes paused jobs', () => {
@@ -85,6 +81,18 @@ describe('task status helpers', () => {
     expect(map.get('pt-PT:audio')?.id).toBe(2)
   })
 
+  it('hides a superseded generic-language terminal badge', () => {
+    const cancelled = { language_code: 'pt', available: false, task_status: 'cancelled' }
+    const completed = { language_code: 'pt-PT', available: true, task_status: 'completed' }
+    expect(isSupersededLanguageBadge(cancelled, [cancelled, completed])).toBe(true)
+  })
+
+  it('does not treat sibling locales as interchangeable', () => {
+    const failedBrazil = { language_code: 'pt-BR', available: false, task_status: 'failed' }
+    const completedPortugal = { language_code: 'pt-PT', available: true, task_status: 'completed' }
+    expect(isSupersededLanguageBadge(failedBrazil, [failedBrazil, completedPortugal])).toBe(false)
+  })
+
   it('classifies pipeline stages without lumping dub into translate', () => {
     expect(pipelineStage(task({ status: 'processing', substate: 'translating' }))).toBe('translating')
     expect(pipelineStage(task({ status: 'processing', substate: 'transcribing_source' }))).toBe(
@@ -109,7 +117,6 @@ describe('task status helpers', () => {
       ),
     ).toBe('dub_blocked')
     expect(pipelineStage(task({ status: 'waiting_for_source' }))).toBe('requesting')
-    expect(pipelineStage(task({ status: 'awaiting_approval' }))).toBe('approval')
   })
 })
 

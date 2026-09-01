@@ -184,14 +184,15 @@ async function submit() {
 </script>
 
 <template>
-  <div
-    v-if="open"
-    class="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/50 p-4 sm:items-center"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="request-dub-title"
-    @click.self="emit('close')"
-  >
+  <Teleport to="body">
+    <div
+      v-if="open"
+      class="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/50 p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="request-dub-title"
+      @click.self="emit('close')"
+    >
     <div
       class="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl border border-ink-200 bg-white p-5 shadow-xl dark:border-ink-700 dark:bg-ink-900"
     >
@@ -371,5 +372,6 @@ async function submit() {
         </div>
       </div>
     </div>
-  </div>
+    </div>
+  </Teleport>
 </template>

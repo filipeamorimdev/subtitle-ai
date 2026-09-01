@@ -232,3 +232,47 @@ async def test_list_models_records_catalog_list(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0].operation_type == "catalog_list"
     assert rows[0].status == "success"
+
+
+def test_usage_write_failure_is_deferred_and_replayed(tmp_path, monkeypatch):
+    db = _db(tmp_path, monkeypatch)
+    usage = AiUsageService(db)
+    original_record = usage.record
+    calls = {"count": 0}
+
+    def fail_once(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("database is locked")
+        return original_record(**kwargs)
+
+    monkeypatch.setattr(usage, "record", fail_once)
+    prepared = {
+        "model_id": "openai/gpt-4o-mini",
+        "operation_type": "translation",
+        "trigger_type": "manual",
+        "job_id": None,
+        "status": "success",
+        "failure_category": None,
+        "outcome": None,
+        "input_tokens": 3,
+        "output_tokens": 5,
+        "total_tokens": 8,
+        "actual_cost_usd": 0.0,
+        "tier": "free",
+        "provider_id": "openrouter",
+        "request_id": "deferred-request",
+        "attempt_number": 1,
+    }
+
+    usage.record_http_attempt(prepared)
+    outbox = tmp_path / "config" / "logs" / "openrouter-usage-outbox.jsonl"
+    assert outbox.exists()
+    assert "messages" not in outbox.read_text(encoding="utf-8")
+    assert list(db.scalars(select(AiUsageRecordRow)).all()) == []
+
+    assert usage.replay_pending_http_attempts() == 1
+    rows = list(db.scalars(select(AiUsageRecordRow)).all())
+    assert len(rows) == 1
+    assert rows[0].request_id == "deferred-request"
+    assert not outbox.exists()

@@ -17,7 +17,6 @@ export function latestActiveJob(task: LocalizationTask): Job | null {
 
 export function taskProgressPct(task: LocalizationTask) {
   if (task.status === 'waiting_for_source') return 0
-  if (task.status === 'awaiting_approval') return 100
   const jobs = task.executions || []
   const active = [...jobs].reverse().find((item) => isOpenJobStatus(item.status))
   if (active) return Math.round(Math.min(100, Math.max(0, active.progress ?? 0)))

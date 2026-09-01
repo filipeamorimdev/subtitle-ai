@@ -1,8 +1,6 @@
-"""Translate-job helpers (prompts, draft sidecars, reading-speed repair)."""
+"""Translate-job helpers (prompts and reading-speed repair)."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -25,16 +23,3 @@ def extra_prompt_context(db: Session, row: JobRow) -> tuple[str, str]:
                 target_language=row.target_language,
             )
     return locale, glossary
-
-
-def draft_subtitle_path(target: Path) -> Path:
-    return target.with_name(f"{target.stem}.draft{target.suffix}")
-
-
-def should_hold_for_approval(
-    *,
-    require_approval: bool,
-    trigger_type: str | None,
-    task_id: int | None,
-) -> bool:
-    return bool(require_approval and (trigger_type or "manual") == "manual" and task_id)

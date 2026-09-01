@@ -144,6 +144,27 @@ class AiStatsService:
             func.coalesce(
                 func.sum(case((AiUsageRecordRow.tier == "paid", cost_col), else_=0)), 0
             ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            AiUsageRecordRow.operation_type.in_({"translation", "translation_retry"}),
+                            cost_col,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (AiUsageRecordRow.operation_type == "translation_repair", cost_col),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
         )
         base = self._apply_time(base, start, end)
         row = self.db.execute(base).one()
@@ -160,6 +181,8 @@ class AiStatsService:
         free_tokens = int(row[9] or 0)
         paid_tokens = int(row[10] or 0)
         paid_cost = int(row[11] or 0)
+        translation_cost = int(row[12] or 0)
+        repair_cost = int(row[13] or 0)
 
         # Correctness metrics over translation-related ops only.
         t_query = select(AiUsageRecordRow).where(
@@ -193,6 +216,8 @@ class AiStatsService:
             "free_tokens": free_tokens,
             "paid_tokens": paid_tokens,
             "paid_cost_usd": micro_to_usd(paid_cost) or 0.0,
+            "translation_cost_usd": micro_to_usd(translation_cost) or 0.0,
+            "repair_cost_usd": micro_to_usd(repair_cost) or 0.0,
             "clean_success_rate": (perfect / denom) if t_n else None,
             "repair_rate": (repaired / denom) if t_n else None,
             "validation_failure_rate": (validation / denom) if t_n else None,

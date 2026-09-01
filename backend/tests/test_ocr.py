@@ -50,10 +50,17 @@ def test_pgs_sup_to_srt_writes_cues(tmp_path, monkeypatch):
     monkeypatch.setattr("app.subtitles.ocr.tesseract_lang_for", lambda _: "eng")
     monkeypatch.setattr("app.subtitles.ocr.ocr_image", lambda *_args, **_kwargs: "Hello there")
     output = tmp_path / "show.en.srt"
-    result = pgs_sup_to_srt(_minimal_sup(), output, language="en")
+    progress: list[tuple[int, int]] = []
+    result = pgs_sup_to_srt(
+        _minimal_sup(),
+        output,
+        language="en",
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
     text = Path(result).read_text(encoding="utf-8")
     assert "Hello there" in text
     assert "00:00:01,000 --> 00:00:03,000" in text
+    assert progress == [(0, 1), (1, 1)]
 
 
 def test_pgs_sup_to_srt_requires_readable_text(tmp_path, monkeypatch):

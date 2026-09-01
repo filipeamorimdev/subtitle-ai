@@ -130,7 +130,12 @@ async def test_extract_pgs_track_demuxes_then_ocrs(tmp_path, monkeypatch):
         Path(command[-1]).write_bytes(b"PG")
         return ProcessResult(ProcessOutcome.COMPLETED, 0, b"", b"")
 
+    progress: list[tuple[int, int]] = []
+
     def fake_ocr(sup_bytes, output_path, **kwargs):
+        progress_callback = kwargs.get("progress_callback")
+        if progress_callback:
+            progress_callback(1, 2)
         path = Path(output_path)
         path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
         return path
@@ -140,8 +145,15 @@ async def test_extract_pgs_track_demuxes_then_ocrs(tmp_path, monkeypatch):
     monkeypatch.setattr("app.subtitles.embedded.ocr_available", lambda: True)
     monkeypatch.setattr("app.subtitles.embedded.pgs_sup_to_srt", fake_ocr)
 
-    result = await extract_pgs_track(media, 3, output, language="en")
+    result = await extract_pgs_track(
+        media,
+        3,
+        output,
+        language="en",
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
     assert result == output
     assert output.exists()
     assert "copy" in seen["command"]
     assert seen["command"][-1].endswith("track.sup")
+    assert progress == [(1, 2)]
