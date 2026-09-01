@@ -13,9 +13,18 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # ``init_db()`` creates fresh databases from the current ORM model, which
+    # no longer includes these columns. Existing databases still need the
+    # columns removed, so only run the SQLite batch rebuild when necessary.
+    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("settings")}
+    if not {"asr_provider", "openai_api_key_encrypted"}.intersection(columns):
+        return
+
     with op.batch_alter_table("settings") as batch:
-        batch.drop_column("asr_provider")
-        batch.drop_column("openai_api_key_encrypted")
+        if "asr_provider" in columns:
+            batch.drop_column("asr_provider")
+        if "openai_api_key_encrypted" in columns:
+            batch.drop_column("openai_api_key_encrypted")
 
 
 def downgrade() -> None:
