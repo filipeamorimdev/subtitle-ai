@@ -238,6 +238,101 @@ class VoiceCastDraftUpdate(BaseModel):
     mix_mode: Literal["background_preserved", "voiceover_preview"] = "background_preserved"
 
 
+class VoiceReferenceOut(BaseModel):
+    id: int
+    variant: str
+    relative_path: str
+    sha256: str
+    approved: bool
+    is_canonical: bool
+    source_cue_indices: list[int] = Field(default_factory=list)
+
+
+class VoiceCharacterOut(BaseModel):
+    id: int
+    character_key: str
+    display_name: str
+    approval_status: str
+    approved_voice_model: str | None = None
+    synthesis_params: dict[str, object] = Field(default_factory=dict)
+    references: list[VoiceReferenceOut] = Field(default_factory=list)
+
+
+class EpisodeCueCastOut(BaseModel):
+    cue_index: int
+    character_id: int | None = None
+    character_key: str | None = None
+    display_name: str | None = None
+    speaker_label: str | None = None
+    confidence: float | None = None
+    status: str
+
+
+class ReferenceCandidateOut(BaseModel):
+    character_key: str
+    display_name: str
+    cue_indices: list[int] = Field(default_factory=list)
+    relative_path: str
+    confidence: float | None = None
+
+
+class AuditionCandidateOut(BaseModel):
+    line_id: str
+    cfg_weight: float
+    exaggeration: float
+    seed: int
+    wav_path: str
+    duration: float | None = None
+    profile_id: str
+
+
+class VoiceAuditionOut(BaseModel):
+    reference_sha256: str
+    target_language: str
+    candidates: list[AuditionCandidateOut] = Field(default_factory=list)
+
+
+class VoiceLibraryOut(BaseModel):
+    media_item_id: int
+    target_language: str
+    characters: list[VoiceCharacterOut] = Field(default_factory=list)
+    episode_cast: list[EpisodeCueCastOut] = Field(default_factory=list)
+    unresolved_cue_count: int = 0
+    dub_ready: bool = False
+    dub_ready_reason: str = ""
+    available_voice_models: list[VoiceModelOptionOut] = Field(default_factory=list)
+    mix_mode: Literal["background_preserved", "voiceover_preview"] = "background_preserved"
+
+
+class VoiceCharacterCreate(BaseModel):
+    display_name: str
+    character_key: str | None = None
+
+
+class VoiceReferenceApproveIn(BaseModel):
+    reference_id: int
+    voice_model: str
+    cfg_weight: float | None = None
+    synthesis_seed: int | None = 0
+    make_canonical: bool = True
+
+
+class VoiceCueAssignIn(BaseModel):
+    cue_index: int
+    character_id: int | None = None
+
+
+class VoiceCueAssignBatchIn(BaseModel):
+    assignments: list[VoiceCueAssignIn] = Field(default_factory=list)
+
+
+class VoiceReferenceAdoptIn(BaseModel):
+    relative_path: str
+    variant: str = "neutral"
+    source_cue_indices: list[int] = Field(default_factory=list)
+    make_canonical: bool = True
+
+
 class RequestSubtitleCreate(BaseModel):
     candidate_key: str
     language: str | None = None

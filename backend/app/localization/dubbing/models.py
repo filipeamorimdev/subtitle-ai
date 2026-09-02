@@ -11,6 +11,9 @@ class VoiceConfig:
     voice_id: str
     language: str
     speaker_id: str | None = None
+    reference_wav: str | None = None
+    reference_sha256: str | None = None
+    synthesis_seed: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

@@ -190,6 +190,64 @@ export interface VoiceCast {
   available_voice_models: VoiceModelOption[]
 }
 
+export interface VoiceReference {
+  id: number
+  variant: string
+  relative_path: string
+  sha256: string
+  approved: boolean
+  is_canonical: boolean
+  source_cue_indices: number[]
+}
+
+export interface VoiceCharacter {
+  id: number
+  character_key: string
+  display_name: string
+  approval_status: string
+  approved_voice_model: string | null
+  synthesis_params: Record<string, unknown>
+  references: VoiceReference[]
+}
+
+export interface EpisodeCueCast {
+  cue_index: number
+  character_id: number | null
+  character_key: string | null
+  display_name: string | null
+  speaker_label: string | null
+  confidence: number | null
+  status: string
+}
+
+export interface AuditionCandidate {
+  line_id: string
+  cfg_weight: number
+  exaggeration: number
+  seed: number
+  wav_path: string
+  duration: number | null
+  profile_id: string
+}
+
+export interface VoiceAudition {
+  reference_sha256: string
+  target_language: string
+  candidates: AuditionCandidate[]
+}
+
+export interface VoiceLibrary {
+  media_item_id: number
+  target_language: string
+  characters: VoiceCharacter[]
+  episode_cast: EpisodeCueCast[]
+  unresolved_cue_count: number
+  dub_ready: boolean
+  dub_ready_reason: string
+  available_voice_models: VoiceModelOption[]
+  mix_mode: 'background_preserved' | 'voiceover_preview'
+}
+
 export interface LanguageCatalogItem {
   code: string
   display_name: string

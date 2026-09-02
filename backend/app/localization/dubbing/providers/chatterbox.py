@@ -59,7 +59,8 @@ _LANGUAGES: dict[str, tuple[str, str]] = {
 }
 
 _MODEL_LOCK = threading.Lock()
-_MODEL_BY_DEVICE: dict[str, Any] = {}
+_MODEL_BY_DEVICE: dict[str, tuple[Any, str | None]] = {}
+_COND_PREP_LOCK = threading.Lock()
 
 
 def _normalized_language(target_language: str) -> str:
@@ -167,13 +168,49 @@ def _device() -> str:
         return "cpu"
 
 
-def load_chatterbox_model(*, device: str | None = None) -> Any:
+def _use_pt_pt_checkpoint(target_language: str | None) -> bool:
+    language = _normalized_language(target_language or "")
+    if language != "pt-pt":
+        return False
+    flag = os.getenv("SUBTITLE_AI_CHATTERBOX_PT_PT", "1").strip().lower()
+    return flag not in {"0", "false", "no", "off"}
+
+
+def _ensure_pt_pt_checkpoint(device: str) -> Path:
+    from huggingface_hub import snapshot_download
+
+    from app.core.config import get_app_config
+
+    cache_root = get_app_config().config_dir / "huggingface" / "chatterbox-pt-pt"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id="ResembleAI/Chatterbox-Multilingual-pt-pt",
+        local_dir=str(cache_root),
+        allow_patterns=[
+            "t3_pt_pt.safetensors",
+            "s3gen_v3.pt",
+            "s3gen_v3.safetensors",
+            "grapheme_mtl_merged_expanded_v1.json",
+            "ve.pt",
+            "conds.pt",
+        ],
+    )
+    return cache_root
+
+
+def load_chatterbox_model(
+    *,
+    device: str | None = None,
+    target_language: str | None = None,
+) -> Any:
     """Load one cached Multilingual V3 instance per execution device."""
     selected_device = device or _device()
+    pt_pt = _use_pt_pt_checkpoint(target_language)
+    cache_key = f"{selected_device}:{'pt-pt' if pt_pt else 'multilingual'}"
     with _MODEL_LOCK:
-        cached = _MODEL_BY_DEVICE.get(selected_device)
+        cached = _MODEL_BY_DEVICE.get(cache_key)
         if cached is not None:
-            return cached
+            return cached[0]
         try:
             from chatterbox.mtl_tts import ChatterboxMultilingualTTS
         except ModuleNotFoundError as exc:
@@ -189,16 +226,28 @@ def load_chatterbox_model(*, device: str | None = None) -> Any:
         except ImportError as exc:
             raise TTSError(f"Chatterbox could not be imported: {exc}") from exc
         try:
-            model = ChatterboxMultilingualTTS.from_pretrained(
-                device=selected_device,
-                t3_model="v3",
-            )
+            if pt_pt:
+                ckpt_dir = _ensure_pt_pt_checkpoint(selected_device)
+                model = ChatterboxMultilingualTTS.from_local(
+                    ckpt_dir,
+                    selected_device,
+                    t3_model="t3_pt_pt.safetensors",
+                )
+            else:
+                model = ChatterboxMultilingualTTS.from_pretrained(
+                    device=selected_device,
+                    t3_model="v3",
+                )
         except Exception as exc:  # noqa: BLE001
             raise TTSError(f"Could not load Chatterbox Multilingual V3: {exc}") from exc
         if getattr(model, "conds", None) is None:
             raise TTSError("Chatterbox downloaded without its default voice conditions; retry the dub.")
-        _MODEL_BY_DEVICE[selected_device] = model
-        logger.info("chatterbox_model_loaded device=%s", selected_device)
+        _MODEL_BY_DEVICE[cache_key] = (model, target_language)
+        logger.info(
+            "chatterbox_model_loaded device=%s checkpoint=%s",
+            selected_device,
+            "pt-pt" if pt_pt else "multilingual-v3",
+        )
         return model
 
 
@@ -206,10 +255,13 @@ def unload_chatterbox_model(*, device: str | None = None) -> None:
     """Drop cached model references so a long CPU job can reload cleanly."""
     selected_device = device or _device()
     with _MODEL_LOCK:
-        model = _MODEL_BY_DEVICE.pop(selected_device, None)
-    if model is not None:
-        del model
-        logger.info("chatterbox_model_unloaded device=%s", selected_device)
+        keys = [key for key in _MODEL_BY_DEVICE if key.startswith(f"{selected_device}:")]
+        removed = [_MODEL_BY_DEVICE.pop(key, None) for key in keys]
+    for entry in removed:
+        if entry is not None:
+            del entry[0]
+    if removed:
+        logger.info("chatterbox_model_unloaded device=%s count=%s", selected_device, len(removed))
 
 
 def write_chatterbox_wav(
@@ -217,6 +269,11 @@ def write_chatterbox_wav(
     profile: ChatterboxVoiceProfile,
     text: str,
     output_wav: Path,
+    *,
+    audio_prompt_path: str | Path | None = None,
+    cfg_weight: float | None = None,
+    exaggeration: float | None = None,
+    temperature: float | None = None,
 ) -> None:
     """Generate a normal WAV that FFmpeg can place on the dialogue timeline."""
     try:
@@ -224,14 +281,23 @@ def write_chatterbox_wav(
     except ImportError as exc:
         raise TTSError("torchaudio is not installed") from exc
     output_wav.parent.mkdir(parents=True, exist_ok=True)
+    prompt = Path(audio_prompt_path) if audio_prompt_path else None
+    if prompt is not None and not prompt.is_file():
+        raise TTSError(f"Voice reference audio is missing: {prompt.name}")
+    generate_kwargs = {
+        "language_id": profile.language_id,
+        "exaggeration": profile.exaggeration if exaggeration is None else exaggeration,
+        "cfg_weight": profile.cfg_weight if cfg_weight is None else cfg_weight,
+        "temperature": profile.temperature if temperature is None else temperature,
+    }
     try:
-        audio = model.generate(
-            text,
-            language_id=profile.language_id,
-            exaggeration=profile.exaggeration,
-            cfg_weight=profile.cfg_weight,
-            temperature=profile.temperature,
-        )
+        with _COND_PREP_LOCK:
+            if prompt is not None:
+                model.prepare_conditionals(
+                    str(prompt),
+                    exaggeration=generate_kwargs["exaggeration"],
+                )
+            audio = model.generate(text, **generate_kwargs)
         # The timeline probes each cue with Python's wave module.  Explicit
         # PCM S16 keeps every generated WAV readable there as well as by
         # ffmpeg; torchaudio's backend defaults can otherwise create an
@@ -274,9 +340,18 @@ def wav_duration_seconds(path: Path) -> float | None:
 class ChatterboxTTSProvider:
     name = "chatterbox"
 
-    def __init__(self, model: Any, profile: ChatterboxVoiceProfile) -> None:
+    def __init__(
+        self,
+        model: Any,
+        profile: ChatterboxVoiceProfile,
+        *,
+        reference_wav: str | Path | None = None,
+        cfg_weight: float | None = None,
+    ) -> None:
         self.model = model
         self.profile = profile
+        self.reference_wav = Path(reference_wav) if reference_wav else None
+        self.cfg_weight = cfg_weight
 
     async def synthesize(
         self,
@@ -289,9 +364,21 @@ class ChatterboxTTSProvider:
     ) -> AudioArtifact:
         if is_cancelled and is_cancelled():
             raise TTSError("Dub cancelled")
+        reference = voice.metadata.get("reference_wav") or (
+            str(self.reference_wav) if self.reference_wav is not None else None
+        )
+        cfg_weight = voice.metadata.get("cfg_weight", self.cfg_weight)
         cancelled = threading.Event()
         synth_task = asyncio.create_task(
-            asyncio.to_thread(write_chatterbox_wav, self.model, self.profile, text, output_path)
+            asyncio.to_thread(
+                write_chatterbox_wav,
+                self.model,
+                self.profile,
+                text,
+                output_path,
+                audio_prompt_path=reference,
+                cfg_weight=cfg_weight,
+            )
         )
 
         def discard_cancelled_output(done: asyncio.Task[None]) -> None:

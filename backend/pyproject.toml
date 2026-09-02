@@ -14,6 +14,7 @@ dependencies = [
     "cryptography>=44.0.0",
     "python-multipart>=0.0.17",
     "pillow>=10.0.0",
+    "numpy>=2.0.0",
     "pytesseract>=0.3.13",
     "faster-whisper>=1.1.0",
     # PyPI's 0.1.7 wheel predates the Multilingual V3 loader. Pin the official

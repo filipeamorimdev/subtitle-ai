@@ -50,6 +50,8 @@ class SettingsRow(Base):
     monthly_budget_amount_micro_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
     allow_manual_budget_override: Mapped[bool] = mapped_column(Boolean, default=False)
     operator_model_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    dub_cloud_fallback_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    elevenlabs_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -276,6 +278,91 @@ class VoiceCastDraftRow(Base):
     media_item = relationship("MediaItemRow", lazy="joined")
 
 
+class VoiceCharacterRow(Base):
+    """A recurring character voice identity for a series or movie."""
+
+    __tablename__ = "voice_characters"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_item_id",
+            "target_language",
+            "character_key",
+            name="uq_voice_characters_owner_language_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    media_item_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("media_items.id"), nullable=False, index=True
+    )
+    target_language: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    character_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    approval_status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    approved_voice_model: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    synthesis_params_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    pronunciation_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    embedding_centroid_json: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    similarity_threshold: Mapped[float] = mapped_column(Float, default=0.72)
+    cloud_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cloud_rights_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class VoiceReferenceRow(Base):
+    """Approved or candidate reference audio for one character."""
+
+    __tablename__ = "voice_references"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    character_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("voice_characters.id"), nullable=False, index=True
+    )
+    variant: Mapped[str] = mapped_column(String(32), default="neutral")
+    relative_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_cue_indices: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_canonical: Mapped[bool] = mapped_column(Boolean, default=False)
+    embedding_json: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EpisodeVoiceCastRow(Base):
+    """Per-episode cue assignment to a series character."""
+
+    __tablename__ = "episode_voice_casts"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_item_id",
+            "target_language",
+            "cue_index",
+            name="uq_episode_voice_casts_media_language_cue",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    media_item_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("media_items.id"), nullable=False, index=True
+    )
+    target_language: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    cue_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    character_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("voice_characters.id"), nullable=True, index=True
+    )
+    speaker_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="unresolved", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class LocalizationTaskRow(Base):
     """User-facing localization goal for a media item (subtitles today; audio later)."""
 
@@ -338,6 +425,7 @@ class JobRow(Base):
         String(32), default="background_preserved", server_default="background_preserved"
     )
     dub_speaker_voices: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    dub_voice_bindings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     trigger_type: Mapped[str] = mapped_column(String(16), default="manual", index=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -102,7 +102,10 @@ from app.localization.dubbing.options import (
     DUB_MIX_BACKGROUND_PRESERVED,
     normalize_dub_mix_mode,
     normalize_speaker_voice_overrides,
+    normalize_voice_bindings,
 )
+from app.localization.dubbing.voice_library.analysis import SpeakerAnalysisService
+from app.localization.dubbing.voice_library.service import VoiceLibraryService
 from app.translation.openrouter.exchange_log import JobOpenRouterExchangeLog, job_openrouter_log_path
 from app.translation.service import (
     RetryableTranslationError,
@@ -149,6 +152,7 @@ class _JobIoSnapshot:
     task_id: int | None
     dub_mix_mode: str
     dub_speaker_voices: dict[str, str]
+    dub_voice_bindings: dict[str, dict[str, object]]
 
 
 def _job_io_snapshot(row: JobRow) -> _JobIoSnapshot:
@@ -168,6 +172,7 @@ def _job_io_snapshot(row: JobRow) -> _JobIoSnapshot:
         task_id=getattr(row, "task_id", None),
         dub_mix_mode=getattr(row, "dub_mix_mode", DUB_MIX_BACKGROUND_PRESERVED),
         dub_speaker_voices=dict(getattr(row, "dub_speaker_voices", None) or {}),
+        dub_voice_bindings=dict(getattr(row, "dub_voice_bindings", None) or {}),
     )
 
 
@@ -1367,6 +1372,7 @@ class JobService:
         replace_existing: bool = False,
         mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
         speaker_voice_overrides: dict[str, str] | None = None,
+        voice_bindings: dict[str, dict[str, object]] | None = None,
     ) -> JobOut:
         from app.languages import LanguageNormalizationError, normalize_language
         from app.localization.service import LocalizationTaskService
@@ -1382,6 +1388,27 @@ class JobService:
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
         speaker_voice_overrides = normalize_speaker_voice_overrides(speaker_voice_overrides)
+        library = VoiceLibraryService(self.db)
+        if voice_bindings is None:
+            if library.has_approved_characters(media, target_language=language.code):
+                if not library.has_episode_cast(media, target_language=language.code):
+                    await SpeakerAnalysisService(self.db).assign_episode_cues(
+                        media,
+                        target_language=language.code,
+                    )
+                ready, reason = library.dub_readiness(media, target_language=language.code)
+                if not ready:
+                    raise ValueError(reason)
+                bindings = library.bindings_for_episode(media, target_language=language.code)
+                voice_bindings = library.snapshot_bindings(bindings)
+            else:
+                voice_bindings = {}
+        else:
+            voice_bindings = normalize_voice_bindings(voice_bindings)
+            if library.has_episode_cast(media, target_language=language.code):
+                ready, reason = library.dub_readiness(media, target_language=language.code)
+                if not ready:
+                    raise ValueError(reason)
 
         # Gate: require a ready target SRT on disk.
         gate = await self.dub_gate_for_media(
@@ -1429,6 +1456,7 @@ class JobService:
             replace_existing=replace_existing,
             mix_mode=mix_mode,
             speaker_voice_overrides=speaker_voice_overrides,
+            voice_bindings=voice_bindings,
         )
         tasks.update_checkpoints(task.id, write="active")
         if task.status in {"requested", "planning", "waiting_for_source", "processing"}:
@@ -1445,6 +1473,7 @@ class JobService:
         replace_existing: bool = False,
         mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
         speaker_voice_overrides: dict[str, str] | None = None,
+        voice_bindings: dict[str, dict[str, object]] | None = None,
     ) -> JobOut:
         public = self.settings.get_public()
         trigger = trigger_type if trigger_type in {"manual", "automatic"} else "manual"
@@ -1487,6 +1516,7 @@ class JobService:
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
         speaker_voice_overrides = normalize_speaker_voice_overrides(speaker_voice_overrides)
+        voice_bindings = normalize_voice_bindings(voice_bindings)
 
         row = JobRow(
             candidate_key=ckey,
@@ -1509,6 +1539,7 @@ class JobService:
             dedupe_key=dkey,
             dub_mix_mode=mix_mode,
             dub_speaker_voices=speaker_voice_overrides,
+            dub_voice_bindings=voice_bindings,
         )
         self.db.add(row)
         self.db.commit()
@@ -2624,6 +2655,8 @@ class JobService:
                 voice_model=voice_model,
                 mix_mode=snapshot.dub_mix_mode,
                 speaker_voice_overrides=snapshot.dub_speaker_voices,
+                voice_bindings=snapshot.dub_voice_bindings,
+                require_character_voices=bool(snapshot.dub_voice_bindings),
                 cache_dir=config_dir / "cache" / "dubbing",
                 model_recycle_cues=max(0, int(get_app_config().chatterbox_recycle_cues)),
                 max_cue_seconds=max(0.0, float(get_app_config().chatterbox_max_cue_seconds)),

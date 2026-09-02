@@ -242,6 +242,9 @@ def init_db() -> None:
         if "dub_speaker_voices" not in job_columns:
             conn.execute(
                 text("ALTER TABLE jobs ADD COLUMN dub_speaker_voices JSON NOT NULL DEFAULT '{}'"))
+        if "dub_voice_bindings" not in job_columns:
+            conn.execute(
+                text("ALTER TABLE jobs ADD COLUMN dub_voice_bindings JSON NOT NULL DEFAULT '{}'"))
 
         # Active-task uniqueness (partial unique index) for deployments using create_all.
         task_indexes = {
@@ -291,6 +294,8 @@ def init_db() -> None:
             ("monthly_budget_amount_micro_usd", "ALTER TABLE settings ADD COLUMN monthly_budget_amount_micro_usd INTEGER"),
             ("allow_manual_budget_override", "ALTER TABLE settings ADD COLUMN allow_manual_budget_override BOOLEAN NOT NULL DEFAULT 0"),
             ("operator_model_id", "ALTER TABLE settings ADD COLUMN operator_model_id VARCHAR(256)"),
+            ("dub_cloud_fallback_enabled", "ALTER TABLE settings ADD COLUMN dub_cloud_fallback_enabled BOOLEAN NOT NULL DEFAULT 0"),
+            ("elevenlabs_api_key_encrypted", "ALTER TABLE settings ADD COLUMN elevenlabs_api_key_encrypted TEXT"),
         ):
             if column not in settings_columns:
                 conn.execute(text(ddl))

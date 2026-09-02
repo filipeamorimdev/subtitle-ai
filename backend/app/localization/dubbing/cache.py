@@ -13,7 +13,7 @@ from pathlib import Path
 from app.localization.dubbing.timeline import CUE_SAMPLE_RATE
 from app.localization.dubbing.timing import TimingDecision, TimingEngine
 
-CACHE_SCHEMA = 1
+CACHE_SCHEMA = 2
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,7 @@ def dub_cache_key(
     target_language: str,
     voice_model: str,
     speaker_voice_overrides: dict[str, str],
+    voice_bindings: dict[str, str] | None,
     timing: TimingEngine,
 ) -> str:
     """Hash every input that can change a shaped cue's audio or placement."""
@@ -38,6 +39,7 @@ def dub_cache_key(
         "target_language": target_language,
         "voice_model": voice_model,
         "speaker_voice_overrides": speaker_voice_overrides,
+        "voice_bindings": voice_bindings or {},
         "timing": {"max_speed": timing.max_speed, "min_speed": timing.min_speed},
     }
     encoded = json.dumps(

@@ -30,6 +30,9 @@ import type {
   OperatorStatus,
   OperatorTurn,
   VoiceCast,
+  VoiceLibrary,
+  VoiceAudition,
+  VoiceCharacter,
 } from '../types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -255,6 +258,75 @@ export const api = {
       `/api/media/${id}/dub/voice-cast/request?target_language=${encodeURIComponent(target_language)}`,
       { method: 'POST' },
     ),
+  getVoiceLibrary: (id: number, target_language: string) =>
+    request<VoiceLibrary>(
+      `/api/media/${id}/voice-library?target_language=${encodeURIComponent(target_language)}`,
+    ),
+  analyseVoiceLibrary: (
+    id: number,
+    target_language: string,
+    mix_mode: 'background_preserved' | 'voiceover_preview' = 'background_preserved',
+  ) =>
+    request<VoiceLibrary>(`/api/media/${id}/voice-library/analyse`, {
+      method: 'POST',
+      body: JSON.stringify({ target_language, mix_mode }),
+    }),
+  buildVoiceReferenceCandidates: (id: number, target_language: string) =>
+    request<Array<{ character_key: string; display_name: string; cue_indices: number[]; relative_path: string }>>(
+      `/api/media/${id}/voice-library/reference-candidates?target_language=${encodeURIComponent(target_language)}`,
+      { method: 'POST' },
+    ),
+  adoptVoiceReference: (
+    id: number,
+    characterId: number,
+    payload: { relative_path: string; variant?: string; source_cue_indices?: number[] },
+  ) =>
+    request(`/api/media/${id}/voice-library/characters/${characterId}/adopt-reference`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  auditionVoiceCharacter: (id: number, characterId: number, target_language: string, voice_model?: string) => {
+    const params = new URLSearchParams({ target_language })
+    if (voice_model) params.set('voice_model', voice_model)
+    return request<VoiceAudition>(
+      `/api/media/${id}/voice-library/characters/${characterId}/audition?${params.toString()}`,
+      { method: 'POST' },
+    )
+  },
+  approveVoiceCharacter: (
+    id: number,
+    characterId: number,
+    payload: { reference_id: number; voice_model: string; cfg_weight?: number; synthesis_seed?: number },
+  ) =>
+    request<VoiceCharacter>(`/api/media/${id}/voice-library/characters/${characterId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateVoiceCueAssignments: (
+    id: number,
+    target_language: string,
+    assignments: Array<{ cue_index: number; character_id: number | null }>,
+  ) =>
+    request<VoiceLibrary>(
+      `/api/media/${id}/voice-library/cues?target_language=${encodeURIComponent(target_language)}`,
+      { method: 'PUT', body: JSON.stringify({ assignments }) },
+    ),
+  requestDubFromVoiceLibrary: (
+    id: number,
+    payload?: {
+      target_language?: string
+      replace_existing?: boolean
+      mix_mode?: 'background_preserved' | 'voiceover_preview'
+    },
+  ) =>
+    request<Job>(`/api/media/${id}/voice-library/request-dub`, {
+      method: 'POST',
+      body: JSON.stringify(payload ?? { replace_existing: true }),
+    }),
+  voiceLibraryAudioUrl: (id: number, relativePath: string) =>
+    `/api/media/${id}/voice-library/audio?path=${encodeURIComponent(relativePath)}`,
+  voiceLibraryAuditionUrl: (id: number, wavPath: string) =>
+    `/api/media/${id}/voice-library/audition-audio?file=${encodeURIComponent(wavPath)}`,
   getMediaActions: (id: number) => request<JobAction[]>(`/api/media/${id}/actions`),
   createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {
     const response = await fetch(`/api/media/${mediaId}/localization-tasks`, {

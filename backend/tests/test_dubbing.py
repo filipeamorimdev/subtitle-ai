@@ -154,6 +154,7 @@ def test_dub_cue_cache_round_trip_and_input_keying(tmp_path):
         target_language="pt-PT",
         voice_model="chatterbox-multilingual-v3:pt-PT:natural",
         speaker_voice_overrides={},
+        voice_bindings={},
         timing=timing,
     )
     changed_key = dub_cache_key(
@@ -161,9 +162,19 @@ def test_dub_cue_cache_round_trip_and_input_keying(tmp_path):
         target_language="pt-PT",
         voice_model="chatterbox-multilingual-v3:pt-PT:natural",
         speaker_voice_overrides={},
+        voice_bindings={},
+        timing=timing,
+    )
+    binding_key = dub_cache_key(
+        source_srt="one subtitle",
+        target_language="pt-PT",
+        voice_model="chatterbox-multilingual-v3:pt-PT:natural",
+        speaker_voice_overrides={},
+        voice_bindings={"cue:1": "abc|model|0.35"},
         timing=timing,
     )
     assert key != changed_key
+    assert key != binding_key
 
     shaped = tmp_path / "shaped.wav"
     _write_pcm_wav(shaped, array.array("h", [1200] * 800))
@@ -194,7 +205,7 @@ async def test_dub_retry_uses_checkpoint_without_loading_model(tmp_path, monkeyp
     synth_calls: list[str] = []
     model_loads = 0
 
-    def fake_load_model():
+    def fake_load_model(**_kwargs):
         nonlocal model_loads
         model_loads += 1
         return types.SimpleNamespace(device="cpu")
@@ -273,7 +284,7 @@ async def test_slow_cue_is_checkpointed_before_requesting_clean_retry(tmp_path, 
     ticks = iter((0.0, 601.0))
     monkeypatch.setattr(
         "app.localization.dubbing.pipeline.load_chatterbox_model",
-        lambda: types.SimpleNamespace(device="cpu"),
+        lambda **_kwargs: types.SimpleNamespace(device="cpu"),
     )
     monkeypatch.setattr(ChatterboxTTSProvider, "synthesize", fake_synthesize)
     monkeypatch.setattr("app.localization.dubbing.pipeline.shape_clip", fake_shape)

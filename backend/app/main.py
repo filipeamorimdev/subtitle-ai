@@ -13,6 +13,7 @@ from app.api.auth import AuthMiddleware
 from app.api.routes import router
 from app.api.ai_routes import router as ai_router
 from app.api.localization_routes import router as localization_router
+from app.api.voice_library_routes import router as voice_library_router
 from app.api.operator_routes import router as operator_router
 from app.core.config import get_app_config
 from app.core.logging import get_logger, setup_logging
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(router)
     app.include_router(ai_router)
     app.include_router(localization_router)
+    app.include_router(voice_library_router)
     app.include_router(operator_router)
 
     dist = _resolve_frontend_dist()

@@ -48,3 +48,39 @@ def normalize_speaker_voice_overrides(values: Mapping[str, str] | None) -> dict[
             continue
         normalized[key] = model
     return normalized
+
+
+def normalize_voice_bindings(values: Mapping[str, Mapping[str, object]] | None) -> dict[str, dict[str, object]]:
+    """Validate immutable character voice bindings keyed by cue or speaker."""
+    normalized: dict[str, dict[str, object]] = {}
+    for raw_key, raw_binding in (values or {}).items():
+        key = raw_key.strip()
+        if not key or not isinstance(raw_binding, Mapping):
+            continue
+        reference = str(raw_binding.get("reference_relative_path") or "").strip()
+        voice_model = str(raw_binding.get("voice_model") or "").strip()
+        if not reference or not voice_model:
+            continue
+        normalized[key] = {
+            "character_id": raw_binding.get("character_id"),
+            "character_key": str(raw_binding.get("character_key") or ""),
+            "display_name": str(raw_binding.get("display_name") or ""),
+            "reference_relative_path": reference,
+            "reference_sha256": str(raw_binding.get("reference_sha256") or ""),
+            "voice_model": voice_model,
+            "cfg_weight": raw_binding.get("cfg_weight"),
+            "synthesis_seed": raw_binding.get("synthesis_seed"),
+            "variant": str(raw_binding.get("variant") or "neutral"),
+        }
+    return normalized
+
+
+def voice_binding_cache_fingerprint(bindings: Mapping[str, Mapping[str, object]] | None) -> dict[str, str]:
+    """Compact per-binding hashes for cue-cache invalidation."""
+    fingerprint: dict[str, str] = {}
+    for key, binding in (bindings or {}).items():
+        digest = str(binding.get("reference_sha256") or binding.get("reference_relative_path") or "")
+        model = str(binding.get("voice_model") or "")
+        cfg = binding.get("cfg_weight")
+        fingerprint[key] = f"{digest}|{model}|{cfg}"
+    return fingerprint

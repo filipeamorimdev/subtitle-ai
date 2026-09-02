@@ -27,11 +27,15 @@ from app.localization.dubbing.models import VoiceConfig
 from app.localization.dubbing.options import (
     DUB_MIX_BACKGROUND_PRESERVED,
     DUB_MIX_VOICEOVER_PREVIEW,
+    cue_key,
     normalize_dub_mix_mode,
     normalize_speaker_voice_overrides,
-    cue_key,
+    normalize_voice_bindings,
     speaker_key,
+    voice_binding_cache_fingerprint,
 )
+from app.localization.dubbing.voice_library.paths import resolve_reference_path
+from app.localization.dubbing.voice_library.qa import validate_batch_lengths, validate_generated_cue
 from app.localization.dubbing.providers.chatterbox import (
     ChatterboxTTSProvider,
     TTSError,
@@ -272,6 +276,8 @@ class DubbingPipeline:
         voice_model: str | None = None,
         mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
         speaker_voice_overrides: dict[str, str] | None = None,
+        voice_bindings: dict[str, dict[str, object]] | None = None,
+        require_character_voices: bool = False,
         event_log: JobEventLog,
         is_cancelled: CancelCheck,
         on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
@@ -294,6 +300,7 @@ class DubbingPipeline:
         except ValueError as exc:
             raise DubError(str(exc)) from exc
         speaker_voice_overrides = normalize_speaker_voice_overrides(speaker_voice_overrides)
+        voice_bindings = normalize_voice_bindings(voice_bindings)
 
         event_log.record(event="started", media_path=str(media), target_language=target_language)
         try:
@@ -331,6 +338,7 @@ class DubbingPipeline:
                     target_language=target_language,
                     voice_model=voice_model,
                     speaker_voice_overrides=speaker_voice_overrides,
+                    voice_bindings=voice_binding_cache_fingerprint(voice_bindings),
                     timing=self.timing,
                 ),
             )
@@ -338,7 +346,13 @@ class DubbingPipeline:
             else None
         )
 
-        async def tts_for(model: str) -> ChatterboxTTSProvider:
+        async def tts_for(
+            model: str,
+            *,
+            reference_wav: str | None = None,
+            cfg_weight: float | None = None,
+        ) -> ChatterboxTTSProvider:
+            del reference_wav, cfg_weight
             profile = resolve_voice_profile(model, target_language)
             cached = tts_by_model.get(profile.id)
             if cached is not None:
@@ -348,7 +362,10 @@ class DubbingPipeline:
                 if is_cancelled():
                     raise TTSError("Dub cancelled")
                 if chatterbox_model is None:
-                    chatterbox_model = await asyncio.to_thread(load_chatterbox_model)
+                    chatterbox_model = await asyncio.to_thread(
+                        load_chatterbox_model,
+                        target_language=target_language,
+                    )
             except TTSError as exc:
                 raise DubError(str(exc)) from exc
             tts = ChatterboxTTSProvider(chatterbox_model, profile)
@@ -383,14 +400,36 @@ class DubbingPipeline:
                 cue_wav = tmp_dir / f"seg-{index}.wav"
                 segment_cue_key = cue_key(segment.source_cues[0] if segment.source_cues else None)
                 override_key = segment_cue_key if segment_cue_key in speaker_voice_overrides else speaker_key(segment.speaker_id)
+                binding = voice_bindings.get(segment_cue_key) or voice_bindings.get(speaker_key(segment.speaker_id))
+                if require_character_voices and binding is None:
+                    raise DubError(
+                        f"Cue {segment_cue_key or index} has no approved character voice. "
+                        "Resolve the voice library before dubbing."
+                    )
                 segment_voice_model = speaker_voice_overrides.get(override_key, voice_model)
+                if binding is not None:
+                    segment_voice_model = str(binding.get("voice_model") or segment_voice_model)
                 profile = resolve_voice_profile(segment_voice_model, target_language)
                 segment_voice_model = profile.id
                 used_voice_models.add(segment_voice_model)
+                reference_wav: str | None = None
+                reference_sha256: str | None = None
+                cfg_weight = None
+                if binding is not None:
+                    reference_wav = str(resolve_reference_path(str(binding["reference_relative_path"])))
+                    reference_sha256 = str(binding.get("reference_sha256") or "")
+                    cfg_weight = binding.get("cfg_weight")
                 voice_config = VoiceConfig(
                     voice_id=segment_voice_model,
                     language=target_language,
                     speaker_id=segment.speaker_id,
+                    reference_wav=reference_wav,
+                    reference_sha256=reference_sha256,
+                    metadata={
+                        "reference_wav": reference_wav,
+                        "cfg_weight": cfg_weight,
+                        "character_id": binding.get("character_id") if binding else None,
+                    },
                 )
                 if segment.speaker_id and segment.speaker_id not in assigned_speakers:
                     assigned_speakers[segment.speaker_id] = segment_voice_model
@@ -398,7 +437,14 @@ class DubbingPipeline:
                         event="speaker_voice_assigned",
                         speaker_id=segment.speaker_id,
                         voice_model=segment_voice_model,
-                        source="override" if override_key in speaker_voice_overrides else "default",
+                        source=(
+                            "character_binding"
+                            if binding is not None
+                            else "override"
+                            if override_key in speaker_voice_overrides
+                            else "default"
+                        ),
+                        character_id=binding.get("character_id") if binding else None,
                     )
                 event_log.record(
                     event="speech",
@@ -431,7 +477,7 @@ class DubbingPipeline:
                             await maybe
                     continue
 
-                tts = await tts_for(segment_voice_model)
+                tts = await tts_for(segment_voice_model, reference_wav=reference_wav, cfg_weight=cfg_weight)
                 synthesis_started = _monotonic()
                 try:
                     artifact = await tts.synthesize(
@@ -476,6 +522,11 @@ class DubbingPipeline:
                 if speed > 1.001:
                     speed_adjustments += 1
                 await shape_clip(cue_wav, shaped, speed=speed, is_cancelled=is_cancelled)
+                quality = validate_generated_cue(shaped, expected_text=text)
+                if not quality.ok:
+                    raise DubError(
+                        f"Generated audio failed quality checks for cue {index}: {', '.join(quality.reasons)}"
+                    )
                 if actual:
                     synth_samples_by_model.setdefault(segment_voice_model, []).append((len(text), actual))
                 checkpoint = (
@@ -538,6 +589,15 @@ class DubbingPipeline:
                     "Chatterbox produced nearly the same clip length for every subtitle. "
                     "The voice is not reading cue text; refusing to mux a looping track."
                 )
+            batch_quality = validate_batch_lengths(
+                [
+                    sample
+                    for samples in synth_samples_by_model.values()
+                    for sample in samples
+                ]
+            )
+            if not batch_quality.ok:
+                raise DubError(f"Batch quality check failed: {', '.join(batch_quality.reasons)}")
 
             media_duration_s = await probe_duration_seconds(media)
             event_log.record(
@@ -719,6 +779,8 @@ async def dub_media_from_srt_to_mkv(
     voice_model: str | None = None,
     mix_mode: str = DUB_MIX_BACKGROUND_PRESERVED,
     speaker_voice_overrides: dict[str, str] | None = None,
+    voice_bindings: dict[str, dict[str, object]] | None = None,
+    require_character_voices: bool = False,
     event_log: JobEventLog,
     is_cancelled: CancelCheck,
     on_progress: Callable[[int, int], Awaitable[None] | None] | None = None,
@@ -734,6 +796,8 @@ async def dub_media_from_srt_to_mkv(
         voice_model=voice_model,
         mix_mode=mix_mode,
         speaker_voice_overrides=speaker_voice_overrides,
+        voice_bindings=voice_bindings,
+        require_character_voices=require_character_voices,
         event_log=event_log,
         is_cancelled=is_cancelled,
         on_progress=on_progress,
