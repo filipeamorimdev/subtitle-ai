@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0015_remove_translation_review"
-down_revision = "0014_max_concurrent_dub"
+revision = "0022_remove_translation_review"
+down_revision = "0021_local_whisper_only"
 branch_labels = None
 depends_on = None
 
