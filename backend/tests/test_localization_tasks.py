@@ -1224,12 +1224,13 @@ async def test_source_enqueue_failure_becomes_visible_and_terminal(loc_env, monk
 
     planner = TaskPlanner(db)
     first = await planner.plan(task.id)
-    second = await planner.plan(task.id)
-    third = await planner.plan(task.id)
-
     assert first is not None and first.status == "waiting_for_source"
     assert "Bazarr episode identifier is invalid" in (first.error_message or "")
+
+    second = await planner.plan(task.id)
     assert second is not None and second.status == "waiting_for_source"
+
+    third = await planner.plan(task.id)
     assert third is not None and third.status == "failed"
     assert third.error_code == "source_enqueue_failed"
 

@@ -126,8 +126,7 @@ async function submit() {
       bazarr_episode_id: selected.value.bazarr_episode_id,
       parent_external_id: selected.value.parent_external_id,
     })
-    try {
-      let task
+    let task
       try {
         task = await api.createLocalizationTask(media.id, {
           target_language: languageChoice.value,
