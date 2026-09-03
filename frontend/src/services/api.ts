@@ -49,7 +49,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let body: Record<string, unknown> | null = null
     try {
       body = await response.json()
-      detail = (body.detail as string) || detail
+      detail = (body?.detail as string) || detail
     } catch {
       /* ignore */
     }
