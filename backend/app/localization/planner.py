@@ -60,6 +60,8 @@ VERIFY_RETRY_METADATA_KEY = "verify_retry"
 VERIFY_MAX_ATTEMPTS = 5
 VERIFY_RETRY_BASE_SECONDS = 30
 VERIFY_RETRY_MAX_SECONDS = 15 * 60
+SOURCE_ENQUEUE_FAILURE_KEY = "source_enqueue_failure"
+SOURCE_ENQUEUE_MAX_ATTEMPTS = 3
 
 
 def _readable_request_source(job: JobRow) -> Path | None:
@@ -394,14 +396,8 @@ class TaskPlanner:
                 if job.status == "skipped" and job.reason_code == "not_found":
                     return await self._after_source_not_found(task, media)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Source request failed task=%s error=%s", task.id, exc)
-                return self.tasks.transition(
-                    task,
-                    "waiting_for_source",
-                    substate="awaiting_source",
-                    error_code="source_unavailable",
-                    error_message=MSG_WAITING_SOURCE,
-                )
+                return self._source_enqueue_failure(task, exc)
+            self._clear_source_enqueue_failure(task.id)
             return self.tasks.get(task.id)
 
         # Failed request with not_found, or a "success" that produced no readable SRT.
@@ -431,6 +427,64 @@ class TaskPlanner:
             error_code="source_unavailable",
             error_message=MSG_WAITING_SOURCE,
         )
+
+    def _source_enqueue_failure(
+        self,
+        task: LocalizationTaskRow,
+        exc: Exception,
+    ) -> LocalizationTaskRow:
+        """Retry source enqueue briefly, then expose a terminal failure."""
+        metadata = dict(task.metadata_json or {})
+        previous = metadata.get(SOURCE_ENQUEUE_FAILURE_KEY)
+        prior_attempts = previous.get("attempts", 0) if isinstance(previous, dict) else 0
+        try:
+            attempts = max(0, int(prior_attempts)) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        detail = str(exc).strip()[:300] or "Unknown source enqueue error"
+        metadata[SOURCE_ENQUEUE_FAILURE_KEY] = {
+            "attempts": attempts,
+            "last_error": detail,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        task.metadata_json = metadata
+        self.db.add(task)
+        self.db.commit()
+        self.db.refresh(task)
+        logger.warning(
+            "Source request failed task=%s attempt=%s/%s error=%s",
+            task.id,
+            attempts,
+            SOURCE_ENQUEUE_MAX_ATTEMPTS,
+            detail,
+        )
+        if attempts >= SOURCE_ENQUEUE_MAX_ATTEMPTS:
+            return self.tasks.transition(
+                task,
+                "failed",
+                error_code="source_enqueue_failed",
+                error_message=f"Could not queue subtitle source request: {detail}",
+            )
+        return self.tasks.transition(
+            task,
+            "waiting_for_source",
+            substate="awaiting_source",
+            error_code="source_enqueue_failed",
+            error_message=(
+                f"Could not queue subtitle source request (attempt {attempts}/"
+                f"{SOURCE_ENQUEUE_MAX_ATTEMPTS}): {detail}"
+            ),
+        )
+
+    def _clear_source_enqueue_failure(self, task_id: int) -> None:
+        task = self.tasks.get(task_id)
+        if task is None or SOURCE_ENQUEUE_FAILURE_KEY not in (task.metadata_json or {}):
+            return
+        metadata = dict(task.metadata_json or {})
+        metadata.pop(SOURCE_ENQUEUE_FAILURE_KEY, None)
+        task.metadata_json = metadata
+        self.db.add(task)
+        self.db.commit()
 
     async def plan_all_active(self) -> int:
         count = 0
@@ -993,6 +1047,24 @@ class TaskPlanner:
                     "extract_stream_index": cand.extract_stream_index,
                     "target_exists": cand.reason_code == "target_exists",
                 }
+                # Wanted-list data can be stale or omit the series id. The
+                # media record is authoritative for an on-demand request.
+                if (
+                    not result["target_exists"]
+                    and not result["can_translate"]
+                    and not result["can_extract"]
+                ):
+                    result["can_request"] = result["can_request"] or (
+                        (
+                            media.media_type == "movie"
+                            and media.bazarr_movie_id is not None
+                        )
+                        or (
+                            media.media_type == "episode"
+                            and media.bazarr_episode_id is not None
+                            and media.bazarr_series_id is not None
+                        )
+                    )
                 self._overlay_disk_source(result, path, source_langs, target_language)
                 await self._apply_source_resolution(result, path, source_langs, target_language)
                 return result

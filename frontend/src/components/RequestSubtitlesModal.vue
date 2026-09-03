@@ -127,23 +127,35 @@ async function submit() {
       parent_external_id: selected.value.parent_external_id,
     })
     try {
-      const task = await api.createLocalizationTask(media.id, {
-        target_language: languageChoice.value,
-        capability: 'subtitles',
-      })
+      let task
+      try {
+        task = await api.createLocalizationTask(media.id, {
+          target_language: languageChoice.value,
+          capability: 'subtitles',
+        })
+      } catch (err) {
+        const e = err as Error & { code?: string; taskId?: number; outputPath?: string }
+        if (e.code === 'active_task_exists' && e.taskId) {
+          existingTaskId.value = e.taskId
+          submitError.value =
+            'A localization task for this media and language is already running.'
+          return
+        }
+        if (e.code !== 'output_exists') throw err
+
+        const output = e.outputPath ? `\n\n${e.outputPath}` : ''
+        if (!window.confirm(`A subtitle file already exists. Replace it with a newly generated subtitle?${output}`)) {
+          return
+        }
+        task = await api.createLocalizationTask(media.id, {
+          target_language: languageChoice.value,
+          capability: 'subtitles',
+          replace_existing: true,
+        })
+      }
       emit('created', task.id)
       emit('close')
       await router.push(`/media/${task.media_item_id}`)
-    } catch (err) {
-      const e = err as Error & { code?: string; taskId?: number }
-      if (e.code === 'active_task_exists' && e.taskId) {
-        existingTaskId.value = e.taskId
-        submitError.value =
-          'A localization task for this media and language is already running.'
-        return
-      }
-      throw err
-    }
   } catch (err) {
     submitError.value = err instanceof Error ? err.message : String(err)
   } finally {

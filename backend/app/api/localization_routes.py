@@ -36,7 +36,7 @@ from app.db.models import LocalizationTaskRow, MediaItemRow, VoiceCastDraftRow
 from app.integrations.bazarr.client import BazarrError
 from app.jobs.service import JobService, job_to_out
 from app.jobs.worker import worker
-from app.languages import LanguageNormalizationError, list_featured_languages, list_languages
+from app.languages import LanguageNormalizationError, list_featured_languages, list_languages, normalize_language
 from app.localization.planner import TaskPlanner
 from app.localization.service import (
     ActiveTaskExistsError,
@@ -617,6 +617,14 @@ async def dub_media(
             speaker_voice_overrides=body.speaker_voices,
         )
     except ValueError as exc:
+        if "dub already exists" in str(exc).lower() or "dub output already exists" in str(exc).lower():
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "output_exists",
+                    "detail": "A dub file already exists. Confirm replacement to overwrite it.",
+                },
+            )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -687,7 +695,7 @@ def update_dub_voice_cast(
 @router.post("/media/{media_id}/dub/voice-cast/request", response_model=JobOut)
 async def request_dub_from_voice_cast(
     media_id: int,
-    target_language: str = Query("pt-PT"),
+    payload: DubCreate | None = None,
     db: Session = Depends(get_db),
 ) -> JobOut:
     """Start a dub using the saved, reviewed voice-casting draft."""
@@ -695,6 +703,8 @@ async def request_dub_from_voice_cast(
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     drafts = VoiceCastDraftService(db)
+    body = payload or DubCreate()
+    target_language = body.target_language or "pt-PT"
     draft = drafts.get_for_media(media, target_language)
     if draft is None:
         raise HTTPException(status_code=404, detail="No saved voice-casting draft for this language.")
@@ -702,11 +712,19 @@ async def request_dub_from_voice_cast(
         return await JobService(db).start_manual_dub(
             media,
             target_language=draft.target_language,
-            replace_existing=True,
+            replace_existing=body.replace_existing,
             mix_mode=draft.mix_mode,
             speaker_voice_overrides=drafts.speaker_voice_overrides(draft),
         )
     except ValueError as exc:
+        if "dub already exists" in str(exc).lower() or "dub output already exists" in str(exc).lower():
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "output_exists",
+                    "detail": "A dub file already exists. Confirm replacement to overwrite it.",
+                },
+            )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -721,6 +739,45 @@ async def create_media_localization_task(
         raise HTTPException(status_code=404, detail="Media not found")
 
     capability = (payload.capability or "subtitles").strip().lower()
+    try:
+        language = normalize_language(payload.target_language)
+    except LanguageNormalizationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    active_task = LocalizationTaskService(db).find_active(media.id, language.code, capability)
+    if active_task is not None:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "active_task_exists",
+                "task_id": active_task.id,
+                "detail": "An active localization task already exists for this media and language.",
+            },
+        )
+
+    # A planned subtitle task otherwise treats an on-disk target as already
+    # complete. Make the client explicitly opt in before removing that file.
+    if capability == "subtitles":
+        jobs = JobService(db)
+        try:
+            existing_outputs = jobs.subtitle_outputs_for_media(media, language.code)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if existing_outputs and not payload.replace_existing:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "output_exists",
+                    "output_path": str(existing_outputs[0]),
+                    "detail": "A subtitle file already exists. Confirm replacement to overwrite it.",
+                },
+            )
+        if existing_outputs:
+            try:
+                jobs.remove_subtitle_outputs_for_media(media, language.code)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         task, created = LocalizationTaskService(db).create_manual_task(
             media_item=media,

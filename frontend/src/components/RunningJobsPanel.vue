@@ -212,6 +212,9 @@ function statsHref(jobId: number) {
               {{ taskStatusLabel(task.status, task.substate) }}
               <span class="capitalize text-ink-500"> · {{ task.origin }}</span>
             </p>
+            <p v-if="task.error_message" class="mt-1 max-w-2xl text-xs text-red-700 dark:text-red-300">
+              {{ task.error_message }}
+            </p>
           </div>
           <div class="flex flex-wrap gap-2">
             <button

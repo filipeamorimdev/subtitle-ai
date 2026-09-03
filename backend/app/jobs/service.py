@@ -124,6 +124,7 @@ logger = get_logger("jobs")
 REQUEST_POLL_SECONDS = 5.0
 REQUEST_TIMEOUT_SECONDS = 60.0
 REQUEST_HI_RETRY_AFTER_SECONDS = 20.0
+REQUEST_LOOKUP_TIMEOUT_SECONDS = 30.0
 REQUEST_NOT_FOUND_COOLDOWN_HOURS = 24
 
 
@@ -343,6 +344,40 @@ class JobService:
     def __init__(self, db: Session) -> None:
         self.db = db
         self.settings = SettingsService(db)
+
+    def subtitle_outputs_for_media(
+        self, media: MediaItemRow, target_language: str
+    ) -> list[Path]:
+        """Return existing sidecars that a manual localization request would replace."""
+        public = self.settings.get_public()
+        mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
+        path = apply_path_mapping(media.path, mappings) if media.path else ""
+        if not path:
+            raise ValueError("Media file path is missing.")
+        if not is_under_roots(path, public.media_roots):
+            raise ValueError("Media path is outside configured media roots.")
+
+        media_file = Path(path)
+        canonical = build_external_subtitle_path(media_file, target_language)
+        # Older installs may have used the full IETF code (for example .pt-PT.srt).
+        legacy = media_file.with_name(f"{media_file.stem}.{target_language}.srt")
+        outputs: list[Path] = []
+        for candidate in (canonical, legacy):
+            if candidate.is_file() and candidate not in outputs:
+                outputs.append(candidate)
+        return outputs
+
+    def remove_subtitle_outputs_for_media(
+        self, media: MediaItemRow, target_language: str
+    ) -> list[Path]:
+        """Remove only the target-language sidecars after an explicit overwrite approval."""
+        outputs = self.subtitle_outputs_for_media(media, target_language)
+        for output in outputs:
+            try:
+                output.unlink()
+            except OSError as exc:
+                raise ValueError(f"Could not remove existing subtitle: {output.name}") from exc
+        return outputs
 
     def list_jobs(
         self,
@@ -2157,10 +2192,15 @@ class JobService:
             client = BazarrClient(bazarr_url, bazarr_key)
             mappings = mappings_from_settings([m.model_dump() for m in public.path_mappings])
             code2 = to_bazarr_code2(row.source_language or "en")
+            row.progress = 2
+            row.progress_detail = f"Checking Bazarr for {label}"
+            self.db.add(row)
             self._release_db()
 
             # Fast path: subtitle may already be on disk (including .en.hi.srt).
-            found_path = await self._lookup_requested_subtitle(client, row, code2, mappings)
+            found_path = await self._lookup_requested_subtitle_bounded(
+                client, row, code2, mappings
+            )
             if found_path:
                 await self._complete_request_job(job_id, found_path, label)
                 await self._maybe_chain_automatic_translate(job_id, found_path)
@@ -2189,7 +2229,7 @@ class JobService:
                 if not row or row.status == "cancelled":
                     return
 
-                found_path = await self._lookup_requested_subtitle(
+                found_path = await self._lookup_requested_subtitle_bounded(
                     client,
                     row,
                     code2,
@@ -2429,6 +2469,27 @@ class JobService:
             if local.exists() and local.stat().st_size > 0:
                 return str(local)
         return None
+
+    async def _lookup_requested_subtitle_bounded(
+        self,
+        client: BazarrClient,
+        row: JobRow,
+        language: str,
+        mappings: list[PathMapping],
+    ) -> str | None:
+        """Prevent a non-cooperative Bazarr/filesystem lookup blocking a job."""
+        try:
+            return await asyncio.wait_for(
+                self._lookup_requested_subtitle(client, row, language, mappings),
+                timeout=REQUEST_LOOKUP_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            get_logger("jobs").warning(
+                "Bazarr source lookup timed out job_id=%s language=%s",
+                row.id,
+                language,
+            )
+            return None
 
     async def _process_transcribe_job(self, job_id: int) -> None:
         row = self.db.get(JobRow, job_id)

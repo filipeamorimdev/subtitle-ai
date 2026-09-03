@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -10,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
-from app.api.schemas import PathMappingIn, SettingsUpdate
+from app.api.schemas import CandidateOut, PathMappingIn, SettingsUpdate
 from app.api.localization_routes import _progress_steps
 from app.core.config import get_app_config
 from app.core.secrets import load_or_create_fernet
@@ -1136,6 +1137,120 @@ async def test_waiting_task_resumes_when_source_appears(loc_env, monkeypatch):
     jobs = list(db.scalars(select(JobRow).where(JobRow.task_id == task.id)).all())
     assert len(jobs) == 1
     assert jobs[0].job_kind == "translate"
+
+
+@pytest.mark.asyncio
+async def test_stale_candidate_falls_back_to_media_bazarr_ids(loc_env, monkeypatch):
+    db, _tmp_path, media_dir, _source = loc_env
+    media_path = media_dir / "No Local Source.mkv"
+    media_path.write_text("x")
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="episode",
+        title="No Local Source",
+        path=str(media_path),
+        bazarr_movie_id=None,
+        bazarr_series_id=7,
+        bazarr_episode_id=8,
+    )
+    stale = CandidateOut(
+        key="stale-key",
+        media_type="episode",
+        title=media.title,
+        media_path=str(media_path),
+        bazarr_episode_id=8,
+        bazarr_series_id=None,
+        target_language="pt-PT",
+        can_translate=False,
+        reason_code="no_source",
+    )
+
+    async def fake_candidates(self):
+        return [stale]
+
+    async def no_extra_resolution(self, result, path, source_languages, target_language):
+        return None
+
+    async def no_probe(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("app.localization.planner.CandidateService.list_candidates", fake_candidates)
+    monkeypatch.setattr(TaskPlanner, "_apply_source_resolution", no_extra_resolution)
+    monkeypatch.setattr("app.localization.planner.probe_subtitle_tracks", no_probe)
+
+    snapshot = await TaskPlanner(db)._resolve_source_snapshot(media, "pt-PT")
+
+    assert snapshot["candidate_key"] == "stale-key"
+    assert snapshot["can_request"] is True
+
+
+@pytest.mark.asyncio
+async def test_source_enqueue_failure_becomes_visible_and_terminal(loc_env, monkeypatch):
+    db, _tmp_path, media_dir, _source = loc_env
+    media = MediaItemService(db).upsert_from_candidate_fields(
+        media_type="movie",
+        title="Queue Failure",
+        path=str(media_dir / "Queue Failure.mkv"),
+        bazarr_movie_id=42,
+        bazarr_series_id=None,
+        bazarr_episode_id=None,
+    )
+    task, _ = LocalizationTaskService(db).create_manual_task(
+        media_item=media,
+        target_language="pt-PT",
+    )
+
+    async def empty_snapshot(self, media_row, target_language):
+        return {
+            "candidate_key": "queue-failure",
+            "can_translate": False,
+            "can_extract": False,
+            "can_request": True,
+            "source_path": None,
+            "source_language": None,
+            "extract_stream_index": None,
+            "target_exists": False,
+        }
+
+    async def fail_enqueue(*_args, **_kwargs):
+        raise ValueError("Bazarr episode identifier is invalid")
+
+    async def false_present(*_args):
+        return False
+
+    monkeypatch.setattr(TaskPlanner, "_bazarr_target_present", false_present)
+    monkeypatch.setattr(TaskPlanner, "_resolve_source_snapshot", empty_snapshot)
+    monkeypatch.setattr(JobService, "create_request_subtitle_job", fail_enqueue)
+    monkeypatch.setattr(JobService, "create_request_subtitle_job_for_media", fail_enqueue)
+
+    planner = TaskPlanner(db)
+    first = await planner.plan(task.id)
+    second = await planner.plan(task.id)
+    third = await planner.plan(task.id)
+
+    assert first is not None and first.status == "waiting_for_source"
+    assert "Bazarr episode identifier is invalid" in (first.error_message or "")
+    assert second is not None and second.status == "waiting_for_source"
+    assert third is not None and third.status == "failed"
+    assert third.error_code == "source_enqueue_failed"
+
+
+@pytest.mark.asyncio
+async def test_request_lookup_timeout_does_not_block_worker(loc_env, monkeypatch):
+    db, *_ = loc_env
+    service = JobService(db)
+    row = JobRow(id=901, job_kind="request")
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(service, "_lookup_requested_subtitle", hang)
+    monkeypatch.setattr("app.jobs.service.REQUEST_LOOKUP_TIMEOUT_SECONDS", 0.01)
+
+    result = await service._lookup_requested_subtitle_bounded(
+        object(), row, "en", []
+    )
+
+    assert result is None
 
 
 def _skipped_request_job(task, media, *, candidate_key="k") -> JobRow:

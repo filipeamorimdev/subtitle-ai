@@ -171,12 +171,27 @@ async function requestDub() {
   try {
     await api.requestDubFromVoiceLibrary(mediaId.value, {
       target_language: targetLanguage.value,
-      replace_existing: true,
+      replace_existing: false,
       mix_mode: library.value?.mix_mode ?? 'background_preserved',
     })
     await router.push(`/media/${mediaId.value}`)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
+    const e = err as Error & { code?: string }
+    if (e.code !== 'output_exists') {
+      error.value = err instanceof Error ? err.message : String(err)
+      return
+    }
+    if (!window.confirm('A dub file already exists. Replace it with a newly generated dub?')) return
+    try {
+      await api.requestDubFromVoiceLibrary(mediaId.value, {
+        target_language: targetLanguage.value,
+        replace_existing: true,
+        mix_mode: library.value?.mix_mode ?? 'background_preserved',
+      })
+      await router.push(`/media/${mediaId.value}`)
+    } catch (retryError) {
+      error.value = retryError instanceof Error ? retryError.message : String(retryError)
+    }
   } finally {
     requesting.value = false
   }

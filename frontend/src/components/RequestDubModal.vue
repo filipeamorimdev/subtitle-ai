@@ -167,7 +167,7 @@ async function submit() {
     const media = await ensureSelectedMedia()
     await api.dubMedia(media.id, {
       target_language: languageChoice.value,
-      replace_existing: true,
+      replace_existing: false,
       mix_mode: mixMode.value,
       speaker_voices: {
         ...parseSpeakerVoiceOverrides(speakerVoiceOverrides.value),
@@ -176,7 +176,25 @@ async function submit() {
     emit('created')
     emit('close')
   } catch (err) {
-    submitError.value = err instanceof Error ? err.message : String(err)
+    const e = err as Error & { code?: string }
+    if (e.code !== 'output_exists') {
+      submitError.value = err instanceof Error ? err.message : String(err)
+      return
+    }
+    if (!window.confirm('A dub file already exists. Replace it with a newly generated dub?')) return
+    try {
+      const media = await ensureSelectedMedia()
+      await api.dubMedia(media.id, {
+        target_language: languageChoice.value,
+        replace_existing: true,
+        mix_mode: mixMode.value,
+        speaker_voices: parseSpeakerVoiceOverrides(speakerVoiceOverrides.value),
+      })
+      emit('created')
+      emit('close')
+    } catch (retryError) {
+      submitError.value = retryError instanceof Error ? retryError.message : String(retryError)
+    }
   } finally {
     submitting.value = false
   }
@@ -201,7 +219,7 @@ async function submit() {
           <h2 id="request-dub-title" class="font-display text-xl font-bold">Request dub</h2>
           <p class="mt-1 text-sm text-ink-500">
             Creates a Portuguese dub (.dub.mkv) beside the original. The standard mode preserves
-            music, ambience, and effects; an existing dub for the selected language is replaced.
+            music, ambience, and effects; you will be asked before replacing an existing dub.
           </p>
         </div>
         <button

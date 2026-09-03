@@ -668,6 +668,7 @@ class MediaLocalizationOut(BaseModel):
 class LocalizationTaskCreate(BaseModel):
     target_language: str
     capability: str = "subtitles"
+    replace_existing: bool = False
 
 
 class MediaEnsureIn(BaseModel):

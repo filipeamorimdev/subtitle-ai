@@ -711,7 +711,7 @@ onUnmounted(() => {
             </button>
           </div>
         </div>
-        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           <div class="rounded-md border border-l-4 border-ink-200 border-l-violet-500 bg-white px-3 py-3 dark:border-ink-800 dark:bg-ink-900">
             <div class="text-[10px] uppercase tracking-wide text-ink-500 sm:text-xs">Spend</div>
             <div class="mt-1 font-mono text-xl font-semibold">

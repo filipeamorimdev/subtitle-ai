@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
@@ -340,6 +340,14 @@ async def request_dub_from_voice_library(
             speaker_voice_overrides=body.speaker_voices,
         )
     except ValueError as exc:
+        if "dub already exists" in str(exc).lower() or "dub output already exists" in str(exc).lower():
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "output_exists",
+                    "detail": "A dub file already exists. Confirm replacement to overwrite it.",
+                },
+            )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

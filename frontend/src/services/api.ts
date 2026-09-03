@@ -46,13 +46,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     let detail = response.statusText
+    let body: Record<string, unknown> | null = null
     try {
-      const body = await response.json()
-      detail = body.detail || detail
+      body = await response.json()
+      detail = (body.detail as string) || detail
     } catch {
       /* ignore */
     }
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    const error = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail)) as Error & {
+      code?: string
+      outputPath?: string
+    }
+    if (typeof body?.error === 'string') error.code = body.error
+    if (typeof body?.output_path === 'string') error.outputPath = body.output_path
+    throw error
   }
   if (response.status === 204) {
     return undefined as T
@@ -253,10 +260,13 @@ export const api = {
       `/api/media/${id}/dub/voice-cast?target_language=${encodeURIComponent(target_language)}`,
       { method: 'PUT', body: JSON.stringify(payload) },
     ),
-  requestDubFromVoiceCast: (id: number, target_language: string) =>
+  requestDubFromVoiceCast: (
+    id: number,
+    payload: { target_language?: string; replace_existing?: boolean; mix_mode?: 'background_preserved' | 'voiceover_preview' },
+  ) =>
     request<Job>(
-      `/api/media/${id}/dub/voice-cast/request?target_language=${encodeURIComponent(target_language)}`,
-      { method: 'POST' },
+      `/api/media/${id}/dub/voice-cast/request`,
+      { method: 'POST', body: JSON.stringify(payload) },
     ),
   getVoiceLibrary: (id: number, target_language: string) =>
     request<VoiceLibrary>(
@@ -321,14 +331,14 @@ export const api = {
   ) =>
     request<Job>(`/api/media/${id}/voice-library/request-dub`, {
       method: 'POST',
-      body: JSON.stringify(payload ?? { replace_existing: true }),
+      body: JSON.stringify(payload ?? {}),
     }),
   voiceLibraryAudioUrl: (id: number, relativePath: string) =>
     `/api/media/${id}/voice-library/audio?path=${encodeURIComponent(relativePath)}`,
   voiceLibraryAuditionUrl: (id: number, wavPath: string) =>
     `/api/media/${id}/voice-library/audition-audio?file=${encodeURIComponent(wavPath)}`,
   getMediaActions: (id: number) => request<JobAction[]>(`/api/media/${id}/actions`),
-  createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string }) => {
+  createLocalizationTask: async (mediaId: number, payload: { target_language: string; capability?: string; replace_existing?: boolean }) => {
     const response = await fetch(`/api/media/${mediaId}/localization-tasks`, {
       method: 'POST',
       credentials: 'same-origin',
@@ -340,9 +350,19 @@ export const api = {
       const err = new Error(body.detail || 'Active task already exists') as Error & {
         code?: string
         taskId?: number
+        outputPath?: string
       }
       err.code = 'active_task_exists'
       err.taskId = body.task_id
+      throw err
+    }
+    if (response.status === 409 && body?.error === 'output_exists') {
+      const err = new Error(body.detail || 'Output already exists') as Error & {
+        code?: string
+        outputPath?: string
+      }
+      err.code = 'output_exists'
+      err.outputPath = body.output_path
       throw err
     }
     if (!response.ok) {

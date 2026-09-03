@@ -14,7 +14,15 @@ import {
   candidateToMediaRef,
   mediaHref,
 } from '../utils/mediaNav'
-import { canPauseJob, canResumeJob, isActiveTaskStatus, languageChipClass, latestTasksByLanguageCapability, taskStatusLabel } from '../utils/status'
+import {
+  canPauseJob,
+  canResumeJob,
+  isActiveTaskStatus,
+  isSupersededLanguageBadge,
+  languageChipClass,
+  latestTasksByLanguageCapability,
+  taskStatusLabel,
+} from '../utils/status'
 import { isOpenJobStatus, latestActiveJob, taskElapsedStart, taskProgressPct } from '../utils/taskProgress'
 
 type MediaFilter = 'all' | 'needs-work' | 'in-progress' | 'failed' | 'completed'
@@ -31,6 +39,8 @@ interface LanguageChip {
   jobId: number | null
   jobStatus: string | null
 }
+
+const MEDIA_PAGE_SIZE = 25
 
 interface MediaRow {
   key: string
@@ -57,6 +67,7 @@ const actionInfo = ref<string | null>(null)
 const search = ref('')
 const mediaTypeFilter = ref<string | null>(null)
 const categoryFilter = ref<MediaFilter>('all')
+const currentPage = ref(1)
 const modalOpen = ref(false)
 const dubModalOpen = ref(false)
 const requestMedia = ref<MediaRef | null>(null)
@@ -86,6 +97,7 @@ function syncFilterFromRoute() {
 
 function setCategoryFilter(filter: MediaFilter) {
   categoryFilter.value = filter
+  currentPage.value = 1
   const query = { ...route.query }
   if (filter === 'all') delete query.filter
   else query.filter = filter
@@ -250,7 +262,7 @@ function rowLanguages(row: MediaRow): LanguageChip[] {
         (task.capability || 'subtitles') === 'audio'
           ? `${task.target_language_name} dub`
           : task.target_language_name,
-      status: available && task.status === 'failed' ? 'completed' : task.status,
+      status: task.status,
       available,
       substate: task.substate,
       jobId: job?.id ?? null,
@@ -268,7 +280,23 @@ function rowLanguages(row: MediaRow): LanguageChip[] {
       jobStatus: null,
     })
   }
-  return [...map.values()]
+  const languages = [...map.values()]
+  return languages.filter(
+    (language) =>
+      (language.available || language.status) &&
+      !isSupersededLanguageBadge(
+        {
+          language_code: language.code,
+          available: language.available,
+          task_status: language.status,
+        },
+        languages.map((other) => ({
+          language_code: other.code,
+          available: other.available,
+          task_status: other.status,
+        })),
+      ),
+  )
 }
 
 function rowMeta(row: MediaRow) {
@@ -326,6 +354,19 @@ const filteredRows = computed(() => {
       if (kindDiff !== 0) return kindDiff
       return a.title.localeCompare(b.title)
     })
+})
+
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / MEDIA_PAGE_SIZE)))
+
+const pagedRows = computed(() => {
+  const start = (currentPage.value - 1) * MEDIA_PAGE_SIZE
+  return filteredRows.value.slice(start, start + MEDIA_PAGE_SIZE)
+})
+
+const pageRange = computed(() => {
+  if (!filteredRows.value.length) return { start: 0, end: 0 }
+  const start = (currentPage.value - 1) * MEDIA_PAGE_SIZE + 1
+  return { start, end: Math.min(start + MEDIA_PAGE_SIZE - 1, filteredRows.value.length) }
 })
 
 const progressByKey = computed(() => {
@@ -527,7 +568,14 @@ watch(
   },
 )
 
-watch(filteredRows, pruneSelected)
+watch(filteredRows, () => {
+  if (currentPage.value > totalPages.value) currentPage.value = totalPages.value
+  pruneSelected()
+})
+
+watch([search, mediaTypeFilter, categoryFilter], () => {
+  currentPage.value = 1
+})
 
 onMounted(async () => {
   syncFilterFromRoute()
@@ -670,7 +718,7 @@ onUnmounted(() => {
 
     <div v-else class="space-y-3">
       <article
-        v-for="row in filteredRows"
+        v-for="row in pagedRows"
         :key="row.key"
         class="rounded-xl border border-ink-200 bg-white/80 p-4 dark:border-ink-800 dark:bg-ink-900/60"
       >
@@ -755,6 +803,33 @@ onUnmounted(() => {
           </button>
         </div>
       </article>
+
+      <nav
+        v-if="filteredRows.length > MEDIA_PAGE_SIZE"
+        class="flex flex-wrap items-center justify-between gap-3 pt-1 text-sm text-ink-600 dark:text-ink-300"
+        aria-label="Media list pagination"
+      >
+        <span>Showing {{ pageRange.start }}–{{ pageRange.end }} of {{ filteredRows.length }}</span>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-ink-600"
+            :disabled="currentPage === 1"
+            @click="currentPage -= 1"
+          >
+            Previous
+          </button>
+          <span class="tabular-nums">Page {{ currentPage }} of {{ totalPages }}</span>
+          <button
+            type="button"
+            class="rounded-md border border-ink-300 px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-ink-600"
+            :disabled="currentPage === totalPages"
+            @click="currentPage += 1"
+          >
+            Next
+          </button>
+        </div>
+      </nav>
     </div>
 
     <RequestSubtitlesModal
