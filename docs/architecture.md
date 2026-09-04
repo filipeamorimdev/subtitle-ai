@@ -126,7 +126,7 @@ Off by default. When enabled:
 
 ## Audio transcription
 
-`SourceResolver` scores available sources. A French sidecar does **not** block transcription when the preferred source language is English. Transcription is selected when it outscores other-language subtitles and non-preferred embedded tracks.
+`SourceResolver` scores available sources. Preferred source languages only rank local matches and decide which language Bazarr searches. A French or Hindi sidecar is a usable translation origin and beats transcription. Transcription runs when no local subtitle (any origin language) can be used.
 
 `AudioTrackSelector` picks the dialogue stream from ffprobe metadata (language, default, commentary/AD penalties). `TranscriptionService` extracts that stream, chunks by duration with overlap, runs local `faster-whisper`, and `SubtitleFormatter` builds readable SRT cues from word timestamps. Detected language and confidence are stored; English is never assumed when detection is missing.
 

@@ -34,7 +34,7 @@ Historical jobs without `task_id` remain valid legacy execution history.
 4. Backend normalizes language and creates/reuses an active task
 5. Task planner checks whether the target already exists → may complete immediately
 6. Otherwise creates the next necessary job (request / extract / transcribe / translate)
-7. If Bazarr finds no source and extract is impossible, the planner enqueues **transcribe** (Whisper ASR). The media page still offers **Transcribe audio** as a manual control. That job writes a source (or target) SRT; the planner then translates if needed and verifies as usual.
+7. If no local subtitle exists (any origin language), Bazarr finds none, and extract is impossible, the planner enqueues **transcribe** (Whisper ASR). The media page still offers **Transcribe audio** as a manual control. That job writes a source (or target) SRT; the planner then translates if needed and verifies as usual.
 8. Worker processes the job; planner continues until verified
 
 ### Operator chat

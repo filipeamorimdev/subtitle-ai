@@ -1,8 +1,10 @@
 """Local Chatterbox Multilingual TTS provider.
 
-Chatterbox runs entirely in the Subtitle AI container.  Its checkpoint is
-downloaded lazily by the upstream library and cached in ``HF_HOME``; the image
-sets that directory to the persisted ``/config`` volume.
+Chatterbox runs entirely in the Subtitle AI container.  The generic V3
+checkpoint is downloaded lazily by the upstream library and cached in
+``HF_HOME``; the image sets that directory to the persisted ``/config``
+volume.  European Portuguese uses the official pt-PT T3 overlay plus the
+shared companion weights from the base multilingual repo.
 """
 
 from __future__ import annotations
@@ -61,6 +63,23 @@ _LANGUAGES: dict[str, tuple[str, str]] = {
 _MODEL_LOCK = threading.Lock()
 _MODEL_BY_DEVICE: dict[str, tuple[Any, str | None]] = {}
 _COND_PREP_LOCK = threading.Lock()
+
+_PT_PT_REPO_ID = "ResembleAI/Chatterbox-Multilingual-pt-pt"
+_CHATTERBOX_REPO_ID = "ResembleAI/chatterbox"
+_PT_PT_T3_FILENAME = "t3_pt_pt.safetensors"
+_PT_PT_OVERLAY_FILES = (
+    _PT_PT_T3_FILENAME,
+    "s3gen_v3.pt",
+    "grapheme_mtl_merged_expanded_v1.json",
+)
+_PT_PT_COMPANION_FILES = ("ve.pt", "conds.pt")
+_PT_PT_REQUIRED_FILES = (
+    "ve.pt",
+    "conds.pt",
+    "s3gen.pt",
+    _PT_PT_T3_FILENAME,
+    "grapheme_mtl_merged_expanded_v1.json",
+)
 
 
 def _normalized_language(target_language: str) -> str:
@@ -176,25 +195,75 @@ def _use_pt_pt_checkpoint(target_language: str | None) -> bool:
     return flag not in {"0", "false", "no", "off"}
 
 
-def _ensure_pt_pt_checkpoint(device: str) -> Path:
-    from huggingface_hub import snapshot_download
-
+def _pt_pt_cache_root() -> Path:
     from app.core.config import get_app_config
 
     cache_root = get_app_config().config_dir / "huggingface" / "chatterbox-pt-pt"
     cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root
+
+
+def _pt_pt_checkpoint_complete(cache_root: Path) -> bool:
+    return all((cache_root / name).is_file() for name in _PT_PT_REQUIRED_FILES)
+
+
+def _download_snapshot(repo_id: str, cache_root: Path, allow_patterns: tuple[str, ...]) -> None:
+    from huggingface_hub import snapshot_download
+
+    needed = [name for name in allow_patterns if not (cache_root / name).is_file()]
+    if not needed:
+        return
+    logger.info("chatterbox_pt_pt_download repo=%s files=%s", repo_id, ",".join(needed))
     snapshot_download(
-        repo_id="ResembleAI/Chatterbox-Multilingual-pt-pt",
+        repo_id=repo_id,
         local_dir=str(cache_root),
-        allow_patterns=[
-            "t3_pt_pt.safetensors",
-            "s3gen_v3.pt",
-            "s3gen_v3.safetensors",
-            "grapheme_mtl_merged_expanded_v1.json",
-            "ve.pt",
-            "conds.pt",
-        ],
+        allow_patterns=list(needed),
+        token=os.getenv("HF_TOKEN"),
     )
+
+
+def _link_or_copy(source: Path, dest: Path) -> None:
+    if dest.exists() or dest.is_symlink():
+        dest.unlink()
+    try:
+        os.link(source, dest)
+    except OSError:
+        try:
+            dest.symlink_to(source.name)
+        except OSError:
+            dest.write_bytes(source.read_bytes())
+
+
+def _ensure_s3gen_filename(cache_root: Path) -> None:
+    dest = cache_root / "s3gen.pt"
+    if dest.is_file():
+        return
+    overlay = cache_root / "s3gen_v3.pt"
+    if overlay.is_file():
+        _link_or_copy(overlay, dest)
+        return
+    _download_snapshot(_CHATTERBOX_REPO_ID, cache_root, ("s3gen.pt",))
+
+
+def _ensure_pt_pt_checkpoint() -> Path:
+    """Assemble the pt-PT overlay with the shared Multilingual V3 companions.
+
+    ``ResembleAI/Chatterbox-Multilingual-pt-pt`` only ships the language T3,
+    the V3 decoder, and the tokenizer.  ``ChatterboxMultilingualTTS.from_local``
+    still needs ``ve.pt``, ``conds.pt``, and a file named ``s3gen.pt`` from
+    ``ResembleAI/chatterbox``.
+    """
+    cache_root = _pt_pt_cache_root()
+    if _pt_pt_checkpoint_complete(cache_root):
+        return cache_root
+    _download_snapshot(_PT_PT_REPO_ID, cache_root, _PT_PT_OVERLAY_FILES)
+    _download_snapshot(_CHATTERBOX_REPO_ID, cache_root, _PT_PT_COMPANION_FILES)
+    _ensure_s3gen_filename(cache_root)
+    missing = [name for name in _PT_PT_REQUIRED_FILES if not (cache_root / name).is_file()]
+    if missing:
+        raise TTSError(
+            "Chatterbox pt-PT checkpoint is incomplete after download: " + ", ".join(missing)
+        )
     return cache_root
 
 
@@ -227,11 +296,11 @@ def load_chatterbox_model(
             raise TTSError(f"Chatterbox could not be imported: {exc}") from exc
         try:
             if pt_pt:
-                ckpt_dir = _ensure_pt_pt_checkpoint(selected_device)
+                ckpt_dir = _ensure_pt_pt_checkpoint()
                 model = ChatterboxMultilingualTTS.from_local(
                     ckpt_dir,
                     selected_device,
-                    t3_model="t3_pt_pt.safetensors",
+                    t3_model=_PT_PT_T3_FILENAME,
                 )
             else:
                 model = ChatterboxMultilingualTTS.from_pretrained(

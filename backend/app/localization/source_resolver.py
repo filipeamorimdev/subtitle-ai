@@ -9,8 +9,8 @@ from typing import Any
 from app.core.logging import get_logger
 from app.localization.artifacts import SourceArtifact, SourceType
 from app.subtitles.embedded import EmbeddedTrack
+from app.subtitles.content_language import refine_subtitle_language
 from app.subtitles.filenames import (
-    detect_language_from_filename,
     find_existing_sidecar,
     is_hi_subtitle_filename,
     is_origin_language,
@@ -23,14 +23,17 @@ from app.subtitles.filenames import (
 logger = get_logger("source_resolver")
 
 # Deterministic scoring. Higher is better.
+# Preferred source languages rank local matches; they must not hide a usable
+# other-language sidecar/track. That setting is for Bazarr search only.
+# Any extractable subtitle therefore outscores transcription.
 SCORE_TARGET = 1000.0
 SCORE_PREFERRED_EXTERNAL = 92.0
+SCORE_OTHER_EXTERNAL = 86.0
 SCORE_PREFERRED_EMBEDDED_TEXT = 80.0
-SCORE_PREFERRED_OCR = 58.0
+SCORE_OTHER_EMBEDDED_TEXT = 74.0
+SCORE_PREFERRED_OCR = 62.0
+SCORE_OTHER_OCR = 58.0
 SCORE_TRANSCRIPT = 55.0
-SCORE_OTHER_EXTERNAL = 48.0
-SCORE_OTHER_EMBEDDED_TEXT = 42.0
-SCORE_OTHER_OCR = 28.0
 BONUS_DEFAULT_TRACK = 3.0
 BONUS_NON_HI = 2.0
 PENALTY_UNKNOWN_LANGUAGE = 12.0
@@ -118,7 +121,7 @@ def score_candidate(
             reasons.append("Preferred source language found as external text subtitle")
         else:
             score = SCORE_OTHER_EXTERNAL
-            reasons.append("Other-language external subtitle")
+            reasons.append("Other-language external subtitle (usable translation origin)")
         if candidate.hi:
             score -= BONUS_NON_HI
             reasons.append("HI/SDH filename penalty")
@@ -262,7 +265,7 @@ def list_sidecar_subtitles(media_path: str | Path) -> list[tuple[Path, str | Non
             continue
         if not path.is_file() or path.stat().st_size <= 0:
             continue
-        lang = detect_language_from_filename(path)
+        lang = refine_subtitle_language(path)
         if lang is None and path.name == f"{stem}.srt":
             found.append((path, None, False))
             continue

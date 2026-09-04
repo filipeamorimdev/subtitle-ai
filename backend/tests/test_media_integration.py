@@ -58,9 +58,6 @@ class _FakeASR:
 @pytest.mark.asyncio
 async def test_smoke_select_transcribe_format_dub_mux(tmp_path, monkeypatch):
     mkv = build_multitrack_mkv(tmp_path / "Movie.mkv", tmp_path / "parts")
-    (tmp_path / "Movie.fr.srt").write_text(
-        "1\n00:00:00,000 --> 00:00:01,000\nBonjour\n\n", encoding="utf-8"
-    )
 
     resolution = await SourceResolver().resolve(
         mkv,

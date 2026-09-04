@@ -10,6 +10,7 @@ from typing import Any
 from app.integrations.bazarr.client import BazarrClient, BazarrError
 from app.languages import get_language
 from app.media import LanguageAvailability, LocalizationState, MediaRef
+from app.subtitles.content_language import refine_subtitle_language
 from app.subtitles.filenames import (
     detect_language_from_filename,
     language_chip_available,
@@ -318,12 +319,13 @@ class BazarrMediaProvider:
                 # and no path (parse_subtitles then falls back to the name).
                 if not _looks_like_subtitle_path(sub.path):
                     continue
-                code = normalize_language_code(sub.language_code) or sub.language_code
-                if code:
-                    present_codes.add(code)
                 file_lang = detect_language_from_filename(sub.path)
-                if file_lang:
-                    present_codes.add(file_lang)
+                claimed = normalize_language_code(sub.language_code) or file_lang
+                effective = refine_subtitle_language(sub.path, claimed=claimed)
+                if effective:
+                    present_codes.add(effective)
+                elif claimed:
+                    present_codes.add(claimed)
             for miss in BazarrClient.parse_missing_languages(raw):
                 code = normalize_language_code(miss) or miss
                 if code:

@@ -23,6 +23,7 @@ from app.subtitles.embedded import (
     pick_extractable_track,
     probe_subtitle_tracks,
 )
+from app.subtitles.content_language import refine_subtitle_language
 from app.subtitles.filenames import (
     build_external_subtitle_path,
     build_target_subtitle_path,
@@ -282,8 +283,11 @@ class CandidateService:
             for sub in item.subtitles:
                 if not sub.path:
                     continue
-                lang = normalize_language_code(sub.language_code) or detect_language_from_filename(
-                    sub.path
+                mapped = apply_path_mapping(sub.path, mappings)
+                lang = refine_subtitle_language(
+                    mapped,
+                    claimed=normalize_language_code(sub.language_code)
+                    or detect_language_from_filename(sub.path),
                 )
                 if not is_origin_language(
                     lang,
@@ -292,7 +296,6 @@ class CandidateService:
                     allow_unlabeled=False,
                 ):
                     continue
-                mapped = apply_path_mapping(sub.path, mappings)
                 if mapped.lower().endswith(".srt") and subtitle_belongs_to_media(
                     mapped, local_media
                 ):

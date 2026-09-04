@@ -809,6 +809,44 @@ async def test_localization_state_ignores_portuguese_without_file():
 
 
 @pytest.mark.asyncio
+async def test_localization_state_english_hi_sidecar_is_not_hindi(tmp_path):
+    from app.media import MediaRef
+    from app.media.bazarr_provider import BazarrMediaProvider, clear_search_cache
+
+    sidecar = tmp_path / "movie.hi.srt"
+    sidecar.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\nWe'll be there on the double.\n\n"
+        "2\n00:00:04,000 --> 00:00:06,000\nWhenever there's a problem.\n\n"
+        "3\n00:00:07,000 --> 00:00:09,000\nWhy does she not go in?\nShe is hot and thirsty.\n\n"
+        "4\n00:00:10,000 --> 00:00:12,000\nShe's missing her family.\n\n"
+        "5\n00:00:13,000 --> 00:00:15,000\nMarshall, keep her busy until we find them.\n\n"
+        "6\n00:00:16,000 --> 00:00:18,000\nNo problem! They are on the way.\n",
+        encoding="utf-8",
+    )
+    clear_search_cache()
+    provider = BazarrMediaProvider(
+        _FakeBazarrClient(
+            {
+                "subtitles": [
+                    {"code2": "en", "path": str(sidecar), "name": "English", "hi": True}
+                ]
+            }
+        )
+    )
+    ref = MediaRef(
+        provider_id="bazarr",
+        external_id="movie:3",
+        media_type="movie",
+        title="Movie",
+        bazarr_movie_id=3,
+    )
+    state = await provider.get_localization_state(ref)
+    by_code = {lang.language_code: lang for lang in state.languages}
+    assert by_code["en"].available is True
+    assert "hi" not in by_code
+
+
+@pytest.mark.asyncio
 async def test_localization_state_pt_sidecar_does_not_light_up_brazil():
     from app.media import MediaRef
     from app.media.bazarr_provider import BazarrMediaProvider, clear_search_cache

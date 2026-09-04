@@ -306,7 +306,7 @@ def is_origin_language(
 ) -> bool:
     """True when a sidecar/track can be used as a translation origin.
 
-    Preferred languages are a ranking hint, not a hard filter, unless
+    Preferred languages rank local matches and are a hard filter only when
     ``allow_other_languages`` is false (Bazarr search for a specific code).
     The localization target is never treated as an origin.
     """
@@ -360,6 +360,8 @@ def find_source_srt_beside_media(
     if not directory.is_dir():
         return None
 
+    from app.subtitles.content_language import refine_subtitle_language
+
     stem = media.stem
     candidates: list[tuple[int, int, Path, str]] = []
     for path in directory.glob("*.srt"):
@@ -367,7 +369,7 @@ def find_source_srt_beside_media(
         # from the same folder (e.g. Season 1/*.en.srt).
         if subtitle_stem(path) != stem:
             continue
-        lang = detect_language_from_filename(path)
+        lang = refine_subtitle_language(path)
         if lang is None and path.name == f"{stem}.srt":
             if not is_origin_language(
                 None,

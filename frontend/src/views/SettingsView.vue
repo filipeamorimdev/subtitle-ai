@@ -223,7 +223,7 @@ function clearUsageStats() {
             placeholder="Select source language"
           />
           <span class="mt-1 block text-xs text-ink-500">
-            Language Bazarr should search when no local subtitle file or extractable embedded track exists. Defaults to English.
+            Language Bazarr should search when no local subtitle exists. Local sidecars and embedded tracks in any other language are still translated. Defaults to English.
           </span>
         </div>
         <div class="block text-sm">

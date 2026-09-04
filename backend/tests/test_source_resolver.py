@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.localization.source_resolver import (
     SourceCandidate,
     SourceType,
@@ -28,7 +30,37 @@ def test_preferred_english_subtitle_beats_transcription():
     assert "Preferred" in resolution.reason
 
 
-def test_french_subtitle_does_not_block_english_transcription():
+@pytest.mark.asyncio
+async def test_english_dialogue_in_hi_sidecar_beats_transcription(tmp_path):
+    from app.localization.source_resolver import SourceResolver
+
+    media = tmp_path / "Show - S01E01.mkv"
+    media.write_bytes(b"x")
+    sidecar = tmp_path / "Show - S01E01.hi.srt"
+    sidecar.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\nWe'll be there on the double.\n\n"
+        "2\n00:00:04,000 --> 00:00:06,000\nWhenever there's a problem.\n\n"
+        "3\n00:00:07,000 --> 00:00:09,000\nWhy does she not go in?\nShe is hot and thirsty.\n\n"
+        "4\n00:00:10,000 --> 00:00:12,000\nShe's missing her family.\n\n"
+        "5\n00:00:13,000 --> 00:00:15,000\nMarshall, keep her busy until we find them.\n\n"
+        "6\n00:00:16,000 --> 00:00:18,000\nNo problem! They are on the way.\n",
+        encoding="utf-8",
+    )
+
+    resolution = await SourceResolver().resolve(
+        media,
+        preferred_languages=["en"],
+        target_language="pt-PT",
+        embedded_tracks=[],
+        include_transcript=True,
+    )
+    assert resolution.selected is not None
+    assert resolution.selected.type == SourceType.SUBTITLE
+    assert resolution.selected.language == "en"
+    assert resolution.selected.path == str(sidecar)
+
+
+def test_other_language_subtitle_beats_transcription():
     resolution = resolve_from_candidates(
         [
             SourceCandidate(type=SourceType.SUBTITLE, language="fr", path="/m/Movie.fr.srt"),
@@ -38,13 +70,40 @@ def test_french_subtitle_does_not_block_english_transcription():
         target_language="pt-PT",
     )
     assert resolution.selected is not None
-    assert resolution.selected.type == SourceType.TRANSCRIPT
-    payload = resolution.to_dict()
-    assert payload["selected"] == "transcript"
-    assert payload["score"] is not None
+    assert resolution.selected.type == SourceType.SUBTITLE
+    assert resolution.selected.language == "fr"
 
 
-def test_french_embedded_text_does_not_beat_transcription():
+def test_hindi_subtitle_beats_transcription():
+    resolution = resolve_from_candidates(
+        [
+            SourceCandidate(type=SourceType.SUBTITLE, language="hi", path="/m/Movie.hi.srt"),
+            SourceCandidate(type=SourceType.TRANSCRIPT, language="en"),
+        ],
+        preferred_languages=["en"],
+        target_language="pt-PT",
+    )
+    assert resolution.selected is not None
+    assert resolution.selected.type == SourceType.SUBTITLE
+    assert resolution.selected.language == "hi"
+
+
+def test_preferred_english_sidecar_still_beats_other_language_sidecar():
+    resolution = resolve_from_candidates(
+        [
+            SourceCandidate(type=SourceType.SUBTITLE, language="hi", path="/m/Movie.hi.srt"),
+            SourceCandidate(type=SourceType.SUBTITLE, language="en", path="/m/Movie.en.srt"),
+            SourceCandidate(type=SourceType.TRANSCRIPT, language="en"),
+        ],
+        preferred_languages=["en"],
+        target_language="pt-PT",
+    )
+    assert resolution.selected is not None
+    assert resolution.selected.type == SourceType.SUBTITLE
+    assert resolution.selected.language == "en"
+
+
+def test_other_language_embedded_text_beats_transcription():
     resolution = resolve_from_candidates(
         [
             SourceCandidate(
@@ -59,7 +118,8 @@ def test_french_embedded_text_does_not_beat_transcription():
         target_language="pt-PT",
     )
     assert resolution.selected is not None
-    assert resolution.selected.type == SourceType.TRANSCRIPT
+    assert resolution.selected.type == SourceType.EMBEDDED_SUBTITLE
+    assert resolution.selected.language == "fr"
 
 
 def test_target_subtitle_wins():

@@ -306,6 +306,69 @@ def test_subtitle_belongs_to_media_rejects_prefix_collisions(tmp_path):
     exact.write_text("x", encoding="utf-8")
     assert subtitle_belongs_to_media(exact, media)
 
+_ENGLISH_DIALOGUE_SRT = """1
+00:00:01,000 --> 00:00:03,000
+We'll be there on the double.
+
+2
+00:00:04,000 --> 00:00:06,000
+Whenever there's a problem.
+
+3
+00:00:07,000 --> 00:00:09,000
+Why does she not go in?
+She is hot and thirsty.
+
+4
+00:00:10,000 --> 00:00:12,000
+She's missing her family.
+
+5
+00:00:13,000 --> 00:00:15,000
+Marshall, keep her busy until we find them.
+
+6
+00:00:16,000 --> 00:00:18,000
+No problem! They are on the way.
+"""
+
+
+def test_content_language_detects_english_and_hindi_script():
+    from app.subtitles.content_language import detect_language_from_text
+
+    assert detect_language_from_text(
+        "We'll be there on the double. Why does she not go in? "
+        "She is hot and thirsty. She's missing her family until we find them."
+    ) == "en"
+    assert detect_language_from_text("Bonjour") is None
+    hindi = "यह एक परीक्षा है और यह वाक्य हिंदी में लिखा गया है क्योंकि हमें पक्का सबूत चाहिए"
+    assert detect_language_from_text(hindi) == "hi"
+
+
+def test_refine_hi_filename_when_dialogue_is_english(tmp_path):
+    from app.subtitles.content_language import refine_subtitle_language
+    from app.subtitles.filenames import detect_language_from_filename
+
+    path = tmp_path / "Show - S01E01.hi.srt"
+    path.write_text(_ENGLISH_DIALOGUE_SRT, encoding="utf-8")
+    assert detect_language_from_filename(path) == "hi"
+    assert refine_subtitle_language(path) == "en"
+    assert refine_subtitle_language(path, claimed="en") == "en"
+
+
+def test_find_source_treats_english_hi_sidecar_as_preferred(tmp_path):
+    from app.subtitles.filenames import find_source_srt_beside_media
+
+    media = tmp_path / "Show - S01E01.mkv"
+    media.write_bytes(b"x")
+    hi = tmp_path / "Show - S01E01.hi.srt"
+    hi.write_text(_ENGLISH_DIALOGUE_SRT, encoding="utf-8")
+    found = find_source_srt_beside_media(media, ["en"], target_language="pt-PT")
+    assert found is not None
+    assert found[0] == hi
+    assert found[1] == "en"
+
+
 def test_atomic_write(tmp_path):
     doc = parse_srt(SAMPLE)
     target = tmp_path / "movie.pt-PT.srt"
