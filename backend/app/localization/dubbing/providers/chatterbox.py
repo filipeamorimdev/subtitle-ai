@@ -69,10 +69,9 @@ _CHATTERBOX_REPO_ID = "ResembleAI/chatterbox"
 _PT_PT_T3_FILENAME = "t3_pt_pt.safetensors"
 _PT_PT_OVERLAY_FILES = (
     _PT_PT_T3_FILENAME,
-    "s3gen_v3.pt",
     "grapheme_mtl_merged_expanded_v1.json",
 )
-_PT_PT_COMPANION_FILES = ("ve.pt", "conds.pt")
+_PT_PT_COMPANION_FILES = ("ve.pt", "conds.pt", "s3gen.pt")
 _PT_PT_REQUIRED_FILES = (
     "ve.pt",
     "conds.pt",
@@ -80,6 +79,10 @@ _PT_PT_REQUIRED_FILES = (
     _PT_PT_T3_FILENAME,
     "grapheme_mtl_merged_expanded_v1.json",
 )
+# S3Tokenizer builds these STFT buffers in ``__init__``. Official and V3
+# checkpoints omit them; multilingual ``from_local`` still loads with
+# ``strict=True``, unlike English Chatterbox which already uses ``strict=False``.
+_S3GEN_OPTIONAL_STATE_KEYS = ("tokenizer._mel_filters", "tokenizer.window")
 
 
 def _normalized_language(target_language: str) -> str:
@@ -222,43 +225,94 @@ def _download_snapshot(repo_id: str, cache_root: Path, allow_patterns: tuple[str
     )
 
 
-def _link_or_copy(source: Path, dest: Path) -> None:
-    if dest.exists() or dest.is_symlink():
-        dest.unlink()
-    try:
-        os.link(source, dest)
-    except OSError:
-        try:
-            dest.symlink_to(source.name)
-        except OSError:
-            dest.write_bytes(source.read_bytes())
-
-
-def _ensure_s3gen_filename(cache_root: Path) -> None:
+def _s3gen_is_v3_overlay(cache_root: Path) -> bool:
     dest = cache_root / "s3gen.pt"
-    if dest.is_file():
-        return
     overlay = cache_root / "s3gen_v3.pt"
-    if overlay.is_file():
-        _link_or_copy(overlay, dest)
+    if not dest.is_file() or not overlay.is_file():
+        return False
+    try:
+        if dest.samefile(overlay):
+            return True
+    except OSError:
+        pass
+    return dest.stat().st_size == overlay.stat().st_size
+
+
+def _discard_incompatible_s3gen(cache_root: Path) -> None:
+    dest = cache_root / "s3gen.pt"
+    if not dest.is_file() or not _s3gen_is_v3_overlay(cache_root):
         return
-    _download_snapshot(_CHATTERBOX_REPO_ID, cache_root, ("s3gen.pt",))
+    logger.info("chatterbox_pt_pt_discard_s3gen_v3_alias")
+    dest.unlink()
+
+
+def _optional_s3gen_state_keys(module: Any) -> tuple[str, ...]:
+    """Return checkpoint keys that are safe to restore from the live module."""
+    keys: list[str] = []
+    keys.extend(getattr(module, "ignore_state_dict_missing", ()) or ())
+    tokenizer = getattr(module, "tokenizer", None)
+    for name in getattr(tokenizer, "ignore_state_dict_missing", ()) or ():
+        keys.append(f"tokenizer.{name}")
+    keys.extend(_S3GEN_OPTIONAL_STATE_KEYS)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(key)
+    return tuple(unique)
+
+
+def _merge_optional_s3gen_buffers(module: Any, state_dict: Any) -> Any:
+    """Copy init-time tokenizer buffers into a checkpoint that omitted them."""
+    if not isinstance(state_dict, dict):
+        return state_dict
+    current = module.state_dict()
+    merged = dict(state_dict)
+    for key in _optional_s3gen_state_keys(module):
+        if key not in merged and key in current:
+            merged[key] = current[key]
+    return merged
+
+
+def _install_s3gen_checkpoint_compat() -> None:
+    """Make multilingual S3Gen loading tolerate omitted tokenizer buffers."""
+    try:
+        from chatterbox.models.s3gen import S3Gen
+    except ImportError:
+        return
+    if getattr(S3Gen.load_state_dict, "_subtitle_ai_compat", False):
+        return
+
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        import torch
+
+        return torch.nn.Module.load_state_dict(
+            self,
+            _merge_optional_s3gen_buffers(self, state_dict),
+            *args,
+            **kwargs,
+        )
+
+    load_state_dict._subtitle_ai_compat = True
+    S3Gen.load_state_dict = load_state_dict
 
 
 def _ensure_pt_pt_checkpoint() -> Path:
     """Assemble the pt-PT overlay with the shared Multilingual V3 companions.
 
-    ``ResembleAI/Chatterbox-Multilingual-pt-pt`` only ships the language T3,
-    the V3 decoder, and the tokenizer.  ``ChatterboxMultilingualTTS.from_local``
-    still needs ``ve.pt``, ``conds.pt``, and a file named ``s3gen.pt`` from
-    ``ResembleAI/chatterbox``.
+    ``ResembleAI/Chatterbox-Multilingual-pt-pt`` only ships the language T3
+    and tokenizer.  The pinned Chatterbox loader still needs ``ve.pt``,
+    ``conds.pt``, and ``s3gen.pt`` from ``ResembleAI/chatterbox``.  Prefer the
+    official decoder over a leftover ``s3gen_v3.pt`` alias; both files omit
+    tokenizer STFT buffers that are filled back in at load time.
     """
     cache_root = _pt_pt_cache_root()
+    _discard_incompatible_s3gen(cache_root)
     if _pt_pt_checkpoint_complete(cache_root):
         return cache_root
     _download_snapshot(_PT_PT_REPO_ID, cache_root, _PT_PT_OVERLAY_FILES)
     _download_snapshot(_CHATTERBOX_REPO_ID, cache_root, _PT_PT_COMPANION_FILES)
-    _ensure_s3gen_filename(cache_root)
     missing = [name for name in _PT_PT_REQUIRED_FILES if not (cache_root / name).is_file()]
     if missing:
         raise TTSError(
@@ -295,6 +349,7 @@ def load_chatterbox_model(
         except ImportError as exc:
             raise TTSError(f"Chatterbox could not be imported: {exc}") from exc
         try:
+            _install_s3gen_checkpoint_compat()
             if pt_pt:
                 ckpt_dir = _ensure_pt_pt_checkpoint()
                 model = ChatterboxMultilingualTTS.from_local(

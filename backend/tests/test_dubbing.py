@@ -116,7 +116,6 @@ def test_ensure_pt_pt_checkpoint_fetches_shared_companions(tmp_path, monkeypatch
         root = Path(local_dir)
         created = {
             "t3_pt_pt.safetensors": "t3",
-            "s3gen_v3.pt": "s3v3",
             "grapheme_mtl_merged_expanded_v1.json": "{}",
             "ve.pt": "ve",
             "conds.pt": "conds",
@@ -137,27 +136,29 @@ def test_ensure_pt_pt_checkpoint_fetches_shared_companions(tmp_path, monkeypatch
     assert cache_root == tmp_path / "config" / "huggingface" / "chatterbox-pt-pt"
     assert (cache_root / "ve.pt").read_text() == "ve"
     assert (cache_root / "conds.pt").read_text() == "conds"
-    assert (cache_root / "s3gen.pt").is_file()
+    assert (cache_root / "s3gen.pt").read_text() == "s3"
     assert downloads == [
         ("ResembleAI/Chatterbox-Multilingual-pt-pt", chatterbox_provider._PT_PT_OVERLAY_FILES),
         ("ResembleAI/chatterbox", chatterbox_provider._PT_PT_COMPANION_FILES),
     ]
 
 
-def test_ensure_pt_pt_checkpoint_aliases_s3gen_from_overlay(tmp_path, monkeypatch):
+def test_ensure_pt_pt_checkpoint_replaces_s3gen_v3_alias(tmp_path, monkeypatch):
     cache_root = tmp_path / "config" / "huggingface" / "chatterbox-pt-pt"
     cache_root.mkdir(parents=True)
     (cache_root / "t3_pt_pt.safetensors").write_text("t3")
-    (cache_root / "s3gen_v3.pt").write_text("s3-overlay")
     (cache_root / "grapheme_mtl_merged_expanded_v1.json").write_text("{}")
+    (cache_root / "ve.pt").write_text("ve")
+    (cache_root / "conds.pt").write_text("conds")
+    (cache_root / "s3gen_v3.pt").write_text("s3-overlay")
+    (cache_root / "s3gen.pt").symlink_to("s3gen_v3.pt")
 
     def fake_snapshot_download(*, repo_id, local_dir, allow_patterns, **_kwargs):
         root = Path(local_dir)
-        if repo_id == "ResembleAI/chatterbox":
-            for name in allow_patterns:
-                root.joinpath(name).write_text(name)
+        if repo_id == "ResembleAI/chatterbox" and allow_patterns == ["s3gen.pt"]:
+            root.joinpath("s3gen.pt").write_text("official-s3gen")
             return
-        raise AssertionError(f"overlay files should already be cached: {repo_id} {allow_patterns}")
+        raise AssertionError(f"unexpected download: {repo_id} {allow_patterns}")
 
     monkeypatch.setenv("SUBTITLE_AI_CONFIG_DIR", str(tmp_path / "config"))
     get_app_config.cache_clear()
@@ -166,8 +167,8 @@ def test_ensure_pt_pt_checkpoint_aliases_s3gen_from_overlay(tmp_path, monkeypatc
     resolved = chatterbox_provider._ensure_pt_pt_checkpoint()
 
     assert resolved == cache_root
-    assert (cache_root / "ve.pt").read_text() == "ve.pt"
-    assert (cache_root / "s3gen.pt").read_text() == "s3-overlay"
+    assert (cache_root / "s3gen.pt").read_text() == "official-s3gen"
+    assert (cache_root / "s3gen_v3.pt").read_text() == "s3-overlay"
 
 
 def test_ensure_pt_pt_checkpoint_skips_download_when_complete(tmp_path, monkeypatch):
@@ -186,6 +187,83 @@ def test_ensure_pt_pt_checkpoint_skips_download_when_complete(tmp_path, monkeypa
     assert chatterbox_provider._ensure_pt_pt_checkpoint() == cache_root
 
 
+def test_merge_optional_s3gen_buffers_restores_tokenizer_keys():
+    class FakeTokenizer:
+        ignore_state_dict_missing = ("_mel_filters", "window")
+
+    class FakeS3Gen:
+        ignore_state_dict_missing = ("tokenizer._mel_filters", "tokenizer.window")
+
+        def __init__(self):
+            self.tokenizer = FakeTokenizer()
+            self._state = {
+                "weight": "live-weight",
+                "tokenizer._mel_filters": "live-filters",
+                "tokenizer.window": "live-window",
+            }
+
+        def state_dict(self):
+            return dict(self._state)
+
+    merged = chatterbox_provider._merge_optional_s3gen_buffers(
+        FakeS3Gen(),
+        {"weight": "ckpt-weight"},
+    )
+
+    assert merged == {
+        "weight": "ckpt-weight",
+        "tokenizer._mel_filters": "live-filters",
+        "tokenizer.window": "live-window",
+    }
+
+
+def test_install_s3gen_checkpoint_compat_patches_once(monkeypatch):
+    class FakeS3Gen:
+        def load_state_dict(self, state_dict, *args, **kwargs):
+            raise AssertionError("original loader should be replaced")
+
+    chatterbox_package = types.ModuleType("chatterbox")
+    models_module = types.ModuleType("chatterbox.models")
+    s3gen_module = types.ModuleType("chatterbox.models.s3gen")
+    s3gen_module.S3Gen = FakeS3Gen
+    monkeypatch.setitem(sys.modules, "chatterbox", chatterbox_package)
+    monkeypatch.setitem(sys.modules, "chatterbox.models", models_module)
+    monkeypatch.setitem(sys.modules, "chatterbox.models.s3gen", s3gen_module)
+
+    chatterbox_provider._install_s3gen_checkpoint_compat()
+    patched = FakeS3Gen.load_state_dict
+    chatterbox_provider._install_s3gen_checkpoint_compat()
+
+    assert FakeS3Gen.load_state_dict is patched
+    assert patched._subtitle_ai_compat is True
+
+
+def test_load_chatterbox_model_installs_s3gen_checkpoint_compat(monkeypatch):
+    calls: list[int] = []
+
+    class FakeMultilingualTTS:
+        @classmethod
+        def from_pretrained(cls, **kwargs):
+            return types.SimpleNamespace(conds=object(), device=kwargs["device"])
+
+    chatterbox_package = types.ModuleType("chatterbox")
+    chatterbox_package.__path__ = []
+    multilingual_module = types.ModuleType("chatterbox.mtl_tts")
+    multilingual_module.ChatterboxMultilingualTTS = FakeMultilingualTTS
+    monkeypatch.setitem(sys.modules, "chatterbox", chatterbox_package)
+    monkeypatch.setitem(sys.modules, "chatterbox.mtl_tts", multilingual_module)
+    monkeypatch.setattr(chatterbox_provider, "_MODEL_BY_DEVICE", {})
+    monkeypatch.setattr(
+        chatterbox_provider,
+        "_install_s3gen_checkpoint_compat",
+        lambda: calls.append(1),
+    )
+
+    chatterbox_provider.load_chatterbox_model(device="cpu")
+
+    assert calls == [1]
+
+
 def test_load_chatterbox_model_uses_assembled_pt_pt_overlay(tmp_path, monkeypatch):
     local_calls: list[dict[str, object]] = []
     chatterbox_package, multilingual_module = _fake_multilingual_tts(local_calls)
@@ -199,8 +277,6 @@ def test_load_chatterbox_model_uses_assembled_pt_pt_overlay(tmp_path, monkeypatc
         root = Path(local_dir)
         for name in allow_patterns:
             root.joinpath(name).write_text(name)
-        if "s3gen_v3.pt" in allow_patterns:
-            root.joinpath("s3gen_v3.pt").write_text("s3-overlay")
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
 
