@@ -388,6 +388,20 @@ def unload_chatterbox_model(*, device: str | None = None) -> None:
         logger.info("chatterbox_model_unloaded device=%s count=%s", selected_device, len(removed))
 
 
+def _limit_tts_peak(audio: Any, ceiling: float = 0.95) -> Any:
+    """Keep float TTS below full scale so PCM16 save does not brickwall."""
+    abs_audio = getattr(audio, "abs", None)
+    if abs_audio is None:
+        return audio
+    try:
+        peak = float(abs_audio().max())
+    except (TypeError, ValueError, AttributeError):
+        return audio
+    if peak <= ceiling or peak <= 0:
+        return audio
+    return audio * (ceiling / peak)
+
+
 def write_chatterbox_wav(
     model: Any,
     profile: ChatterboxVoiceProfile,
@@ -422,13 +436,14 @@ def write_chatterbox_wav(
                     exaggeration=generate_kwargs["exaggeration"],
                 )
             audio = model.generate(text, **generate_kwargs)
+        audio = _limit_tts_peak(audio.detach().cpu())
         # The timeline probes each cue with Python's wave module.  Explicit
         # PCM S16 keeps every generated WAV readable there as well as by
         # ffmpeg; torchaudio's backend defaults can otherwise create an
         # extensible/float WAV that loses duration information.
         torchaudio.save(
             str(output_wav),
-            audio.detach().cpu(),
+            audio,
             model.sr,
             format="wav",
             encoding="PCM_S",

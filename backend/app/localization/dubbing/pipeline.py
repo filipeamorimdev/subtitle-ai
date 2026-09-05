@@ -35,7 +35,11 @@ from app.localization.dubbing.options import (
     voice_binding_cache_fingerprint,
 )
 from app.localization.dubbing.voice_library.paths import resolve_reference_path
-from app.localization.dubbing.voice_library.qa import validate_batch_lengths, validate_generated_cue
+from app.localization.dubbing.voice_library.qa import (
+    peak_limit_wav,
+    validate_batch_lengths,
+    validate_generated_cue,
+)
 from app.localization.dubbing.providers.chatterbox import (
     ChatterboxTTSProvider,
     TTSError,
@@ -213,6 +217,15 @@ def build_mux_command(
     return cmd
 
 
+def shape_clip_filters(speed: float) -> list[str]:
+    """Resample, optionally time-stretch, then keep the cue below full scale."""
+    filters = [f"aresample={CUE_SAMPLE_RATE}"]
+    if speed > 1.001:
+        filters.insert(0, f"atempo={speed:.4f}")
+    filters.append("alimiter=limit=0.95:level=disabled")
+    return filters
+
+
 async def shape_clip(
     input_wav: Path,
     output_wav: Path,
@@ -220,9 +233,6 @@ async def shape_clip(
     speed: float,
     is_cancelled: CancelCheck | None = None,
 ) -> None:
-    filters = ["aresample=" + str(CUE_SAMPLE_RATE)]
-    if speed > 1.001:
-        filters.insert(0, f"atempo={speed:.4f}")
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -238,7 +248,7 @@ async def shape_clip(
         "-c:a",
         "pcm_s16le",
         "-af",
-        ",".join(filters),
+        ",".join(shape_clip_filters(speed)),
         str(output_wav),
     ]
     try:
@@ -523,6 +533,9 @@ class DubbingPipeline:
                     speed_adjustments += 1
                 await shape_clip(cue_wav, shaped, speed=speed, is_cancelled=is_cancelled)
                 quality = validate_generated_cue(shaped, expected_text=text)
+                if not quality.ok and quality.reasons == ["clipped"] and peak_limit_wav(shaped):
+                    quality = validate_generated_cue(shaped, expected_text=text)
+                    event_log.record(event="cue_peak_limited", index=index)
                 if not quality.ok:
                     raise DubError(
                         f"Generated audio failed quality checks for cue {index}: {', '.join(quality.reasons)}"

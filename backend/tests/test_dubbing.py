@@ -41,10 +41,11 @@ from app.dubbing.dub import (
 from app.localization.dubbing.mixer import DUB_OUTPUT_SAMPLE_RATE, build_background_mix_command
 from app.localization.dubbing.cache import DubCueCache, dub_cache_key
 from app.localization.dubbing.options import cue_key, normalize_speaker_voice_overrides
-from app.localization.dubbing.pipeline import DubError, DubbingPipeline
+from app.localization.dubbing.pipeline import DubError, DubbingPipeline, shape_clip_filters
 from app.localization.dubbing.providers import chatterbox as chatterbox_provider
 from app.localization.dubbing.providers.chatterbox import ChatterboxTTSProvider, TTSError
 from app.localization.dubbing.timing import TimingEngine
+from app.localization.dubbing.voice_library.qa import peak_limit_wav, validate_generated_cue
 
 
 def test_installed_chatterbox_supports_multilingual_v3_loader():
@@ -327,6 +328,62 @@ def test_cue_voice_override_keys_are_normalized_for_ai_cast_assignments():
     assert overrides[cue_key(42)] == "chatterbox-multilingual-v3:pt-PT:expressive"
 
 
+def test_shape_clip_filters_limit_peaks_after_resample():
+    assert shape_clip_filters(1.0) == [
+        f"aresample={CUE_SAMPLE_RATE}",
+        "alimiter=limit=0.95:level=disabled",
+    ]
+    assert shape_clip_filters(1.12)[0].startswith("atempo=")
+    assert shape_clip_filters(1.12)[-1] == "alimiter=limit=0.95:level=disabled"
+
+
+def test_validate_generated_cue_allows_isolated_full_scale_sample(tmp_path):
+    samples = array.array("h", [1200] * 8_000)
+    samples[400] = 32767
+    wav = tmp_path / "cue.wav"
+    _write_pcm_wav(wav, samples)
+    report = validate_generated_cue(wav, expected_text="A Min trata de animar")
+    assert report.ok is True
+    assert report.reasons == []
+
+
+def test_validate_generated_cue_rejects_sustained_clipping(tmp_path):
+    wav = tmp_path / "hot.wav"
+    _write_pcm_wav(wav, array.array("h", [32767] * 8_000))
+    report = validate_generated_cue(wav, expected_text="A Min trata de animar")
+    assert report.ok is False
+    assert report.reasons == ["clipped"]
+
+
+def test_peak_limit_wav_repairs_full_scale_cue(tmp_path):
+    wav = tmp_path / "hot.wav"
+    _write_pcm_wav(wav, array.array("h", [32767] * 8_000))
+    assert peak_limit_wav(wav) is True
+    repaired = validate_generated_cue(wav, expected_text="A Min trata de animar")
+    assert repaired.ok is True
+    assert max(abs(value) for value in _read_pcm_wav(wav)) <= int(0.95 * 32768)
+
+
+def test_limit_tts_peak_scales_hot_float_audio():
+    class HotTensor:
+        def __init__(self, peak: float) -> None:
+            self.peak = peak
+
+        def abs(self):
+            return self
+
+        def max(self):
+            return self.peak
+
+        def __mul__(self, scale: float):
+            return HotTensor(self.peak * scale)
+
+    limited = chatterbox_provider._limit_tts_peak(HotTensor(1.4))
+    assert abs(limited.peak - 0.95) < 1e-6
+    untouched = chatterbox_provider._limit_tts_peak(HotTensor(0.4))
+    assert untouched.peak == 0.4
+
+
 def test_tts_output_ignores_text_detects_fixed_length_clips():
     # Job 763 pattern: 3–64 chars, every clip ~1.5s.
     samples = [
@@ -514,6 +571,79 @@ async def test_slow_cue_is_checkpointed_before_requesting_clean_retry(tmp_path, 
     log = event_path.read_text(encoding="utf-8")
     assert '"reason": "slow_cue"' in log
     assert '"seconds": 601.0' in log
+
+
+@pytest.mark.asyncio
+async def test_clipped_cue_is_peak_limited_instead_of_failing(tmp_path, monkeypatch):
+    media = tmp_path / "episode.mkv"
+    media.write_bytes(b"media")
+    source_srt = tmp_path / "episode.pt.srt"
+    source_srt.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\nA Min trata de animar o coração\n\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "episode.pt.dub.mkv"
+
+    async def fake_synthesize(self, text, voice, language, *, output_path, is_cancelled=None):
+        from app.localization.artifacts import AudioArtifact
+
+        _write_pcm_wav(Path(output_path), array.array("h", [32767] * 8_000))
+        return AudioArtifact(
+            path=str(output_path),
+            duration=0.5,
+            sample_rate=CUE_SAMPLE_RATE,
+            channels=1,
+            provider="fake",
+        )
+
+    async def fake_shape(input_wav, output_wav, **kwargs):
+        Path(output_wav).write_bytes(Path(input_wav).read_bytes())
+
+    async def fake_finalize(path, **_kwargs):
+        return Path(path)
+
+    async def fake_probe_duration(_path):
+        return 3.0
+
+    async def fake_has_audio(_path):
+        return False
+
+    async def fake_probe_artifact(path):
+        from app.localization.artifacts import MediaArtifact
+
+        Path(path).write_bytes(b"mkv")
+        return MediaArtifact(path=str(path), duration=3.0, audio_streams=1, verified=True)
+
+    async def fake_run(*_args, **kwargs):
+        for item in kwargs.get("output_paths") or []:
+            Path(item).write_bytes(b"out")
+        return types.SimpleNamespace()
+
+    monkeypatch.setattr(
+        "app.localization.dubbing.pipeline.load_chatterbox_model",
+        lambda **_kwargs: types.SimpleNamespace(device="cpu"),
+    )
+    monkeypatch.setattr(ChatterboxTTSProvider, "synthesize", fake_synthesize)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.shape_clip", fake_shape)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.finalize_dialogue_track", fake_finalize)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.probe_duration_seconds", fake_probe_duration)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.probe_has_audio_stream", fake_has_audio)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.probe_media_artifact", fake_probe_artifact)
+    monkeypatch.setattr("app.localization.dubbing.pipeline.run_process_checked", fake_run)
+
+    event_path = tmp_path / "job.jsonl"
+    result = await DubbingPipeline().run(
+        media_path=media,
+        source_srt_path=source_srt,
+        target_language="pt-PT",
+        output_path=output,
+        event_log=JobEventLog(event_path, job_id=848),
+        is_cancelled=lambda: False,
+    )
+
+    assert result is not None
+    assert result.verified is True
+    assert '"event": "cue_peak_limited"' in event_path.read_text(encoding="utf-8")
 
 
 class _FakeTensor:
